@@ -1,10 +1,12 @@
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use bech32::primitives::decode::CheckedHrpstring;
 use bech32::{Bech32, Hrp};
 use rand::{thread_rng, Rng};
-use secp256k1::{Keypair, Message, Secp256k1};
+use secp256k1::schnorr::Signature;
+use secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
 use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
@@ -18,9 +20,15 @@ pub struct SignedNote {
 
 pub struct Nevent {
     pub event_id_hex: String,
-    /// Relay URLs carried in the link. Opening the page uses the event id.
-    #[allow(dead_code)]
     pub relays: Vec<String>,
+}
+
+pub struct FetchedNote {
+    pub id_hex: String,
+    pub title: String,
+    pub author: String,
+    pub content: String,
+    pub created_at: i64,
 }
 
 impl SignedNote {
@@ -161,12 +169,9 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
     }
 }
 
-fn send_event(
-    relay: &str,
-    event_json: &str,
-    event_id_hex: &str,
-    timeout: Duration,
-) -> Result<(), String> {
+type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
+
+fn connect_relay(relay: &str, timeout: Duration) -> Result<RelaySocket, String> {
     let request = relay
         .into_client_request()
         .map_err(|error| error.to_string())?;
@@ -193,50 +198,242 @@ fn send_event(
         let tls = connector
             .connect(&host, tcp)
             .map_err(|error| error.to_string())?;
-        let (mut socket, _) =
+        let (socket, _) =
             tungstenite::client::client(request, tls).map_err(|error| error.to_string())?;
-        let payload = format!("[\"EVENT\",{event_json}]");
-        socket
-            .send(tungstenite::Message::Text(payload.into()))
-            .map_err(|error| error.to_string())?;
+        return Ok(socket);
+    }
+    Err(last_error)
+}
 
-        let deadline = Instant::now() + timeout;
-        loop {
-            if Instant::now() >= deadline {
+enum Incoming {
+    Text(String),
+    Closed,
+}
+
+fn read_incoming(socket: &mut RelaySocket, deadline: Instant) -> Result<Incoming, String> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for the relay".to_string());
+        }
+        match socket.read() {
+            Ok(tungstenite::Message::Text(text)) => return Ok(Incoming::Text(text.to_string())),
+            Ok(tungstenite::Message::Ping(payload)) => {
+                socket
+                    .send(tungstenite::Message::Pong(payload))
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(tungstenite::Message::Close(_)) => return Ok(Incoming::Closed),
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::TimedOut
+                    || error.kind() == std::io::ErrorKind::WouldBlock =>
+            {
                 return Err("timed out waiting for the relay".to_string());
             }
-            match socket.read() {
-                Ok(tungstenite::Message::Text(text)) => {
-                    if let Some(result) = parse_ok(text.as_ref(), event_id_hex) {
-                        return result.map_err(|reason| {
-                            if reason.is_empty() {
-                                "relay rejected the note".to_string()
-                            } else {
-                                reason
-                            }
-                        });
-                    }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn send_event(
+    relay: &str,
+    event_json: &str,
+    event_id_hex: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut socket = connect_relay(relay, timeout)?;
+    let payload = format!("[\"EVENT\",{event_json}]");
+    socket
+        .send(tungstenite::Message::Text(payload.into()))
+        .map_err(|error| error.to_string())?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match read_incoming(&mut socket, deadline)? {
+            Incoming::Closed => return Err("relay closed the connection".to_string()),
+            Incoming::Text(text) => {
+                if let Some(result) = parse_ok(&text, event_id_hex) {
+                    return result.map_err(|reason| {
+                        if reason.is_empty() {
+                            "relay rejected the note".to_string()
+                        } else {
+                            reason
+                        }
+                    });
                 }
-                Ok(tungstenite::Message::Ping(payload)) => {
-                    socket
-                        .send(tungstenite::Message::Pong(payload))
-                        .map_err(|error| error.to_string())?;
-                }
-                Ok(tungstenite::Message::Close(_)) => {
-                    return Err("relay closed the connection".to_string());
-                }
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(error))
-                    if error.kind() == std::io::ErrorKind::TimedOut
-                        || error.kind() == std::io::ErrorKind::WouldBlock =>
-                {
-                    return Err("timed out waiting for the relay".to_string());
-                }
-                Err(error) => return Err(error.to_string()),
             }
         }
     }
-    Err(last_error)
+}
+
+pub fn fetch_note(relays: &[String], event_id_hex: &str, timeout: Duration) -> Option<FetchedNote> {
+    if decode_fixed_hex::<32>(event_id_hex).is_none() {
+        return None;
+    }
+    let relays: Vec<String> = relays
+        .iter()
+        .filter(|relay| valid_relay_url(relay))
+        .cloned()
+        .collect();
+    if relays.is_empty() {
+        return None;
+    }
+
+    let (tx, rx) = mpsc::channel();
+    for relay in relays {
+        let tx = tx.clone();
+        let event_id_hex = event_id_hex.to_string();
+        std::thread::spawn(move || {
+            let found = match fetch_from_relay(&relay, &event_id_hex, timeout) {
+                Ok(note) => note,
+                Err(error) => {
+                    eprintln!("Nonograph: relay {relay} did not return the note: {error}");
+                    None
+                }
+            };
+            let _ = tx.send(found);
+        });
+    }
+    drop(tx);
+    take_first_note(rx, Instant::now() + timeout)
+}
+
+fn take_first_note(
+    rx: mpsc::Receiver<Option<FetchedNote>>,
+    deadline: Instant,
+) -> Option<FetchedNote> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(Some(note)) => return Some(note),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+fn fetch_from_relay(
+    relay: &str,
+    event_id_hex: &str,
+    timeout: Duration,
+) -> Result<Option<FetchedNote>, String> {
+    let mut socket = connect_relay(relay, timeout)?;
+    let sub_id = random_hex(8);
+    let payload = format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#);
+    socket
+        .send(tungstenite::Message::Text(payload.into()))
+        .map_err(|error| error.to_string())?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match read_incoming(&mut socket, deadline)? {
+            Incoming::Closed => return Err("relay closed the connection".to_string()),
+            Incoming::Text(text) => {
+                if let Some(note) = note_from_relay_message(&text, event_id_hex) {
+                    return Ok(Some(note));
+                }
+                if relay_has_no_event(&text, &sub_id) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+fn note_from_relay_message(message: &str, event_id_hex: &str) -> Option<FetchedNote> {
+    let value: serde_json::Value = serde_json::from_str(message).ok()?;
+    let items = value.as_array()?;
+    if items.first()?.as_str()? != "EVENT" {
+        return None;
+    }
+    note_from_value(items.get(2)?, event_id_hex)
+}
+
+fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+        return false;
+    };
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    let Some(kind) = items.first().and_then(|item| item.as_str()) else {
+        return false;
+    };
+    if kind != "EOSE" && kind != "CLOSED" {
+        return false;
+    }
+    items.get(1).and_then(|item| item.as_str()) == Some(sub_id)
+}
+
+fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<FetchedNote> {
+    let id_hex = value.get("id")?.as_str()?;
+    let pubkey_hex = value.get("pubkey")?.as_str()?;
+    let created_at = value.get("created_at")?.as_i64()?;
+    let kind = value.get("kind")?.as_u64()?;
+    if kind != u64::from(KIND_LONG_FORM) {
+        return None;
+    }
+    let content = value.get("content")?.as_str()?.to_string();
+    let sig_hex = value.get("sig")?.as_str()?;
+    let tags = value
+        .get("tags")?
+        .as_array()?
+        .iter()
+        .map(|tag| {
+            tag.as_array()?
+                .iter()
+                .map(|item| item.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        })
+        .collect::<Option<Vec<Vec<String>>>>()?;
+
+    let preimage = canonical_event(pubkey_hex, created_at, kind as u32, &tags, &content);
+    let recomputed: [u8; 32] = Sha256::digest(preimage.as_bytes()).into();
+    if decode_fixed_hex::<32>(id_hex)? != recomputed {
+        return None;
+    }
+    if decode_fixed_hex::<32>(expected_id_hex)? != recomputed {
+        return None;
+    }
+    let pubkey = XOnlyPublicKey::from_slice(&decode_fixed_hex::<32>(pubkey_hex)?).ok()?;
+    let signature = Signature::from_slice(&decode_fixed_hex::<64>(sig_hex)?).ok()?;
+    Secp256k1::new()
+        .verify_schnorr(&signature, &Message::from_digest(recomputed), &pubkey)
+        .ok()?;
+
+    let title = tag_value(&tags, "title").unwrap_or_else(|| "Untitled".to_string());
+    let author = tag_value(&tags, "author").unwrap_or_default();
+    let published_at = tag_value(&tags, "published_at")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(created_at);
+    Some(FetchedNote {
+        id_hex: hex_encode(&recomputed),
+        title,
+        author,
+        content,
+        created_at: published_at,
+    })
+}
+
+fn tag_value(tags: &[Vec<String>], name: &str) -> Option<String> {
+    tags.iter()
+        .find(|tag| tag.first().map(String::as_str) == Some(name))
+        .and_then(|tag| tag.get(1).cloned())
+}
+
+fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
+    if hex.len() != N * 2 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let text = std::str::from_utf8(chunk).ok()?;
+        out[index] = u8::from_str_radix(text, 16).ok()?;
+    }
+    Some(out)
 }
 
 fn valid_relay_url(relay: &str) -> bool {
@@ -362,20 +559,12 @@ mod tests {
     use super::*;
     use secp256k1::XOnlyPublicKey;
 
-    fn decode_hex<const N: usize>(hex: &str) -> [u8; N] {
-        assert_eq!(hex.len(), N * 2);
-        let mut out = [0u8; N];
-        for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
-            let text = std::str::from_utf8(chunk).unwrap();
-            out[index] = u8::from_str_radix(text, 16).unwrap();
-        }
-        out
-    }
-
     #[test]
     fn test_npub_bech32_matches_nip19() {
-        let bytes =
-            decode_hex::<32>("3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d");
+        let bytes = decode_fixed_hex::<32>(
+            "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+        )
+        .unwrap();
         let hrp = Hrp::parse("npub").unwrap();
         let encoded = bech32::encode::<Bech32>(hrp, &bytes).unwrap();
         assert_eq!(
@@ -439,12 +628,106 @@ mod tests {
         assert!(parse_ok(&format!(r#"["OK","{}",true,""]"#, "cd".repeat(32)), &id).is_none());
     }
 
+    #[test]
+    fn test_fetched_note_keeps_title_author_and_markdown() {
+        let note = sign_note(
+            "Hello",
+            "Ada",
+            "a line\nwith \"quotes\" and \\slashes",
+            1_700_000_000,
+        );
+        let message = format!(r#"["EVENT","sub",{}]"#, note.event_json);
+        let fetched = note_from_relay_message(&message, &note.id_hex()).unwrap();
+        assert_eq!(fetched.id_hex, note.id_hex());
+        assert_eq!(fetched.title, "Hello");
+        assert_eq!(fetched.author, "Ada");
+        assert_eq!(fetched.content, "a line\nwith \"quotes\" and \\slashes");
+        assert_eq!(fetched.created_at, 1_700_000_000);
+        assert!(relay_has_no_event(r#"["EOSE","sub"]"#, "sub"));
+        assert!(!relay_has_no_event(r#"["EOSE","other"]"#, "sub"));
+        assert!(note_from_relay_message(r#"["EOSE","sub"]"#, &note.id_hex()).is_none());
+    }
+
+    #[test]
+    fn test_fetched_note_rejects_a_tampered_event() {
+        let note = sign_note("Hello", "", "body", 1_700_000_000);
+        let mut parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+        parsed["content"] = serde_json::Value::String("edited".to_string());
+        assert!(note_from_value(&parsed, &note.id_hex()).is_none());
+
+        let mut wrong_kind: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+        wrong_kind["kind"] = serde_json::Value::from(1);
+        assert!(note_from_value(&wrong_kind, &note.id_hex()).is_none());
+
+        let mut bad_sig: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+        let mut sig = bad_sig["sig"].as_str().unwrap().to_string();
+        let flipped = if sig.starts_with('a') { 'b' } else { 'a' };
+        sig.replace_range(0..1, &flipped.to_string());
+        bad_sig["sig"] = serde_json::Value::String(sig);
+        assert!(note_from_value(&bad_sig, &note.id_hex()).is_none());
+        assert!(note_from_value(
+            &serde_json::from_str(&note.event_json).unwrap(),
+            &"ab".repeat(32)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_fetch_note_skips_relays_it_cannot_ask() {
+        let id = "ab".repeat(32);
+        assert!(fetch_note(&[], &id, Duration::from_millis(20)).is_none());
+        assert!(fetch_note(
+            &["https://relay.example".to_string()],
+            &id,
+            Duration::from_millis(20)
+        )
+        .is_none());
+        assert!(fetch_note(
+            &["wss://relay.example".to_string()],
+            "abcd",
+            Duration::from_millis(20)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_first_note_returns_when_the_first_relay_answers() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(None).unwrap();
+        let late = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            let _ = late.send(Some(FetchedNote {
+                id_hex: "ab".repeat(32),
+                title: "Hello".to_string(),
+                author: String::new(),
+                content: "body".to_string(),
+                created_at: 1_700_000_000,
+            }));
+        });
+        let started = Instant::now();
+        let note = take_first_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(note.title, "Hello");
+        assert_eq!(note.content, "body");
+        drop(tx);
+    }
+
+    #[test]
+    fn test_first_note_times_out_when_every_relay_is_silent() {
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        assert!(take_first_note(rx, Instant::now() + Duration::from_millis(40)).is_none());
+        assert!(started.elapsed() < Duration::from_millis(400));
+        drop(tx);
+    }
+
     fn assert_signature(note: &SignedNote) {
         let secp = Secp256k1::new();
         let pubkey = XOnlyPublicKey::from_slice(&note.pubkey).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
         let sig_hex = parsed["sig"].as_str().unwrap();
-        let sig_bytes = decode_hex::<64>(sig_hex);
+        let sig_bytes = decode_fixed_hex::<64>(sig_hex).unwrap();
         let signature = secp256k1::schnorr::Signature::from_slice(&sig_bytes).unwrap();
         let tags = parsed["tags"]
             .as_array()

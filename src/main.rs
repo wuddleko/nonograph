@@ -682,6 +682,37 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
     Some((title, author, created_at, raw_content))
 }
 
+fn fetch_missing_note(
+    nevent: &nostr::Nevent,
+    storage: &PostStorage,
+    config: &Config,
+) -> Option<Post> {
+    let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
+    let fetched = nostr::fetch_note(&nevent.relays, &nevent.event_id_hex, timeout)?;
+    if fetched.content.len() > config.limits.content_max_length {
+        return None;
+    }
+    let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
+    let post = Post {
+        id: fetched.id_hex,
+        title: parser::sanitize_text(&fetched.title),
+        author: parser::sanitize_text(&fetched.author),
+        content: parser::render_markdown_with_config(&fetched.content, config),
+        raw_content: fetched.content,
+        created_at,
+    };
+    if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
+        if !matches!(error, save::SaveError::AlreadyExists) {
+            eprintln!("Nonograph: Failed to save fetched post: {error}");
+        }
+    }
+    storage
+        .lock()
+        .unwrap()
+        .insert(post.id.clone(), post.clone());
+    Some(post)
+}
+
 #[get("/<post_id>")]
 fn view_post(
     post_id: &str,
@@ -766,6 +797,8 @@ fn view_post(
                 } else {
                     None
                 }
+            } else if let Some(nevent) = &decoded {
+                fetch_missing_note(nevent, storage, config)
             } else {
                 None
             }
