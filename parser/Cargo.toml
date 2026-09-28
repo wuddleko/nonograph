@@ -1,0 +1,10 @@
+[package]
+name = "nonograph-parser"
+version = "0.4.6"
+edition = "2021"
+
+[dependencies]
+ammonia = "3.3"
+deunicode = "1.4"
+syntect = { version = "5.1", default-features = false, features = ["default-fancy"] }
+url = "2.4"

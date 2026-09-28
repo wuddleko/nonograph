@@ -1,4 +1,4 @@
-use crate::parser::html_attr_escape;
+use nonograph_parser::html_attr_escape;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -45,19 +45,10 @@ impl TemplateEngine {
             result = result.replace("{{writemark_js}}", &script);
         }
 
-        // Replace all {{variable}} patterns with values from context
-        for (key, value) in context {
-            let pattern = format!("{{{{{}}}}}", key);
-            let escaped_value = if key == "content" {
-                value.clone()
-            } else {
-                html_attr_escape(value)
-            };
-            result = result.replace(&pattern, &escaped_value);
-        }
-
-        // Check for any remaining unreplaced variables and warn
-        if result.contains("{{") && result.contains("}}") {
+        // One pass, so a value that itself contains `{{key}}` is left literal.
+        // A second pass would rewrite tokens inside post HTML and raw markdown.
+        let (result, unreplaced) = substitute_placeholders(&result, context);
+        if unreplaced {
             eprintln!(
                 "Nonograph: Warning: Template {} contains unreplaced variables",
                 template_name
@@ -87,6 +78,48 @@ impl TemplateEngine {
 
         self.render(template_name, &full_context)
     }
+}
+
+fn substitute_placeholders(template: &str, context: &HashMap<String, String>) -> (String, bool) {
+    let mut result = String::with_capacity(template.len());
+    let mut unreplaced = false;
+    let mut rest = template;
+
+    while let Some(start) = rest.find("{{") {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find("}}") {
+            let key = &after[..end];
+            if let Some(value) = context.get(key) {
+                result.push_str(&placeholder_value(key, value));
+                rest = &after[end + 2..];
+                continue;
+            }
+            if is_placeholder_key(key) {
+                unreplaced = true;
+            }
+        }
+        result.push_str("{{");
+        rest = after;
+    }
+
+    result.push_str(rest);
+    (result, unreplaced)
+}
+
+fn placeholder_value(key: &str, value: &str) -> String {
+    if key == "content" || key == "raw_post_json" {
+        value.to_string()
+    } else {
+        html_attr_escape(value)
+    }
+}
+
+fn is_placeholder_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn strip_module_exports_and_line_comments(source: &str) -> String {
@@ -198,5 +231,31 @@ const x = 1;";
         assert!(result.contains("const re = /https:\\/\\//g; // trailing comment stays"));
         assert!(result.contains("const url = \"https://example.com\";"));
         assert!(result.contains("const x = 1;"));
+    }
+
+    #[test]
+    fn test_values_are_not_scanned_for_placeholders() {
+        let dir = tempdir().unwrap();
+        let templates_path = dir.path().to_str().unwrap();
+        let template_content = "<h1>{{title}}</h1><div>{{content}}</div><script type=\"application/json\">{{raw_post_json}}</script>";
+        fs::write(dir.path().join("post.html"), template_content).unwrap();
+
+        let engine = TemplateEngine::new(templates_path);
+        let mut context = HashMap::new();
+        context.insert("title".to_string(), "Real title".to_string());
+        context.insert(
+            "content".to_string(),
+            "<p>See {{title}} and {{content}}</p>".to_string(),
+        );
+        context.insert(
+            "raw_post_json".to_string(),
+            r#""See {{title}} and {{parser_js_path}}""#.to_string(),
+        );
+
+        let result = engine.render("post", &context).unwrap();
+        assert_eq!(
+            result,
+            "<h1>Real title</h1><div><p>See {{title}} and {{content}}</p></div><script type=\"application/json\">\"See {{title}} and {{parser_js_path}}\"</script>"
+        );
     }
 }

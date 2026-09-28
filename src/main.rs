@@ -5,11 +5,11 @@ mod archiver;
 mod config;
 mod nojs;
 mod nostr;
-mod parser;
 mod save;
 mod template;
 
 use config::Config;
+use nonograph_parser as parser;
 use std::thread;
 
 use chrono::{DateTime, Utc};
@@ -19,7 +19,7 @@ use deunicode::deunicode;
 use rand::{thread_rng, Rng};
 use rocket::{
     fairing::{Fairing, Info, Kind},
-    http::{Header, Status},
+    http::{ContentType, Header, Status},
     request::{FromRequest, Outcome},
     response::content,
     Request, Response, State,
@@ -270,7 +270,7 @@ impl Fairing for SecurityHeadersFairing {
         }
     }
 
-    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
+    async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
         // TODO: Refactor HTML and remove unsafe-inline.
         response.set_header(Header::new(
             "Content-Security-Policy",
@@ -281,7 +281,7 @@ impl Fairing for SecurityHeadersFairing {
              img-src 'self' https: http:; \
              media-src 'self' https: http:; \
              object-src 'none'; \
-             script-src 'self' 'unsafe-inline'; \
+             script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
              script-src-attr 'none'; \
              style-src 'self' https: 'unsafe-inline'",
         ));
@@ -299,7 +299,21 @@ impl Fairing for SecurityHeadersFairing {
         response.set_header(Header::new("X-Frame-Options", "SAMEORIGIN"));
         response.set_header(Header::new("X-Permitted-Cross-Domain-Policies", "none"));
         response.set_header(Header::new("X-XSS-Protection", "0"));
-        response.set_header(Header::new("Cache-Control", "no-store, max-age=0"));
+        response.set_header(Header::new(
+            "Cache-Control",
+            cache_control_for_path(request.uri().path().as_str()),
+        ));
+    }
+}
+
+const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
+const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
+
+fn cache_control_for_path(path: &str) -> &'static str {
+    if path == PAGE_JS_PATH || path == PAGE_WASM_PATH {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store, max-age=0"
     }
 }
 
@@ -521,6 +535,47 @@ fn is_valid_csrf_token(token: &str) -> bool {
     }
 }
 
+fn insert_local_parser(context: &mut HashMap<String, String>, raw_content: &str, config: &Config) {
+    context.insert(
+        "raw_post_json".to_string(),
+        json_for_script(&parser::markdown_for_page(raw_content)),
+    );
+    context.insert(
+        "parser_asset_version".to_string(),
+        PARSER_ASSET_VERSION.trim().to_string(),
+    );
+    context.insert("parser_js_path".to_string(), PAGE_JS_PATH.to_string());
+    context.insert("parser_wasm_path".to_string(), PAGE_WASM_PATH.to_string());
+    context.insert(
+        "syntax_theme".to_string(),
+        config.theme.syntax_highlighting.clone(),
+    );
+    context.insert(
+        "max_url_length".to_string(),
+        config.security.max_url_length.to_string(),
+    );
+    context.insert(
+        "external_link_security".to_string(),
+        config.security.external_link_security.to_string(),
+    );
+}
+
+fn json_for_script(value: &str) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
+fn render_options(config: &Config) -> parser::RenderOptions {
+    parser::RenderOptions {
+        max_url_length: config.security.max_url_length,
+        external_link_security: config.security.external_link_security,
+        syntax_theme: config.theme.syntax_highlighting.clone(),
+    }
+}
+
 fn publish_failure_redirect(nojs: bool, failure: PublishFailure) -> rocket::response::Redirect {
     let error = match failure {
         PublishFailure::Relays => "nostr_publish_failed",
@@ -593,7 +648,8 @@ fn handle_create(
         return rocket::response::Redirect::to(format!("{home}?error={error}"));
     }
 
-    let rendered_content = parser::render_markdown_with_config(&form.content, config);
+    let rendered_content =
+        parser::render_markdown_with_config(&form.content, &render_options(config));
     match publish_note(
         storage,
         config,
@@ -697,7 +753,7 @@ fn fetch_missing_note(
         id: fetched.id_hex,
         title: parser::sanitize_text(&fetched.title),
         author: parser::sanitize_text(&fetched.author),
-        content: parser::render_markdown_with_config(&fetched.content, config),
+        content: parser::render_markdown_with_config(&fetched.content, &render_options(config)),
         raw_content: fetched.content,
         created_at,
     };
@@ -780,7 +836,10 @@ fn view_post(
                             id: file_id.to_string(),
                             title,
                             author,
-                            content: parser::render_markdown_with_config(&raw_content, &config),
+                            content: parser::render_markdown_with_config(
+                                &raw_content,
+                                &render_options(config),
+                            ),
                             raw_content,
                             created_at,
                         };
@@ -841,6 +900,7 @@ fn view_post(
             );
             let public_id = if decoded.is_some() { post_id } else { file_id };
             context.insert("post_id".to_string(), public_id.to_string());
+            insert_local_parser(&mut context, &post.raw_content, config);
 
             // OpenGraph variables
             context.insert("url".to_string(), format!("/{}", public_id));
@@ -894,6 +954,21 @@ fn api_page(
     config: &State<Config>,
 ) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
     serve_static_page("api", config)
+}
+
+const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
+const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
+const PARSER_ASSET_VERSION: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/parser_asset_version.txt"));
+
+#[get("/page/nonograph_page.js")]
+fn parser_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, PAGE_JS)
+}
+
+#[get("/page/nonograph_page_bg.wasm")]
+fn parser_wasm() -> (ContentType, &'static [u8]) {
+    (ContentType::new("application", "wasm"), PAGE_WASM)
 }
 
 #[get("/robots.txt")]
@@ -996,7 +1071,8 @@ fn serve_static_page(
             };
 
             if let Some((title, author, created_at, raw_content)) = parsed {
-                let rendered_content = parser::render_markdown_with_config(&raw_content, &config);
+                let rendered_content =
+                    parser::render_markdown_with_config(&raw_content, &render_options(config));
 
                 let engine = TemplateEngine::new("templates");
                 let mut context = HashMap::new();
@@ -1015,6 +1091,7 @@ fn serve_static_page(
                 context.insert("url".to_string(), format!("/{}", page_name));
                 context.insert("description".to_string(), String::new());
                 context.insert("post_id".to_string(), page_name.to_string());
+                insert_local_parser(&mut context, &raw_content, config);
 
                 match engine.render("post", &context) {
                     Ok(html) => Ok(content::RawHtml(html)),
@@ -1122,7 +1199,9 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 robots_txt,
                 nojs_index,
                 nojs_view_post,
-                nojs_create_post
+                nojs_create_post,
+                parser_js,
+                parser_wasm
             ],
         );
 
@@ -1136,6 +1215,33 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parser_assets_are_cacheable() {
+        assert_eq!(
+            cache_control_for_path(PAGE_JS_PATH),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_path(PAGE_WASM_PATH),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(cache_control_for_path("/a-post"), "no-store, max-age=0");
+        assert_eq!(cache_control_for_path("/"), "no-store, max-age=0");
+    }
+
+    #[test]
+    fn parser_asset_routes_match_path_constants() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains(&format!("#[get(\"{PAGE_JS_PATH}\")]")),
+            "route attribute drifted from {PAGE_JS_PATH}"
+        );
+        assert!(
+            source.contains(&format!("#[get(\"{PAGE_WASM_PATH}\")]")),
+            "route attribute drifted from {PAGE_WASM_PATH}"
+        );
+    }
 
     fn assert_unguessable_id(post_id: &str, slug: &str, date: &str) {
         let prefix = format!("{slug}-");

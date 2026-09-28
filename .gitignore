@@ -2,6 +2,9 @@
 /target/
 Cargo.lock
 
+# Cached page bundle. build.rs copies it into OUT_DIR and rebuilds it when sources change.
+/page/pkg/
+
 # Runtime and log files
 nonograph.log
 nonograph.pid

@@ -823,7 +823,14 @@
             <div class="content">
                 <h1>{{title}}</h1>
                 <div class="article-meta">{{author_display}}{{created_at}}</div>
-                <div class="article-content" id="CONTENT">{{content}}</div>
+                <div
+                    class="article-content"
+                    id="CONTENT"
+                    data-syntax-theme="{{syntax_theme}}"
+                    data-max-url-length="{{max_url_length}}"
+                    data-external-link-security="{{external_link_security}}"
+                    data-parser-version="{{parser_asset_version}}"
+                >{{content}}</div>
             </div>
         </div>
 
@@ -876,7 +883,6 @@
         </noscript>
 
         <script>
-            // Secret text reveal functionality
             document.querySelectorAll(".secret").forEach(function (secret) {
                 secret.addEventListener("click", function () {
                     this.classList.toggle("revealed");
@@ -1004,10 +1010,8 @@
                 document.addEventListener("DOMContentLoaded", _doHighlight);
             else _doHighlight();
 
-            // Process pre-rendered code blocks to add interactivity
             document.addEventListener("DOMContentLoaded", function () {
                 document.querySelectorAll("pre").forEach(function (pre) {
-                    // Only process pre elements that have our structure
                     const header = pre.querySelector(".code-header");
                     if (!header) return;
 
@@ -1115,6 +1119,50 @@
                     }
                 });
             });
+        </script>
+        <script type="application/json" id="post-markdown">{{raw_post_json}}</script>
+        <script type="module">
+            var sourceEl = document.getElementById("post-markdown");
+            var content = document.getElementById("CONTENT");
+            if (sourceEl && content && sourceEl.textContent) {
+                // Taken before DOMContentLoaded. Selection highlighting and the
+                // code-block buttons change #CONTENT after this module starts.
+                var serverHtml = content.innerHTML;
+                var version = content.dataset.parserVersion || "";
+                var query = "?v=" + encodeURIComponent(version);
+                import("{{parser_js_path}}" + query)
+                    .then(function (mod) {
+                        return mod
+                            .default({
+                                module_or_path: "{{parser_wasm_path}}" + query,
+                            })
+                            .then(function () {
+                                return mod.render_markdown;
+                            });
+                    })
+                    .then(function (renderMarkdown) {
+                        var markdown = JSON.parse(sourceEl.textContent);
+                        var theme = content.dataset.syntaxTheme;
+                        var maxUrlLength = Number(content.dataset.maxUrlLength);
+                        var externalLinks = content.dataset.externalLinkSecurity !== "false";
+                        var html = renderMarkdown(markdown, theme, maxUrlLength, externalLinks);
+                        var local = new DOMParser().parseFromString(
+                            '<div id="local">' + html + "</div>",
+                            "text/html",
+                        );
+                        var localRoot = local.getElementById("local");
+                        if (localRoot && localRoot.innerHTML.trim() === serverHtml.trim()) {
+                            content.dataset.renderer = "local";
+                        } else {
+                            console.warn(
+                                "Local markdown renderer disagreed with the server HTML",
+                            );
+                        }
+                    })
+                    .catch(function (error) {
+                        console.error(error);
+                    });
+            }
         </script>
     </body>
     <!-- Published with Nonograph, an open-source writing service -->

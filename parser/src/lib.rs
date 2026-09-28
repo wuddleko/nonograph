@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
@@ -7,7 +8,7 @@ use syntect::util::LinesWithEndings;
 use url::Url;
 
 fn process_images(text: &str) -> String {
-    process_images_with_config(text, &crate::config::Config::default())
+    process_images_with_config(text, &RenderOptions::default())
 }
 
 fn is_ip_blocked(ip: IpAddr) -> bool {
@@ -126,12 +127,28 @@ fn is_safe_url(url: &str) -> bool {
     true
 }
 
-#[allow(dead_code)]
-pub fn render_markdown(content: &str) -> String {
-    render_markdown_with_config(content, &crate::config::Config::default())
+pub struct RenderOptions {
+    pub max_url_length: usize,
+    pub external_link_security: bool,
+    pub syntax_theme: String,
 }
 
-pub fn render_markdown_with_config(content: &str, config: &crate::config::Config) -> String {
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            max_url_length: 4096,
+            external_link_security: true,
+            syntax_theme: "base16-ocean.dark".to_string(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn render_markdown(content: &str) -> String {
+    render_markdown_with_config(content, &RenderOptions::default())
+}
+
+pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> String {
     let cleaned_content = remove_standalone_list_tags(content);
 
     let (protected_content, fenced_blocks) = extract_fenced_code_blocks(&cleaned_content);
@@ -179,7 +196,7 @@ pub fn render_markdown_with_config(content: &str, config: &crate::config::Config
     sanitize_html(working_content)
 }
 
-fn process_images_with_config(text: &str, config: &crate::config::Config) -> String {
+fn process_images_with_config(text: &str, config: &RenderOptions) -> String {
     let mut result = String::with_capacity(text.len() + 1024);
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -216,7 +233,7 @@ fn process_images_with_config(text: &str, config: &crate::config::Config) -> Str
                             chars[(bracket_end_idx + 2)..paren_end_idx].iter().collect();
 
                         if !image_url.is_empty()
-                            && image_url.len() <= config.security.max_url_length
+                            && image_url.len() <= config.max_url_length
                             && is_safe_url(&image_url)
                         {
                             let is_video = is_video_url(&image_url);
@@ -307,7 +324,7 @@ fn get_video_mime_type(url: &str) -> &'static str {
 }
 
 fn process_links(text: &str) -> String {
-    process_links_with_config(text, &crate::config::Config::default())
+    process_links_with_config(text, &RenderOptions::default())
 }
 
 fn safe_replace(
@@ -535,55 +552,24 @@ fn extract_fenced_code_blocks(text: &str) -> (String, Vec<(String, String, u32)>
         let line = lines[i];
 
         // Check if this line starts a fenced code block
-        if line.starts_with("```") {
-            // Count the fence length
+        if let Some(end) = fenced_block_end(&lines, i) {
             let fence_length = line.chars().take_while(|&c| c == '`').count();
             let language = sanitize_language(line[fence_length..].trim());
-            let mut code_content = String::new();
-            let mut found_end = false;
-
-            // Look for the closing fence with same or greater length
-            for j in (i + 1)..lines.len() {
-                let closing_line = lines[j];
-                if closing_line.starts_with("```") {
-                    let closing_fence_length =
-                        closing_line.chars().take_while(|&c| c == '`').count();
-                    // Closing fence must be at least as long as opening fence
-                    if closing_fence_length >= fence_length {
-                        // Found closing fence
-                        let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", fenced_blocks.len());
-                        // Count lines in code content (minimum 1, maximum 999)
-                        let line_count = if code_content.is_empty() {
-                            1
-                        } else {
-                            let count = code_content.lines().count() as u32;
-                            count.clamp(1, 999)
-                        };
-                        fenced_blocks.push((language, code_content, line_count));
-                        result.push_str(&placeholder);
-                        if i < lines.len() - 1 || text.ends_with('\n') {
-                            result.push('\n');
-                        }
-                        i = j + 1;
-                        found_end = true;
-                        break;
-                    }
-                }
-                // Add line to code content (including lines with shorter fences)
-                if !code_content.is_empty() {
-                    code_content.push('\n');
-                }
-                code_content.push_str(lines[j]);
+            let code_content = lines[(i + 1)..end].join("\n");
+            // Count lines in code content (minimum 1, maximum 999)
+            let line_count = if code_content.is_empty() {
+                1
+            } else {
+                let count = code_content.lines().count() as u32;
+                count.clamp(1, 999)
+            };
+            let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", fenced_blocks.len());
+            fenced_blocks.push((language, code_content, line_count));
+            result.push_str(&placeholder);
+            if i < lines.len() - 1 || text.ends_with('\n') {
+                result.push('\n');
             }
-
-            // If no closing fence found, treat as regular text
-            if !found_end {
-                result.push_str(line);
-                if i < lines.len() - 1 {
-                    result.push('\n');
-                }
-                i += 1;
-            }
+            i = end + 1;
         } else {
             // Regular line
             result.push_str(line);
@@ -833,7 +819,7 @@ fn map_language_for_syntect(lang: &str) -> &str {
 
 #[allow(dead_code)]
 fn restore_fenced_code_blocks(text: &str, fenced_blocks: &[(String, String, u32)]) -> String {
-    restore_fenced_code_blocks_with_config(text, fenced_blocks, &crate::config::Config::default())
+    restore_fenced_code_blocks_with_config(text, fenced_blocks, &RenderOptions::default())
 }
 
 fn process_lists(text: &str) -> String {
@@ -1105,24 +1091,19 @@ fn render_list_tree(items: &[ListItem]) -> String {
 fn restore_fenced_code_blocks_with_config(
     text: &str,
     fenced_blocks: &[(String, String, u32)],
-    config: &crate::config::Config,
+    config: &RenderOptions,
 ) -> String {
     let mut result = text.to_string();
 
-    // Initialize syntax highlighting
-    let ps = SyntaxSet::load_defaults_newlines();
-    let ts = ThemeSet::load_defaults();
+    let (ps, ts) = syntax_and_themes();
 
-    let theme = ts
-        .themes
-        .get(&config.theme.syntax_highlighting)
-        .unwrap_or_else(|| {
-            eprintln!(
-                "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
-                config.theme.syntax_highlighting
-            );
-            &ts.themes["base16-ocean.dark"]
-        });
+    let theme = ts.themes.get(&config.syntax_theme).unwrap_or_else(|| {
+        eprintln!(
+            "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
+            config.syntax_theme
+        );
+        &ts.themes["base16-ocean.dark"]
+    });
 
     for (index, (language, code_content, line_count)) in fenced_blocks.iter().enumerate() {
         let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", index);
@@ -1142,6 +1123,15 @@ fn restore_fenced_code_blocks_with_config(
     }
 
     result
+}
+
+fn syntax_and_themes() -> (&'static SyntaxSet, &'static ThemeSet) {
+    static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
+    static THEMES: OnceLock<ThemeSet> = OnceLock::new();
+    (
+        SYNTAX.get_or_init(SyntaxSet::load_defaults_newlines),
+        THEMES.get_or_init(ThemeSet::load_defaults),
+    )
 }
 
 fn render_code_block(
@@ -1717,21 +1707,73 @@ fn restore_code_blocks(text: &str, code_blocks: &[String]) -> String {
     result
 }
 
-fn process_comments(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::new();
+fn is_comment_line(line: &str) -> bool {
+    line.trim_start().starts_with("// ")
+}
 
-    for line in lines {
-        // Check if line starts with "// " (comment syntax)
-        if line.trim_start().starts_with("// ") {
-            // Skip comment lines - they won't appear in HTML output
+fn process_comments(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !is_comment_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Markdown safe to embed in a page.
+///
+/// Prose comments (`// ` at the start of a line) are omitted, including indented
+/// ones. Comments inside fenced code blocks stay, matching [`process_comments`],
+/// which runs only after fences have been extracted. The result renders the same
+/// HTML as `content`. When there is nothing to omit, `content` is returned unchanged.
+pub fn markdown_for_page(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut kept = Vec::with_capacity(lines.len());
+    let mut removed = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        if let Some(end) = fenced_block_end(&lines, i) {
+            kept.extend_from_slice(&lines[i..=end]);
+            i = end + 1;
             continue;
-        } else {
-            result.push(line);
+        }
+
+        if is_comment_line(lines[i]) {
+            removed = true;
+            i += 1;
+            continue;
+        }
+
+        kept.push(lines[i]);
+        i += 1;
+    }
+
+    if !removed {
+        content.to_string()
+    } else {
+        kept.join("\n")
+    }
+}
+
+fn fenced_block_end(lines: &[&str], index: usize) -> Option<usize> {
+    let line = lines[index];
+    if !line.starts_with("```") {
+        return None;
+    }
+
+    let fence_length = line.chars().take_while(|&c| c == '`').count();
+    for end in (index + 1)..lines.len() {
+        let closing = lines[end];
+        if !closing.starts_with("```") {
+            continue;
+        }
+        let closing_length = closing.chars().take_while(|&c| c == '`').count();
+        if closing_length >= fence_length {
+            return Some(end);
         }
     }
 
-    result.join("\n")
+    None
 }
 
 fn process_footnotes(content: &str) -> String {
@@ -1894,7 +1936,7 @@ fn restore_footnotes(text: &str) -> String {
     result
 }
 
-fn process_links_with_config(text: &str, config: &crate::config::Config) -> String {
+fn process_links_with_config(text: &str, config: &RenderOptions) -> String {
     let mut result = String::with_capacity(text.len() + 1024);
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -1932,11 +1974,11 @@ fn process_links_with_config(text: &str, config: &crate::config::Config) -> Stri
 
                         if !link_text.is_empty()
                             && !link_url.is_empty()
-                            && link_url.len() <= config.security.max_url_length
+                            && link_url.len() <= config.max_url_length
                         {
                             result.push_str("<a href=\"");
                             result.push_str(&link_url);
-                            if config.security.external_link_security {
+                            if config.external_link_security {
                                 result.push_str("\" target=\"_blank\">");
                             } else {
                                 result.push_str("\">");
@@ -1951,11 +1993,10 @@ fn process_links_with_config(text: &str, config: &crate::config::Config) -> Stri
 
                 // Check for [url] pattern (bare URL in brackets)
                 let link_url: String = chars[(i + 1)..bracket_end_idx].iter().collect();
-                if link_url.len() <= config.security.max_url_length && link_url.starts_with("http")
-                {
+                if link_url.len() <= config.max_url_length && link_url.starts_with("http") {
                     result.push_str("<a href=\"");
                     result.push_str(&link_url);
-                    if config.security.external_link_security {
+                    if config.external_link_security {
                         result.push_str("\" target=\"_blank\">");
                     } else {
                         result.push_str("\">");
@@ -2377,11 +2418,9 @@ var x = 1;
     #[test]
     fn test_theme_configuration() {
         // Test with valid theme
-        let config = crate::config::Config {
-            theme: crate::config::Theme {
-                syntax_highlighting: "Solarized (light)".to_string(),
-            },
-            ..Default::default()
+        let config = RenderOptions {
+            syntax_theme: "Solarized (light)".to_string(),
+            ..RenderOptions::default()
         };
 
         let code = "```rust\nlet x = 5;\n```";
@@ -2392,11 +2431,9 @@ var x = 1;
         assert!(result.contains("5"));
 
         // Test with invalid theme (should fall back to default)
-        let invalid_config = crate::config::Config {
-            theme: crate::config::Theme {
-                syntax_highlighting: "NonExistentTheme".to_string(),
-            },
-            ..Default::default()
+        let invalid_config = RenderOptions {
+            syntax_theme: "NonExistentTheme".to_string(),
+            ..RenderOptions::default()
         };
 
         let invalid_result = render_markdown_with_config(code, &invalid_config);
@@ -3860,6 +3897,20 @@ Final paragraph with normal text."#;
         assert!(result.contains("This is normal text"));
         assert!(result.contains("More normal text"));
         assert!(result.contains("Final text"));
+    }
+
+    #[test]
+    fn markdown_for_page_omits_prose_comments_and_renders_the_same() {
+        let input = "Visible line\r\n// hidden note\r\n\r\n```javascript\r\n// kept in code\r\nlet x = 1;\r\n```\r\n// also hidden\r\n`// not a comment`\r\nDone\n";
+        let page = markdown_for_page(input);
+
+        assert!(!page.contains("hidden note"));
+        assert!(!page.contains("also hidden"));
+        assert!(page.contains("// kept in code"));
+        assert!(page.contains("`// not a comment`"));
+        assert_eq!(render_markdown(input), render_markdown(&page));
+        assert_eq!(markdown_for_page("nothing to hide"), "nothing to hide");
+        assert_eq!(render_markdown("// only a comment"), render_markdown(""));
     }
 
     #[test]
