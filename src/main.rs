@@ -321,7 +321,8 @@ const MAX_POST_ID_LEN: usize = 255;
 /// A valid identifier is a non-empty, length-bounded slug composed only of
 /// ASCII letters, digits, hyphens, and underscores. Every identifier the
 /// application produces satisfies this: [`generate_post_id`] emits
-/// `[a-z0-9-]`, the static pages are lowercase words, and the Telegraph
+/// `[a-z0-9-]` with a 32-character hex segment between the slug and the
+/// date, the static pages are lowercase words, and the Telegraph
 /// archiver yields `[A-Za-z0-9_-]` slugs.
 ///
 /// This is the trust boundary for untrusted path input. Because `.`, `/`, and
@@ -336,9 +337,24 @@ fn is_valid_post_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// 16 random bytes, hex-encoded. Sits between the slug and the date so the
+/// address cannot be rebuilt from the title.
+fn generate_unguessable_segment() -> String {
+    let mut rng = thread_rng();
+    (0..16).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+}
+
 fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
     let now = Utc::now();
     let date_str = now.format("%m-%d-%Y").to_string();
+    let random = generate_unguessable_segment();
+    let make_id = |slug: &str, i: usize| {
+        if i == 0 {
+            format!("{slug}-{random}-{date_str}")
+        } else {
+            format!("{slug}-{random}-{date_str}-{i}")
+        }
+    };
 
     // Transliterate ALL characters to ASCII equivalents (safe for all input)
     let transliterated_title = deunicode(title);
@@ -363,8 +379,9 @@ fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String
         .collect::<Vec<&str>>()
         .join("-");
 
-    // Apply character limit with truncation if needed
-    let max_slug_length = 250 - date_str.len() - 1; // Reserve space for "-{date}"
+    // Apply character limit with truncation if needed.
+    // "-{32 hex}" is 33 characters, then "-{date}".
+    let max_slug_length = 250 - date_str.len() - 1 - 33;
     let final_slug = if title_slug.len() > max_slug_length {
         let truncate_to = max_slug_length.saturating_sub(4); // Reserve space for "-etc"
         if truncate_to > 0 {
@@ -393,11 +410,7 @@ fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String
         let posts = storage.lock().unwrap();
 
         for i in 0..1000 {
-            let post_id = if i == 0 {
-                format!("{}-{}", fallback_slug, date_str)
-            } else {
-                format!("{}-{}-{}", fallback_slug, date_str, i)
-            };
+            let post_id = make_id(&fallback_slug, i);
 
             if !posts.contains_key(&post_id) {
                 return Ok(post_id);
@@ -413,11 +426,7 @@ fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String
 
     // Try to find an available slot (0-999)
     for i in 0..1000 {
-        let post_id = if i == 0 {
-            format!("{}-{}", final_slug, date_str)
-        } else {
-            format!("{}-{}-{}", final_slug, date_str, i)
-        };
+        let post_id = make_id(&final_slug, i);
 
         if !posts.contains_key(&post_id) {
             return Ok(post_id);
@@ -1114,17 +1123,42 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 mod tests {
     use super::*;
 
+    fn assert_unguessable_id(post_id: &str, slug: &str, date: &str) {
+        let prefix = format!("{slug}-");
+        assert!(
+            post_id.starts_with(&prefix),
+            "id {post_id} should start with {prefix}"
+        );
+        let after_slug = &post_id[prefix.len()..];
+        let date_marker = format!("-{date}");
+        let date_at = after_slug
+            .find(&date_marker)
+            .unwrap_or_else(|| panic!("id {post_id} should contain {date_marker}"));
+        let random = &after_slug[..date_at];
+        assert_eq!(random.len(), 32, "random segment in {post_id}");
+        assert!(
+            random.chars().all(|c| c.is_ascii_hexdigit()),
+            "random segment {random} in {post_id}"
+        );
+        let rest = &after_slug[date_at + 1..];
+        let collision = rest
+            .strip_prefix(&format!("{date}-"))
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        assert!(rest == date || collision, "tail {rest} in {post_id}");
+    }
+
     #[test]
     fn test_post_id_generation() {
         let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
 
         let id1 = generate_post_id("Hello World", &storage).unwrap();
-        assert!(id1.contains("hello-world"));
-        assert!(id1.contains(&Utc::now().format("%m-%d-%Y").to_string()));
+        assert_unguessable_id(&id1, "hello-world", &date_str);
 
         // Test with special characters
         let id2 = generate_post_id("Hello, World! & More", &storage).unwrap();
-        assert!(id2.contains("hello-world-more"));
+        assert_unguessable_id(&id2, "hello-world-more", &date_str);
+        assert_ne!(id1, id2);
     }
 
     #[test]
@@ -1132,7 +1166,13 @@ mod tests {
         // Slugs produced by generate_post_id and the static pages.
         assert!(is_valid_post_id("hello-world-09-01-2026"));
         assert!(is_valid_post_id("hello-world-09-01-2026-3"));
+        assert!(is_valid_post_id(
+            "hello-world-0123456789abcdef0123456789abcdef-09-01-2026"
+        ));
         assert!(is_valid_post_id("na-ab12-09-01-2026"));
+        assert!(is_valid_post_id(
+            "na-ab12-0123456789abcdef0123456789abcdef-09-01-2026"
+        ));
         assert!(is_valid_post_id("about"));
         // Telegraph archiver slugs may contain uppercase and underscores.
         assert!(is_valid_post_id("Sample-Page-12-15"));
@@ -1490,38 +1530,30 @@ mod tests {
 
     #[test]
     fn test_post_id_collision_handling() {
-        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let now = Utc::now();
+        let date_str = now.format("%m-%d-%Y").to_string();
+        let id = format!("test-0123456789abcdef0123456789abcdef-{date_str}");
 
-        // Pre-populate with posts to test collision handling
-        {
-            let mut posts = storage.lock().unwrap();
-            let now = Utc::now();
-            let date_str = now.format("%m-%d-%Y").to_string();
+        let first = Post {
+            id: id.clone(),
+            title: "Test".to_string(),
+            author: "Test Author".to_string(),
+            content: "Content".to_string(),
+            raw_content: "first body".to_string(),
+            created_at: now,
+        };
+        save::save_post_to_file_in_dir(&first, base).unwrap();
+        let path = dir.path().join("content").join(format!("{id}.md"));
+        let first_bytes = std::fs::read(&path).unwrap();
 
-            // Add posts that would collide
-            for i in 0..3 {
-                let id = if i == 0 {
-                    format!("test-{}", date_str)
-                } else {
-                    format!("test-{}-{}", date_str, i)
-                };
-
-                let post = Post {
-                    id: id.clone(),
-                    title: "Test".to_string(),
-                    author: "Test Author".to_string(),
-                    content: "Content".to_string(),
-                    raw_content: "Content".to_string(),
-                    created_at: now,
-                };
-                posts.insert(id, post);
-            }
-        }
-
-        // This should generate "test-MM-dd-YYYY-3"
-        let new_id = generate_post_id("Test", &storage).unwrap();
-        let date_str = Utc::now().format("%m-%d-%Y").to_string();
-        assert_eq!(new_id, format!("test-{}-3", date_str));
+        let second = Post {
+            raw_content: "second body".to_string(),
+            ..first
+        };
+        assert!(save::save_post_to_file_in_dir(&second, base).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), first_bytes);
     }
 
     #[test]
@@ -1694,13 +1726,7 @@ mod tests {
 
             let post_id = result.unwrap();
             let date_str = Utc::now().format("%m-%d-%Y").to_string();
-            let expected_id = format!("{}-{}", expected_slug, date_str);
-
-            assert_eq!(
-                post_id, expected_id,
-                "Title '{}' should produce '{}' but got '{}'",
-                title, expected_id, post_id
-            );
+            assert_unguessable_id(&post_id, expected_slug, &date_str);
         }
 
         // Test languages that might not transliterate well - just verify they don't use na- fallback
@@ -1772,13 +1798,7 @@ mod tests {
 
             let post_id = result.unwrap();
             let date_str = Utc::now().format("%m-%d-%Y").to_string();
-            let expected_id = format!("{}-{}", expected_slug, date_str);
-
-            assert_eq!(
-                post_id, expected_id,
-                "Title '{}' should transliterate to '{}' but got: {}",
-                title, expected_id, post_id
-            );
+            assert_unguessable_id(&post_id, expected_slug, &date_str);
         }
 
         // Test cases that should still use na- fallback (only for empty slugs)
@@ -1788,6 +1808,7 @@ mod tests {
             "!!!", // Only punctuation that doesn't transliterate
         ];
 
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
         for title in fallback_cases {
             let result = generate_post_id(title, &storage);
             assert!(result.is_ok(), "Failed to generate ID for: '{}'", title);
@@ -1799,6 +1820,12 @@ mod tests {
                 title,
                 post_id
             );
+            let short = &post_id[3..7];
+            assert!(
+                short.chars().all(|c| c.is_ascii_alphanumeric()),
+                "na- suffix in {post_id}"
+            );
+            assert_unguessable_id(&post_id, &format!("na-{short}"), &date_str);
         }
     }
 
@@ -1841,7 +1868,7 @@ mod tests {
 
         let medium_id = medium_result.unwrap();
         assert!(!medium_id.contains("-etc-"));
-        assert_eq!(medium_id, format!("short-title-test-{}", date_str));
+        assert_unguessable_id(&medium_id, "short-title-test", &date_str);
 
         // Test very short title that would become empty after truncation
         let symbol_title = "©™®".repeat(200);
@@ -1877,13 +1904,7 @@ mod tests {
 
             let post_id = result.unwrap();
             let date_str = Utc::now().format("%m-%d-%Y").to_string();
-            let expected_id = format!("{}-{}", expected_slug, date_str);
-
-            assert_eq!(
-                post_id, expected_id,
-                "Title '{}' should produce '{}' but got '{}'",
-                title, expected_id, post_id
-            );
+            assert_unguessable_id(&post_id, expected_slug, &date_str);
         }
 
         // Verify that deunicode is consistently applied by checking edge cases
@@ -1954,13 +1975,7 @@ mod tests {
 
             let post_id = result.unwrap();
             let date_str = Utc::now().format("%m-%d-%Y").to_string();
-            let expected_id = format!("{}-{}", expected_slug, date_str);
-
-            assert_eq!(
-                post_id, expected_id,
-                "Malicious title '{}' was not properly sanitized. Expected: '{}', Got: '{}'",
-                malicious_title, expected_id, post_id
-            );
+            assert_unguessable_id(&post_id, expected_slug, &date_str);
 
             // Ensure the result is safe for URLs
             assert!(

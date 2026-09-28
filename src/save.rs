@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use crate::Post;
@@ -32,7 +33,14 @@ pub fn save_post_to_file_in_dir(post: &Post, base_dir: &str) -> Result<(), Strin
 
     let file_content = format!("{}{}", frontmatter, post.raw_content);
 
-    fs::write(&file_path, file_content)
+    // create_new refuses when content/{id}.md is already there, so a second
+    // save of one id cannot replace the first body.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file_path)
+        .map_err(|e| format!("Failed to write post to file {:?}: {}", file_path, e))?;
+    file.write_all(file_content.as_bytes())
         .map_err(|e| format!("Failed to write post to file {:?}: {}", file_path, e))?;
 
     Ok(())
