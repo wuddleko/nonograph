@@ -60,3 +60,13 @@ csrf_protection_enabled = true
 # "base16-mocha.dark", "base16-mocha.light", "base16-eighties.dark",
 # "base16-eighties.light", "Solarized (dark)", "Solarized (light)", "InspiredGitHub"
 syntax_highlighting = "InspiredGitHub"
+
+[nostr]
+# Relays that receive each published note. The link includes the ones that accept it.
+relays = [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.nostr.band",
+]
+# How long to wait for a relay, in seconds. The wait is the slowest relay, not the sum.
+timeout_secs = 3

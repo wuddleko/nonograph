@@ -10,6 +10,8 @@ pub struct Config {
     pub performance: Performance,
     pub security: Security,
     pub theme: Theme,
+    #[serde(default)]
+    pub nostr: Nostr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +59,35 @@ pub struct Theme {
     pub syntax_highlighting: String,
 }
 
+fn default_relays() -> Vec<String> {
+    vec![
+        "wss://relay.damus.io".to_string(),
+        "wss://nos.lol".to_string(),
+        "wss://relay.nostr.band".to_string(),
+    ]
+}
+
+fn default_nostr_timeout_secs() -> u64 {
+    3
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Nostr {
+    #[serde(default = "default_relays")]
+    pub relays: Vec<String>,
+    #[serde(default = "default_nostr_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for Nostr {
+    fn default() -> Self {
+        Self {
+            relays: default_relays(),
+            timeout_secs: default_nostr_timeout_secs(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -89,6 +120,7 @@ impl Default for Config {
             theme: Theme {
                 syntax_highlighting: "base16-ocean.dark".to_string(),
             },
+            nostr: Nostr::default(),
         }
     }
 }
@@ -231,6 +263,8 @@ mod tests {
         assert_eq!(config.limits.alias_max_length, 32);
         assert_eq!(config.limits.content_max_length, 128000);
         assert_eq!(config.server.port, 8000);
+        assert_eq!(config.nostr.relays.len(), 3);
+        assert_eq!(config.nostr.timeout_secs, 3);
     }
 
     #[test]
