@@ -4,15 +4,26 @@ use std::path::Path;
 
 use crate::Post;
 
-pub fn save_post_to_file(post: &Post) -> Result<(), String> {
-    save_post_to_file_in_dir(post, ".")
+#[derive(Debug)]
+pub enum SaveError {
+    AlreadyExists,
+    Io(String),
 }
 
-pub fn save_post_to_file_in_dir(post: &Post, base_dir: &str) -> Result<(), String> {
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::AlreadyExists => write!(f, "post file already exists"),
+            SaveError::Io(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+pub fn save_post_to_file_in_dir(post: &Post, base_dir: &str) -> Result<(), SaveError> {
     let content_dir = Path::new(base_dir).join("content");
     if !content_dir.exists() {
         fs::create_dir_all(&content_dir)
-            .map_err(|e| format!("Failed to create content directory: {}", e))?;
+            .map_err(|e| SaveError::Io(format!("Failed to create content directory: {}", e)))?;
     }
 
     let filename = format!("{}.md", post.id);
@@ -35,13 +46,29 @@ pub fn save_post_to_file_in_dir(post: &Post, base_dir: &str) -> Result<(), Strin
 
     // create_new refuses when content/{id}.md is already there, so a second
     // save of one id cannot replace the first body.
-    let mut file = fs::OpenOptions::new()
+    let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&file_path)
-        .map_err(|e| format!("Failed to write post to file {:?}: {}", file_path, e))?;
-    file.write_all(file_content.as_bytes())
-        .map_err(|e| format!("Failed to write post to file {:?}: {}", file_path, e))?;
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(SaveError::AlreadyExists);
+        }
+        Err(e) => {
+            return Err(SaveError::Io(format!(
+                "Failed to write post to file {:?}: {}",
+                file_path, e
+            )));
+        }
+    };
+    if let Err(e) = file.write_all(file_content.as_bytes()) {
+        let _ = fs::remove_file(&file_path);
+        return Err(SaveError::Io(format!(
+            "Failed to write post to file {:?}: {}",
+            file_path, e
+        )));
+    }
 
     Ok(())
 }

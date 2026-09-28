@@ -1246,8 +1246,7 @@ fn format_paragraphs_with_headers(text: &str) -> String {
         // Check for blockquotes
         else if trimmed.lines().any(|line| line.trim().starts_with("> ")) {
             result.push_str(&process_single_blockquote(trimmed));
-        }
-        else if (trimmed.contains("{{FENCEDBLOCK") || trimmed.contains("<table>"))
+        } else if (trimmed.contains("{{FENCEDBLOCK") || trimmed.contains("<table>"))
             && !trimmed.starts_with("{{FENCEDBLOCK")
             && !trimmed.starts_with("<table>")
         {

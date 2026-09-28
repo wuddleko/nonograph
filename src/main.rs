@@ -9,7 +9,6 @@ mod save;
 mod template;
 
 use config::Config;
-use std::sync::mpsc;
 use std::thread;
 
 use chrono::{DateTime, Utc};
@@ -172,7 +171,14 @@ impl PostCache {
 }
 
 type PostStorage = Arc<Mutex<PostCache>>;
-type FileSaveQueue = Mutex<mpsc::Sender<Post>>;
+
+const CLAIM_ATTEMPTS: usize = 8;
+
+#[derive(Debug)]
+enum ClaimFailure {
+    NoSlots,
+    Io(String),
+}
 
 #[get("/")]
 fn index(config: &State<Config>) -> content::RawHtml<String> {
@@ -518,12 +524,81 @@ fn is_valid_csrf_token(token: &str) -> bool {
     }
 }
 
+fn claim_new_post(
+    storage: &PostStorage,
+    title: &str,
+    author: &str,
+    rendered_content: &str,
+    raw_content: &str,
+) -> Result<String, ClaimFailure> {
+    claim_new_post_in_dir(
+        storage,
+        ".",
+        title,
+        author,
+        rendered_content,
+        raw_content,
+        generate_unguessable_segment,
+    )
+}
+
+fn claim_new_post_in_dir(
+    storage: &PostStorage,
+    base_dir: &str,
+    title: &str,
+    author: &str,
+    rendered_content: &str,
+    raw_content: &str,
+    mut next_segment: impl FnMut() -> String,
+) -> Result<String, ClaimFailure> {
+    let created_at = Utc::now();
+    for _ in 0..CLAIM_ATTEMPTS {
+        let random = next_segment();
+        let post_id = match generate_post_id_with_segment(title, storage, &random) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let post = Post {
+            id: post_id.clone(),
+            title: parser::sanitize_text(title),
+            author: parser::sanitize_text(author),
+            content: rendered_content.to_string(),
+            raw_content: raw_content.to_string(),
+            created_at,
+        };
+        match save::save_post_to_file_in_dir(&post, base_dir) {
+            Ok(()) => {
+                storage.lock().unwrap().insert(post_id.clone(), post);
+                return Ok(post_id);
+            }
+            Err(save::SaveError::AlreadyExists) => continue,
+            Err(save::SaveError::Io(message)) => return Err(ClaimFailure::Io(message)),
+        }
+    }
+    Err(ClaimFailure::NoSlots)
+}
+
+fn claim_failure_redirect(nojs: bool, failure: ClaimFailure) -> rocket::response::Redirect {
+    let error = match failure {
+        ClaimFailure::NoSlots => "no_available_slots",
+        ClaimFailure::Io(message) => {
+            eprintln!("Nonograph: Failed to save post: {message}");
+            "save_failed"
+        }
+    };
+    let url = if nojs {
+        format!("/nojs/?error={error}")
+    } else {
+        format!("/?error={error}")
+    };
+    rocket::response::Redirect::to(url)
+}
+
 #[post("/create", data = "<form>")]
 fn create_post(
     _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
-    file_queue: &State<FileSaveQueue>,
     config: &State<Config>,
 ) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
     if config.security.csrf_protection_enabled {
@@ -543,38 +618,17 @@ fn create_post(
         return Ok(rocket::response::Redirect::to(error_url));
     }
 
-    let post_id = match generate_post_id(&form.title, storage) {
-        Ok(id) => id,
-        Err(_) => return Ok(rocket::response::Redirect::to("/?error=no_available_slots")),
-    };
-
     let rendered_content = parser::render_markdown_with_config(&form.content, &config);
-
-    let post = Post {
-        id: post_id.clone(),
-        title: parser::sanitize_text(&form.title),
-        author: parser::sanitize_text(&form.alias),
-        content: rendered_content,
-        raw_content: form.content.clone(),
-        created_at: Utc::now(),
-    };
-
-    let post_for_file = post.clone();
-    {
-        let mut posts = storage.lock().unwrap();
-        posts.insert(post_id.clone(), post); // Move post here
+    match claim_new_post(
+        storage,
+        &form.title,
+        &form.alias,
+        &rendered_content,
+        &form.content,
+    ) {
+        Ok(post_id) => Ok(rocket::response::Redirect::to(format!("/{}", post_id))),
+        Err(failure) => Ok(claim_failure_redirect(false, failure)),
     }
-
-    if let Ok(tx) = file_queue.lock() {
-        if let Err(_) = tx.send(post_for_file) {
-            eprintln!(
-                "Nonograph: Failed to queue post for background save: {}",
-                post_id
-            );
-        }
-    }
-
-    Ok(rocket::response::Redirect::to(format!("/{}", post_id)))
 }
 
 fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
@@ -876,7 +930,6 @@ fn nojs_create_post(
     _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
-    file_queue: &State<FileSaveQueue>,
     config: &State<Config>,
 ) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
     if config.security.csrf_protection_enabled {
@@ -896,42 +949,17 @@ fn nojs_create_post(
         return Ok(rocket::response::Redirect::to(error_url));
     }
 
-    let post_id = match generate_post_id(&form.title, storage) {
-        Ok(id) => id,
-        Err(_) => {
-            return Ok(rocket::response::Redirect::to(
-                "/nojs/?error=no_available_slots",
-            ))
-        }
-    };
-
     let rendered_content = parser::render_markdown_with_config(&form.content, &config);
-
-    let post = Post {
-        id: post_id.clone(),
-        title: parser::sanitize_text(&form.title),
-        author: parser::sanitize_text(&form.alias),
-        content: rendered_content,
-        raw_content: form.content.clone(),
-        created_at: Utc::now(),
-    };
-
-    let post_for_file = post.clone();
-    {
-        let mut posts = storage.lock().unwrap();
-        posts.insert(post_id.clone(), post); // Move post here
+    match claim_new_post(
+        storage,
+        &form.title,
+        &form.alias,
+        &rendered_content,
+        &form.content,
+    ) {
+        Ok(post_id) => Ok(rocket::response::Redirect::to(format!("/nojs/{}", post_id))),
+        Err(failure) => Ok(claim_failure_redirect(true, failure)),
     }
-
-    if let Ok(tx) = file_queue.lock() {
-        if let Err(_) = tx.send(post_for_file) {
-            eprintln!(
-                "Nonograph: Failed to queue post for background save: {}",
-                post_id
-            );
-        }
-    }
-
-    Ok(rocket::response::Redirect::to(format!("/nojs/{}", post_id)))
 }
 
 const NOT_FOUND_HTML: &str = r#"<!doctype html>
@@ -1019,23 +1047,6 @@ fn start_cache_purge_worker(storage: PostStorage, interval_mins: u64) {
     });
 }
 
-fn start_file_save_worker() -> mpsc::Sender<Post> {
-    let (tx, rx) = mpsc::channel::<Post>();
-
-    thread::spawn(move || {
-        for post in rx {
-            if let Err(e) = save::save_post_to_file(&post) {
-                eprintln!(
-                    "Nonograph: Background file save failed for post {}: {}",
-                    post.id, e
-                );
-            }
-        }
-    });
-
-    tx
-}
-
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
     let args: Vec<String> = std::env::args().collect();
@@ -1080,7 +1091,6 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 
     let storage = Arc::new(Mutex::new(PostCache::new(config.cache.max_cache_size_mb)));
     start_cache_purge_worker(Arc::clone(&storage), config.cache.cache_purge_interval_mins);
-    let file_save_sender = start_file_save_worker();
 
     let onion_url = config.resolve_onion_url();
     match &onion_url {
@@ -1103,7 +1113,6 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         })
         .attach(SecurityHeadersFairing)
         .manage(storage)
-        .manage(FileSaveQueue::new(file_save_sender))
         .manage(config)
         .mount(
             "/",
@@ -1690,6 +1699,125 @@ mod tests {
         };
         assert!(read(first_id).contains("first body"));
         assert!(read(second_id).contains("second body"));
+    }
+
+    #[test]
+    fn test_claim_writes_file_before_caching() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let random = "0123456789abcdef0123456789abcdef";
+
+        let id = claim_new_post_in_dir(
+            &storage,
+            base,
+            "Hello World",
+            "Ada",
+            "<p>rendered</p>",
+            "rendered source",
+            || random.to_string(),
+        )
+        .unwrap();
+
+        let expected = assemble_post_id("hello-world", random, &date_str, 0);
+        assert_eq!(id, expected);
+        let file =
+            std::fs::read_to_string(dir.path().join("content").join(format!("{id}.md"))).unwrap();
+        assert!(file.contains("rendered source"));
+        let cached = storage.lock().unwrap().get_ref(&id).unwrap().clone();
+        assert_eq!(cached.raw_content, "rendered source");
+        assert_eq!(cached.author, "Ada");
+    }
+
+    #[test]
+    fn test_claim_draws_a_new_hex_when_the_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let taken = "0123456789abcdef0123456789abcdef";
+        let fresh = "fedcba9876543210fedcba9876543210";
+        let taken_id = assemble_post_id("hello-world", taken, &date_str, 0);
+        let now = Utc::now();
+        save::save_post_to_file_in_dir(
+            &Post {
+                id: taken_id.clone(),
+                title: "Hello World".to_string(),
+                author: String::new(),
+                content: "old".to_string(),
+                raw_content: "original body".to_string(),
+                created_at: now,
+            },
+            base,
+        )
+        .unwrap();
+        let original =
+            std::fs::read(dir.path().join("content").join(format!("{taken_id}.md"))).unwrap();
+
+        let mut segments = [taken, fresh].into_iter();
+        let id = claim_new_post_in_dir(
+            &storage,
+            base,
+            "Hello World",
+            "",
+            "<p>new</p>",
+            "new body",
+            || segments.next().unwrap().to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(id, assemble_post_id("hello-world", fresh, &date_str, 0));
+        assert_eq!(
+            std::fs::read(dir.path().join("content").join(format!("{taken_id}.md"))).unwrap(),
+            original
+        );
+        let fresh_file =
+            std::fs::read_to_string(dir.path().join("content").join(format!("{id}.md"))).unwrap();
+        assert!(fresh_file.contains("new body"));
+        assert!(storage.lock().unwrap().contains_key(&id));
+        assert!(!storage.lock().unwrap().contains_key(&taken_id));
+    }
+
+    #[test]
+    fn test_claim_stops_when_every_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let taken = "0123456789abcdef0123456789abcdef";
+        let taken_id = assemble_post_id("hello-world", taken, &date_str, 0);
+        save::save_post_to_file_in_dir(
+            &Post {
+                id: taken_id.clone(),
+                title: "Hello World".to_string(),
+                author: String::new(),
+                content: "old".to_string(),
+                raw_content: "original body".to_string(),
+                created_at: Utc::now(),
+            },
+            base,
+        )
+        .unwrap();
+        let original =
+            std::fs::read(dir.path().join("content").join(format!("{taken_id}.md"))).unwrap();
+
+        let err = claim_new_post_in_dir(
+            &storage,
+            base,
+            "Hello World",
+            "",
+            "<p>new</p>",
+            "new body",
+            || taken.to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ClaimFailure::NoSlots));
+        assert_eq!(
+            std::fs::read(dir.path().join("content").join(format!("{taken_id}.md"))).unwrap(),
+            original
+        );
+        assert!(!storage.lock().unwrap().contains_key(&taken_id));
     }
 
     #[test]
