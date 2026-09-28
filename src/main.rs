@@ -341,20 +341,30 @@ fn is_valid_post_id(id: &str) -> bool {
 /// address cannot be rebuilt from the title.
 fn generate_unguessable_segment() -> String {
     let mut rng = thread_rng();
-    (0..16).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+    (0..16)
+        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .collect()
+}
+
+fn assemble_post_id(slug: &str, random: &str, date: &str, index: usize) -> String {
+    if index == 0 {
+        format!("{slug}-{random}-{date}")
+    } else {
+        format!("{slug}-{random}-{date}-{index}")
+    }
 }
 
 fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
+    generate_post_id_with_segment(title, storage, &generate_unguessable_segment())
+}
+
+fn generate_post_id_with_segment(
+    title: &str,
+    storage: &PostStorage,
+    random: &str,
+) -> Result<String, String> {
     let now = Utc::now();
     let date_str = now.format("%m-%d-%Y").to_string();
-    let random = generate_unguessable_segment();
-    let make_id = |slug: &str, i: usize| {
-        if i == 0 {
-            format!("{slug}-{random}-{date_str}")
-        } else {
-            format!("{slug}-{random}-{date_str}-{i}")
-        }
-    };
 
     // Transliterate ALL characters to ASCII equivalents (safe for all input)
     let transliterated_title = deunicode(title);
@@ -410,7 +420,7 @@ fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String
         let posts = storage.lock().unwrap();
 
         for i in 0..1000 {
-            let post_id = make_id(&fallback_slug, i);
+            let post_id = assemble_post_id(&fallback_slug, random, &date_str, i);
 
             if !posts.contains_key(&post_id) {
                 return Ok(post_id);
@@ -426,7 +436,7 @@ fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String
 
     // Try to find an available slot (0-999)
     for i in 0..1000 {
-        let post_id = make_id(&final_slug, i);
+        let post_id = assemble_post_id(&final_slug, random, &date_str, i);
 
         if !posts.contains_key(&post_id) {
             return Ok(post_id);
@@ -1554,6 +1564,132 @@ mod tests {
         };
         assert!(save::save_post_to_file_in_dir(&second, base).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), first_bytes);
+    }
+
+    fn insert_cached_post(storage: &PostStorage, id: &str) {
+        let post = Post {
+            id: id.to_string(),
+            title: "Test".to_string(),
+            author: String::new(),
+            content: "Content".to_string(),
+            raw_content: "Content".to_string(),
+            created_at: Utc::now(),
+        };
+        storage.lock().unwrap().insert(id.to_string(), post);
+    }
+
+    #[test]
+    fn test_same_title_gets_a_different_random_segment() {
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+
+        let first = generate_post_id("Hello World", &storage).unwrap();
+        let second = generate_post_id("Hello World", &storage).unwrap();
+        assert_unguessable_id(&first, "hello-world", &date_str);
+        assert_unguessable_id(&second, "hello-world", &date_str);
+        assert_ne!(first, second);
+        assert_ne!(first, format!("hello-world-{date_str}"));
+        assert_ne!(second, format!("hello-world-{date_str}"));
+    }
+
+    #[test]
+    fn test_empty_title_ids_differ() {
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+
+        let first = generate_post_id("", &storage).unwrap();
+        let second = generate_post_id("   ", &storage).unwrap();
+        assert_ne!(first, second);
+        for post_id in [&first, &second] {
+            let short = &post_id[3..7];
+            assert_unguessable_id(post_id, &format!("na-{short}"), &date_str);
+        }
+    }
+
+    #[test]
+    fn test_cached_exact_id_takes_the_next_suffix() {
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let random = "0123456789abcdef0123456789abcdef";
+
+        insert_cached_post(&storage, &assemble_post_id("other", random, &date_str, 0));
+        let open = generate_post_id_with_segment("Test", &storage, random).unwrap();
+        assert_eq!(open, assemble_post_id("test", random, &date_str, 0));
+
+        insert_cached_post(&storage, &open);
+        let next = generate_post_id_with_segment("Test", &storage, random).unwrap();
+        assert_eq!(next, assemble_post_id("test", random, &date_str, 1));
+
+        insert_cached_post(&storage, &next);
+        let after = generate_post_id_with_segment("Test", &storage, random).unwrap();
+        assert_eq!(after, assemble_post_id("test", random, &date_str, 2));
+    }
+
+    #[test]
+    fn test_cached_id_slots_exhausted() {
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let random = "fedcba9876543210fedcba9876543210";
+
+        for index in 0..1000 {
+            insert_cached_post(
+                &storage,
+                &assemble_post_id("test", random, &date_str, index),
+            );
+        }
+
+        let err = generate_post_id_with_segment("Test", &storage, random).unwrap_err();
+        assert!(err.contains("choose another title"), "{err}");
+    }
+
+    #[test]
+    fn test_max_length_id_stays_within_path_limit() {
+        let storage = Arc::new(Mutex::new(PostCache::new(128)));
+        let date_str = Utc::now().format("%m-%d-%Y").to_string();
+        let long_title = "word ".repeat(80);
+        let id = generate_post_id(&long_title, &storage).unwrap();
+        assert!(id.len() <= 250, "id length {}", id.len());
+        assert!(is_valid_post_id(&id));
+
+        let max_slug = 250 - date_str.len() - 1 - 33;
+        let packed = assemble_post_id(
+            &"a".repeat(max_slug),
+            "0123456789abcdef0123456789abcdef",
+            &date_str,
+            999,
+        );
+        assert!(
+            packed.len() <= MAX_POST_ID_LEN,
+            "packed length {}",
+            packed.len()
+        );
+        assert!(is_valid_post_id(&packed));
+    }
+
+    #[test]
+    fn test_different_ids_save_side_by_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+        let now = Utc::now();
+        let mk = |id: &str, body: &str| Post {
+            id: id.to_string(),
+            title: "Test".to_string(),
+            author: String::new(),
+            content: body.to_string(),
+            raw_content: body.to_string(),
+            created_at: now,
+        };
+
+        let first_id = "alpha-0123456789abcdef0123456789abcdef-09-28-2026";
+        let second_id = "beta-fedcba9876543210fedcba9876543210-09-28-2026";
+        save::save_post_to_file_in_dir(&mk(first_id, "first body"), base).unwrap();
+        save::save_post_to_file_in_dir(&mk(second_id, "second body"), base).unwrap();
+
+        let read = |id: &str| {
+            std::fs::read_to_string(dir.path().join("content").join(format!("{id}.md"))).unwrap()
+        };
+        assert!(read(first_id).contains("first body"));
+        assert!(read(second_id).contains("second body"));
     }
 
     #[test]
