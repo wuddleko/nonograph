@@ -3,6 +3,8 @@ extern crate rocket;
 
 mod archiver;
 mod config;
+#[allow(dead_code)]
+mod nip44;
 mod nojs;
 mod nostr;
 mod save;
