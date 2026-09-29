@@ -128,11 +128,8 @@ pub fn open_wrapped_note(
     recipient_secret: &[u8; 32],
 ) -> Result<OpenedNote, WrapError> {
     let wrap: serde_json::Value = serde_json::from_str(event_json).map_err(|_| WrapError)?;
-    let wrap_event = parse_event(&wrap).ok_or(WrapError)?;
-    if wrap_event.kind != KIND_GIFT_WRAP
-        || !event_id_matches(&wrap_event)
-        || !signature_valid(&wrap_event)
-    {
+    let wrap_event = verify_signed(&wrap)?;
+    if wrap_event.kind != KIND_GIFT_WRAP {
         return Err(WrapError);
     }
     let recipient_pubkey = xonly_pubkey(recipient_secret)?;
@@ -148,12 +145,8 @@ pub fn open_wrapped_note(
     }
     let seal_json = nip44_decrypt(&wrap_event.content, recipient_secret, &wrap_event.pubkey)?;
     let seal: serde_json::Value = serde_json::from_str(&seal_json).map_err(|_| WrapError)?;
-    let seal_event = parse_event(&seal).ok_or(WrapError)?;
-    if seal_event.kind != KIND_SEAL
-        || !seal_event.tags.is_empty()
-        || !event_id_matches(&seal_event)
-        || !signature_valid(&seal_event)
-    {
+    let seal_event = verify_signed(&seal)?;
+    if seal_event.kind != KIND_SEAL || !seal_event.tags.is_empty() {
         return Err(WrapError);
     }
     let rumor_json = nip44_decrypt(&seal_event.content, recipient_secret, &seal_event.pubkey)?;
@@ -161,11 +154,8 @@ pub fn open_wrapped_note(
     if rumor.get("sig").is_some() {
         return Err(WrapError);
     }
-    let rumor_event = parse_event(&rumor).ok_or(WrapError)?;
-    if rumor_event.kind != KIND_LONG_FORM
-        || rumor_event.pubkey != seal_event.pubkey
-        || !event_id_matches(&rumor_event)
-    {
+    let rumor_event = verify_unsigned_id(&rumor)?;
+    if rumor_event.kind != KIND_LONG_FORM || rumor_event.pubkey != seal_event.pubkey {
         return Err(WrapError);
     }
     let (title, author, content, created_at) = note_fields(
@@ -487,7 +477,7 @@ fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<F
     if parsed.kind != KIND_LONG_FORM {
         return None;
     }
-    if !event_id_matches(&parsed) || !signature_valid(&parsed) {
+    if !check_id(&parsed) || !verify_sig(&parsed) {
         return None;
     }
     if decode_fixed_hex::<32>(expected_id_hex)? != parsed.id {
@@ -688,8 +678,8 @@ fn parse_event(value: &serde_json::Value) -> Option<ParsedEvent> {
     let id_hex = value.get("id")?.as_str()?;
     let pubkey_hex = value.get("pubkey")?.as_str()?.to_string();
     let created_at = value.get("created_at")?.as_i64()?;
-    let kind = value.get("kind")?.as_u64()?.try_into().ok()?;
-    let content = value.get("content")?.as_str()?.to_string();
+    let kind = json_kind(value)?;
+    let content = json_content(value)?.to_string();
     let tags = event_tags(value)?;
     let id = decode_fixed_hex::<32>(id_hex)?;
     let pubkey = decode_fixed_hex::<32>(&pubkey_hex)?;
@@ -709,6 +699,14 @@ fn parse_event(value: &serde_json::Value) -> Option<ParsedEvent> {
     })
 }
 
+fn json_kind(value: &serde_json::Value) -> Option<u32> {
+    value.get("kind")?.as_u64()?.try_into().ok()
+}
+
+fn json_content(value: &serde_json::Value) -> Option<&str> {
+    value.get("content")?.as_str()
+}
+
 fn event_tags(value: &serde_json::Value) -> Option<Vec<Vec<String>>> {
     value
         .get("tags")?
@@ -723,7 +721,7 @@ fn event_tags(value: &serde_json::Value) -> Option<Vec<Vec<String>>> {
         .collect()
 }
 
-fn event_id_matches(parsed: &ParsedEvent) -> bool {
+fn check_id(parsed: &ParsedEvent) -> bool {
     event_id(
         &parsed.pubkey_hex,
         parsed.created_at,
@@ -733,7 +731,7 @@ fn event_id_matches(parsed: &ParsedEvent) -> bool {
     ) == parsed.id
 }
 
-fn signature_valid(parsed: &ParsedEvent) -> bool {
+fn verify_sig(parsed: &ParsedEvent) -> bool {
     let Some(sig) = parsed.sig else {
         return false;
     };
@@ -746,6 +744,26 @@ fn signature_valid(parsed: &ParsedEvent) -> bool {
     Secp256k1::new()
         .verify_schnorr(&signature, &Message::from_digest(parsed.id), &xonly)
         .is_ok()
+}
+
+#[cfg(test)]
+fn verify_signed(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
+    let parsed = parse_event(value).ok_or(WrapError)?;
+    if check_id(&parsed) && verify_sig(&parsed) {
+        Ok(parsed)
+    } else {
+        Err(WrapError)
+    }
+}
+
+#[cfg(test)]
+fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
+    let parsed = parse_event(value).ok_or(WrapError)?;
+    if check_id(&parsed) {
+        Ok(parsed)
+    } else {
+        Err(WrapError)
+    }
 }
 
 #[cfg(test)]
