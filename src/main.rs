@@ -3,7 +3,6 @@ extern crate rocket;
 
 mod archiver;
 mod config;
-#[allow(dead_code)]
 mod nip44;
 mod nojs;
 mod nostr;
@@ -608,15 +607,22 @@ fn publish_note(
     raw_content: &str,
 ) -> Result<String, PublishFailure> {
     let created_at = Utc::now();
-    let note = nostr::sign_note(title, author, raw_content, created_at.timestamp());
+    let wrapped = nostr::wrap_note(title, author, raw_content, created_at.timestamp())
+        .map_err(|_| PublishFailure::Relays)?;
     let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let accepted = nostr::publish_to_relays(&config.nostr.relays, &note, timeout);
+    let accepted = nostr::publish_to_relays(&config.nostr.relays, &wrapped.signed_note(), timeout);
     if accepted.is_empty() {
         return Err(PublishFailure::Relays);
     }
-    let nevent = nostr::encode_nevent(&note.id, &accepted, &note.pubkey);
+    let nevent = nostr::encode_nevent(
+        &wrapped.id,
+        &accepted,
+        &wrapped.pubkey,
+        nostr::KIND_GIFT_WRAP,
+    );
+    let nsec = nostr::encode_nsec(&wrapped.recipient_secret);
     let post = Post {
-        id: note.id_hex(),
+        id: wrapped.id_hex(),
         title: parser::sanitize_text(title),
         author: parser::sanitize_text(author),
         content: rendered_content.to_string(),
@@ -627,7 +633,7 @@ fn publish_note(
         return Err(PublishFailure::Save(error.to_string()));
     }
     storage.lock().unwrap().insert(post.id.clone(), post);
-    Ok(nevent)
+    Ok(format!("{nevent}?nsec={nsec}"))
 }
 
 fn handle_create(
@@ -742,11 +748,13 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
 
 fn fetch_missing_note(
     nevent: &nostr::Nevent,
+    nsec: Option<&str>,
     storage: &PostStorage,
     config: &Config,
 ) -> Option<Post> {
     let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let fetched = nostr::fetch_note(&nevent.relays, &nevent.event_id_hex, timeout)?;
+    let secret = nsec.and_then(nostr::decode_nsec);
+    let fetched = nostr::fetch_note(&nevent.relays, &nevent.event_id_hex, timeout, secret)?;
     if fetched.content.len() > config.limits.content_max_length {
         return None;
     }
@@ -771,9 +779,10 @@ fn fetch_missing_note(
     Some(post)
 }
 
-#[get("/<post_id>")]
+#[get("/<post_id>?<nsec>")]
 fn view_post(
     post_id: &str,
+    nsec: Option<&str>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<
@@ -859,7 +868,7 @@ fn view_post(
                     None
                 }
             } else if let Some(nevent) = &decoded {
-                fetch_missing_note(nevent, storage, config)
+                fetch_missing_note(nevent, nsec, storage, config)
             } else {
                 None
             }
@@ -996,9 +1005,10 @@ fn nojs_index(config: &State<Config>) -> content::RawHtml<String> {
     content::RawHtml(nojs_html)
 }
 
-#[get("/nojs/<post_id>")]
+#[get("/nojs/<post_id>?<nsec>")]
 fn nojs_view_post(
     post_id: &str,
+    nsec: Option<&str>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<
@@ -1008,7 +1018,7 @@ fn nojs_view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    match view_post(post_id, storage, config) {
+    match view_post(post_id, nsec, storage, config) {
         Ok(rocket::Either::Left(content::RawHtml(html))) => {
             let clean_html = nojs::strip_javascript(&html);
             let fixed_html = clean_html

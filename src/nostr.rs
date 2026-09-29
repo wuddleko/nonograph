@@ -11,11 +11,8 @@ use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
 const KIND_LONG_FORM: u32 = 30023;
-#[cfg(test)]
 const KIND_SEAL: u32 = 13;
-#[cfg(test)]
-const KIND_GIFT_WRAP: u32 = 1059;
-#[cfg(test)]
+pub const KIND_GIFT_WRAP: u32 = 1059;
 const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
@@ -43,6 +40,7 @@ impl SignedNote {
     }
 }
 
+#[cfg(test)]
 pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> SignedNote {
     let secp = Secp256k1::new();
     let keypair = Keypair::new(&secp, &mut thread_rng());
@@ -55,18 +53,30 @@ pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> S
     )
 }
 
-#[cfg(test)]
 #[derive(Debug)]
 pub struct WrapError;
 
-#[cfg(test)]
 pub struct WrappedNote {
     pub id: [u8; 32],
+    pub pubkey: [u8; 32],
     pub event_json: String,
     pub recipient_secret: [u8; 32],
 }
 
-#[cfg(test)]
+impl WrappedNote {
+    pub fn id_hex(&self) -> String {
+        hex_encode(&self.id)
+    }
+
+    pub fn signed_note(&self) -> SignedNote {
+        SignedNote {
+            id: self.id,
+            pubkey: self.pubkey,
+            event_json: self.event_json.clone(),
+        }
+    }
+}
+
 pub struct OpenedNote {
     pub title: String,
     pub author: String,
@@ -74,7 +84,6 @@ pub struct OpenedNote {
     pub created_at: i64,
 }
 
-#[cfg(test)]
 pub fn wrap_note(
     title: &str,
     author: &str,
@@ -117,12 +126,12 @@ pub fn wrap_note(
     );
     Ok(WrappedNote {
         id: wrap.id,
+        pubkey: wrap.pubkey,
         event_json: wrap.event_json,
         recipient_secret,
     })
 }
 
-#[cfg(test)]
 pub fn open_wrapped_note(
     event_json: &str,
     recipient_secret: &[u8; 32],
@@ -167,7 +176,7 @@ pub fn open_wrapped_note(
     })
 }
 
-pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32]) -> String {
+pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32], kind: u32) -> String {
     let mut data = Vec::new();
     push_tlv(&mut data, 0, id);
     for relay in relays {
@@ -176,7 +185,7 @@ pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32]) -> Str
         }
     }
     push_tlv(&mut data, 2, pubkey);
-    let kind = KIND_LONG_FORM.to_be_bytes();
+    let kind = kind.to_be_bytes();
     push_tlv(&mut data, 3, &kind);
     let hrp = Hrp::parse("nevent").expect("nevent hrp");
     bech32::encode::<Bech32>(hrp, &data).expect("nevent fits in a bech32 string")
@@ -216,6 +225,22 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
         event_id_hex: event_id?,
         relays,
     })
+}
+
+pub fn encode_nsec(secret: &[u8; 32]) -> String {
+    let hrp = Hrp::parse("nsec").expect("nsec hrp");
+    bech32::encode::<Bech32>(hrp, secret).expect("nsec fits in a bech32 string")
+}
+
+pub fn decode_nsec(value: &str) -> Option<[u8; 32]> {
+    if !value.starts_with("nsec1") {
+        return None;
+    }
+    let parsed = CheckedHrpstring::new::<Bech32>(value).ok()?;
+    if parsed.hrp().as_str() != "nsec" {
+        return None;
+    }
+    parsed.byte_iter().collect::<Vec<u8>>().try_into().ok()
 }
 
 pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration) -> Vec<String> {
@@ -366,7 +391,12 @@ fn send_event(
     }
 }
 
-pub fn fetch_note(relays: &[String], event_id_hex: &str, timeout: Duration) -> Option<FetchedNote> {
+pub fn fetch_note(
+    relays: &[String],
+    event_id_hex: &str,
+    timeout: Duration,
+    recipient_secret: Option<[u8; 32]>,
+) -> Option<FetchedNote> {
     if decode_fixed_hex::<32>(event_id_hex).is_none() {
         return None;
     }
@@ -384,7 +414,7 @@ pub fn fetch_note(relays: &[String], event_id_hex: &str, timeout: Duration) -> O
         let tx = tx.clone();
         let event_id_hex = event_id_hex.to_string();
         std::thread::spawn(move || {
-            let found = match fetch_from_relay(&relay, &event_id_hex, timeout) {
+            let found = match fetch_from_relay(&relay, &event_id_hex, timeout, recipient_secret) {
                 Ok(note) => note,
                 Err(error) => {
                     eprintln!("Nonograph: relay {relay} did not return the note: {error}");
@@ -419,6 +449,7 @@ fn fetch_from_relay(
     relay: &str,
     event_id_hex: &str,
     timeout: Duration,
+    recipient_secret: Option<[u8; 32]>,
 ) -> Result<Option<FetchedNote>, String> {
     let mut socket = connect_relay(relay, timeout)?;
     let sub_id = random_hex(8);
@@ -432,7 +463,9 @@ fn fetch_from_relay(
         match read_incoming(&mut socket, deadline)? {
             Incoming::Closed => return Err("relay closed the connection".to_string()),
             Incoming::Text(text) => {
-                if let Some(note) = note_from_relay_message(&text, event_id_hex) {
+                if let Some(note) =
+                    note_from_relay_message(&text, event_id_hex, recipient_secret.as_ref())
+                {
                     return Ok(Some(note));
                 }
                 if relay_has_no_event(&text, &sub_id) {
@@ -443,13 +476,44 @@ fn fetch_from_relay(
     }
 }
 
-fn note_from_relay_message(message: &str, event_id_hex: &str) -> Option<FetchedNote> {
+fn note_from_relay_message(
+    message: &str,
+    event_id_hex: &str,
+    recipient_secret: Option<&[u8; 32]>,
+) -> Option<FetchedNote> {
     let value: serde_json::Value = serde_json::from_str(message).ok()?;
     let items = value.as_array()?;
     if items.first()?.as_str()? != "EVENT" {
         return None;
     }
-    note_from_value(items.get(2)?, event_id_hex)
+    fetched_from_event(items.get(2)?, event_id_hex, recipient_secret)
+}
+
+fn fetched_from_event(
+    value: &serde_json::Value,
+    expected_id_hex: &str,
+    recipient_secret: Option<&[u8; 32]>,
+) -> Option<FetchedNote> {
+    let kind = json_kind(value)?;
+    if kind == KIND_LONG_FORM {
+        return note_from_value(value, expected_id_hex);
+    }
+    if kind != KIND_GIFT_WRAP {
+        return None;
+    }
+    let secret = recipient_secret?;
+    let id = decode_fixed_hex::<32>(value.get("id")?.as_str()?)?;
+    if decode_fixed_hex::<32>(expected_id_hex)? != id {
+        return None;
+    }
+    let opened = open_wrapped_note(&value.to_string(), secret).ok()?;
+    Some(FetchedNote {
+        id_hex: hex_encode(&id),
+        title: opened.title,
+        author: opened.author,
+        content: opened.content,
+        created_at: opened.created_at,
+    })
 }
 
 fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
@@ -594,7 +658,6 @@ fn signed_event(
     }
 }
 
-#[cfg(test)]
 fn rumor_json(
     keypair: &Keypair,
     created_at: i64,
@@ -737,7 +800,6 @@ fn verify_sig(parsed: &ParsedEvent) -> bool {
         .is_ok()
 }
 
-#[cfg(test)]
 fn verify_signed(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
     let parsed = parse_event(value).ok_or(WrapError)?;
     if check_id(&parsed) && verify_sig(&parsed) {
@@ -747,7 +809,6 @@ fn verify_signed(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
     }
 }
 
-#[cfg(test)]
 fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
     let parsed = parse_event(value).ok_or(WrapError)?;
     if check_id(&parsed) {
@@ -757,7 +818,6 @@ fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapErro
     }
 }
 
-#[cfg(test)]
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -765,12 +825,10 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-#[cfg(test)]
 fn random_past(now: i64) -> i64 {
     now.saturating_sub(thread_rng().gen_range(0..=TWO_DAYS_SECS))
 }
 
-#[cfg(test)]
 fn nip44_encrypt(
     plaintext: &str,
     private_key: &[u8; 32],
@@ -783,7 +841,6 @@ fn nip44_encrypt(
     crate::nip44::encrypt(plaintext, &conversation, &nonce).map_err(|_| WrapError)
 }
 
-#[cfg(test)]
 fn nip44_decrypt(
     payload: &str,
     private_key: &[u8; 32],
@@ -794,7 +851,6 @@ fn nip44_decrypt(
     crate::nip44::decrypt(payload, &conversation).map_err(|_| WrapError)
 }
 
-#[cfg(test)]
 fn xonly_pubkey(secret: &[u8; 32]) -> Result<[u8; 32], WrapError> {
     let secret_key = secp256k1::SecretKey::from_slice(secret).map_err(|_| WrapError)?;
     let keypair = Keypair::from_secret_key(&Secp256k1::new(), &secret_key);
@@ -986,12 +1042,20 @@ mod tests {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
         ];
-        let nevent = encode_nevent(&note.id, &relays, &note.pubkey);
+        let nevent = encode_nevent(&note.id, &relays, &note.pubkey, KIND_LONG_FORM);
         let decoded = decode_nevent(&nevent).unwrap();
         assert_eq!(decoded.event_id_hex, hex_encode(&note.id));
         assert_eq!(decoded.relays, relays);
         assert!(decode_nevent("about").is_none());
         assert!(decode_nevent("nevent1qqqq").is_none());
+
+        let wrapped = wrap_note("Title", "", "body", 1_700_000_000).unwrap();
+        let wrap_nevent = encode_nevent(&wrapped.id, &relays, &wrapped.pubkey, KIND_GIFT_WRAP);
+        let decoded_wrap = decode_nevent(&wrap_nevent).unwrap();
+        assert_eq!(decoded_wrap.event_id_hex, wrapped.id_hex());
+        let nsec = encode_nsec(&wrapped.recipient_secret);
+        assert_eq!(decode_nsec(&nsec), Some(wrapped.recipient_secret));
+        assert!(decode_nsec("nsec1qqqq").is_none());
     }
 
     #[test]
@@ -1015,7 +1079,7 @@ mod tests {
             1_700_000_000,
         );
         let message = format!(r#"["EVENT","sub",{}]"#, note.event_json);
-        let fetched = note_from_relay_message(&message, &note.id_hex()).unwrap();
+        let fetched = note_from_relay_message(&message, &note.id_hex(), None).unwrap();
         assert_eq!(fetched.id_hex, note.id_hex());
         assert_eq!(fetched.title, "Hello");
         assert_eq!(fetched.author, "Ada");
@@ -1023,7 +1087,28 @@ mod tests {
         assert_eq!(fetched.created_at, 1_700_000_000);
         assert!(relay_has_no_event(r#"["EOSE","sub"]"#, "sub"));
         assert!(!relay_has_no_event(r#"["EOSE","other"]"#, "sub"));
-        assert!(note_from_relay_message(r#"["EOSE","sub"]"#, &note.id_hex()).is_none());
+        assert!(note_from_relay_message(r#"["EOSE","sub"]"#, &note.id_hex(), None).is_none());
+    }
+
+    #[test]
+    fn test_fetched_wrap_opens_with_nsec_and_ignores_without() {
+        let wrapped = wrap_note("Hello", "Ada", "secret body", 1_700_000_000).unwrap();
+        let message = format!(r#"["EVENT","sub",{}]"#, wrapped.event_json);
+        assert!(note_from_relay_message(&message, &wrapped.id_hex(), None).is_none());
+        let fetched =
+            note_from_relay_message(&message, &wrapped.id_hex(), Some(&wrapped.recipient_secret))
+                .unwrap();
+        assert_eq!(fetched.id_hex, wrapped.id_hex());
+        assert_eq!(fetched.title, "Hello");
+        assert_eq!(fetched.author, "Ada");
+        assert_eq!(fetched.content, "secret body");
+        assert_eq!(fetched.created_at, 1_700_000_000);
+        assert!(note_from_relay_message(
+            &message,
+            &"ab".repeat(32),
+            Some(&wrapped.recipient_secret)
+        )
+        .is_none());
     }
 
     #[test]
@@ -1053,17 +1138,19 @@ mod tests {
     #[test]
     fn test_fetch_note_skips_relays_it_cannot_ask() {
         let id = "ab".repeat(32);
-        assert!(fetch_note(&[], &id, Duration::from_millis(20)).is_none());
+        assert!(fetch_note(&[], &id, Duration::from_millis(20), None).is_none());
         assert!(fetch_note(
             &["https://relay.example".to_string()],
             &id,
-            Duration::from_millis(20)
+            Duration::from_millis(20),
+            None
         )
         .is_none());
         assert!(fetch_note(
             &["wss://relay.example".to_string()],
             "abcd",
-            Duration::from_millis(20)
+            Duration::from_millis(20),
+            None
         )
         .is_none());
     }
@@ -1135,6 +1222,7 @@ mod tests {
         );
         WrappedNote {
             id: wrap.id,
+            pubkey: wrap.pubkey,
             event_json: wrap.event_json,
             recipient_secret,
         }

@@ -407,6 +407,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
         bytes
