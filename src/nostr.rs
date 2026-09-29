@@ -98,7 +98,7 @@ pub fn wrap_note(
     let seal_content = nip44_encrypt(&rumor, &author_key.secret_bytes(), &recipient_pubkey)?;
     let seal = signed_event(
         &author_key,
-        random_past(unix_now()),
+        random_past(now_secs()),
         KIND_SEAL,
         &[],
         &seal_content,
@@ -110,7 +110,7 @@ pub fn wrap_note(
     )?;
     let wrap = signed_event(
         &wrap_key,
-        random_past(unix_now()),
+        random_past(now_secs()),
         KIND_GIFT_WRAP,
         &[vec!["p".to_string(), hex_encode(&recipient_pubkey)]],
         &wrap_content,
@@ -158,15 +158,11 @@ pub fn open_wrapped_note(
     if rumor_event.kind != KIND_LONG_FORM || rumor_event.pubkey != seal_event.pubkey {
         return Err(WrapError);
     }
-    let (title, author, content, created_at) = note_fields(
-        &rumor_event.tags,
-        rumor_event.content,
-        rumor_event.created_at,
-    );
+    let (title, author, created_at) = note_fields(&rumor_event.tags, rumor_event.created_at);
     Ok(OpenedNote {
         title,
         author,
-        content,
+        content: rumor_event.content,
         created_at,
     })
 }
@@ -483,13 +479,12 @@ fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<F
     if decode_fixed_hex::<32>(expected_id_hex)? != parsed.id {
         return None;
     }
-    let (title, author, content, created_at) =
-        note_fields(&parsed.tags, parsed.content, parsed.created_at);
+    let (title, author, created_at) = note_fields(&parsed.tags, parsed.created_at);
     Some(FetchedNote {
         id_hex: hex_encode(&parsed.id),
         title,
         author,
-        content,
+        content: parsed.content,
         created_at,
     })
 }
@@ -500,17 +495,13 @@ fn tag_value(tags: &[Vec<String>], name: &str) -> Option<String> {
         .and_then(|tag| tag.get(1).cloned())
 }
 
-fn note_fields(
-    tags: &[Vec<String>],
-    content: String,
-    event_created_at: i64,
-) -> (String, String, String, i64) {
+fn note_fields(tags: &[Vec<String>], event_created_at: i64) -> (String, String, i64) {
     let title = tag_value(tags, "title").unwrap_or_else(|| "Untitled".to_string());
     let author = tag_value(tags, "author").unwrap_or_default();
     let created_at = tag_value(tags, "published_at")
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(event_created_at);
-    (title, author, content, created_at)
+    (title, author, created_at)
 }
 
 fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
@@ -767,7 +758,7 @@ fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapErro
 }
 
 #[cfg(test)]
-fn unix_now() -> i64 {
+fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -917,9 +908,9 @@ mod tests {
         let alias = "relay-hidden-alias";
         let text = "relay-hidden-text";
         let created_at = 1_700_000_000;
-        let before = unix_now();
+        let before = now_secs();
         let wrapped = wrap_note(title, alias, text, created_at).unwrap();
-        let after = unix_now();
+        let after = now_secs();
         let payload = format!("[\"EVENT\",{}]", wrapped.event_json);
         assert!(!payload.contains(title));
         assert!(!payload.contains(alias));
@@ -953,6 +944,39 @@ mod tests {
         assert!(clear.contains(title));
         assert!(clear.contains(alias));
         assert!(clear.contains(text));
+    }
+
+    #[test]
+    fn test_opened_note_matches_fetch_title_and_published_at() {
+        let rumor_created_at = 1_700_000_000;
+        let published_at = 1_800_000_000;
+        let tags = vec![
+            vec!["d".to_string(), "note".to_string()],
+            vec!["published_at".to_string(), published_at.to_string()],
+        ];
+        let wrapped = wrap_custom_rumor(&tags, "body", rumor_created_at);
+        let opened = open_wrapped_note(&wrapped.event_json, &wrapped.recipient_secret).unwrap();
+
+        let signed = signed_event(
+            &Keypair::new(&Secp256k1::new(), &mut thread_rng()),
+            rumor_created_at,
+            KIND_LONG_FORM,
+            &tags,
+            "body",
+        );
+        let fetched = note_from_value(
+            &serde_json::from_str(&signed.event_json).unwrap(),
+            &signed.id_hex(),
+        )
+        .unwrap();
+        assert_eq!(opened.title, "Untitled");
+        assert_eq!(opened.author, "");
+        assert_eq!(opened.content, "body");
+        assert_eq!(opened.created_at, published_at);
+        assert_eq!(opened.title, fetched.title);
+        assert_eq!(opened.author, fetched.author);
+        assert_eq!(opened.content, fetched.content);
+        assert_eq!(opened.created_at, fetched.created_at);
     }
 
     #[test]
@@ -1074,6 +1098,46 @@ mod tests {
         assert!(take_first_note(rx, Instant::now() + Duration::from_millis(40)).is_none());
         assert!(started.elapsed() < Duration::from_millis(400));
         drop(tx);
+    }
+
+    fn wrap_custom_rumor(tags: &[Vec<String>], content: &str, created_at: i64) -> WrappedNote {
+        let secp = Secp256k1::new();
+        let author_key = Keypair::new(&secp, &mut thread_rng());
+        let recipient_key = Keypair::new(&secp, &mut thread_rng());
+        let wrap_key = Keypair::new(&secp, &mut thread_rng());
+        let recipient_secret = recipient_key.secret_bytes();
+        let recipient_pubkey = recipient_key.x_only_public_key().0.serialize();
+        let rumor = rumor_json(&author_key, created_at, KIND_LONG_FORM, tags, content);
+        let seal_content =
+            nip44_encrypt(&rumor, &author_key.secret_bytes(), &recipient_pubkey).unwrap();
+        let seal = signed_event(
+            &author_key,
+            random_past(now_secs()),
+            KIND_SEAL,
+            &[],
+            &seal_content,
+        );
+        let wrap_content = nip44_encrypt(
+            &seal.event_json,
+            &wrap_key.secret_bytes(),
+            &recipient_pubkey,
+        )
+        .unwrap();
+        let wrap = signed_event(
+            &wrap_key,
+            random_past(now_secs()),
+            KIND_GIFT_WRAP,
+            &[vec![
+                "p".to_string(),
+                hex_encode(&recipient_pubkey).to_ascii_uppercase(),
+            ]],
+            &wrap_content,
+        );
+        WrappedNote {
+            id: wrap.id,
+            event_json: wrap.event_json,
+            recipient_secret,
+        }
     }
 
     fn assert_signature(note: &SignedNote) {
