@@ -11,6 +11,12 @@ use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
 const KIND_LONG_FORM: u32 = 30023;
+#[cfg(test)]
+const KIND_SEAL: u32 = 13;
+#[cfg(test)]
+const KIND_GIFT_WRAP: u32 = 1059;
+#[cfg(test)]
+const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
     pub id: [u8; 32],
@@ -40,31 +46,139 @@ impl SignedNote {
 pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> SignedNote {
     let secp = Secp256k1::new();
     let keypair = Keypair::new(&secp, &mut thread_rng());
-    let (xonly, _parity) = keypair.x_only_public_key();
-    let pubkey = xonly.serialize();
-    let pubkey_hex = hex_encode(&pubkey);
+    signed_event(
+        &keypair,
+        created_at,
+        KIND_LONG_FORM,
+        &long_form_tags(title, author, created_at),
+        content,
+    )
+}
 
-    let mut tags = vec![
-        vec!["d".to_string(), random_hex(16)],
-        vec!["title".to_string(), title.to_string()],
-        vec!["published_at".to_string(), created_at.to_string()],
-    ];
-    if !author.is_empty() {
-        tags.push(vec!["author".to_string(), author.to_string()]);
+#[cfg(test)]
+#[derive(Debug)]
+pub struct WrapError;
+
+#[cfg(test)]
+pub struct WrappedNote {
+    pub id: [u8; 32],
+    pub event_json: String,
+    pub recipient_secret: [u8; 32],
+}
+
+#[cfg(test)]
+pub struct OpenedNote {
+    pub title: String,
+    pub author: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[cfg(test)]
+pub fn wrap_note(
+    title: &str,
+    author: &str,
+    content: &str,
+    created_at: i64,
+) -> Result<WrappedNote, WrapError> {
+    let secp = Secp256k1::new();
+    let author_key = Keypair::new(&secp, &mut thread_rng());
+    let recipient_key = Keypair::new(&secp, &mut thread_rng());
+    let wrap_key = Keypair::new(&secp, &mut thread_rng());
+    let recipient_secret = recipient_key.secret_bytes();
+    let recipient_pubkey = recipient_key.x_only_public_key().0.serialize();
+
+    let rumor = rumor_json(
+        &author_key,
+        created_at,
+        KIND_LONG_FORM,
+        &long_form_tags(title, author, created_at),
+        content,
+    );
+    let seal_content = nip44_encrypt(&rumor, &author_key.secret_bytes(), &recipient_pubkey)?;
+    let seal = signed_event(
+        &author_key,
+        random_past(unix_now()),
+        KIND_SEAL,
+        &[],
+        &seal_content,
+    );
+    let wrap_content = nip44_encrypt(
+        &seal.event_json,
+        &wrap_key.secret_bytes(),
+        &recipient_pubkey,
+    )?;
+    let wrap = signed_event(
+        &wrap_key,
+        random_past(unix_now()),
+        KIND_GIFT_WRAP,
+        &[vec!["p".to_string(), hex_encode(&recipient_pubkey)]],
+        &wrap_content,
+    );
+    Ok(WrappedNote {
+        id: wrap.id,
+        event_json: wrap.event_json,
+        recipient_secret,
+    })
+}
+
+#[cfg(test)]
+pub fn open_wrapped_note(
+    event_json: &str,
+    recipient_secret: &[u8; 32],
+) -> Result<OpenedNote, WrapError> {
+    let wrap: serde_json::Value = serde_json::from_str(event_json).map_err(|_| WrapError)?;
+    let wrap_event = parse_event(&wrap).ok_or(WrapError)?;
+    if wrap_event.kind != KIND_GIFT_WRAP
+        || !event_id_matches(&wrap_event)
+        || !signature_valid(&wrap_event)
+    {
+        return Err(WrapError);
     }
-
-    let preimage = canonical_event(&pubkey_hex, created_at, KIND_LONG_FORM, &tags, content);
-    let id: [u8; 32] = Sha256::digest(preimage.as_bytes()).into();
-    let sig = secp.sign_schnorr(&Message::from_digest(id), &keypair);
-    let sig_hex = hex_encode(&sig.serialize());
-    let id_hex = hex_encode(&id);
-
-    let event_json = wire_event(&id_hex, &pubkey_hex, created_at, &tags, content, &sig_hex);
-    SignedNote {
-        id,
-        pubkey,
-        event_json,
+    let recipient_pubkey = xonly_pubkey(recipient_secret)?;
+    let tagged = wrap_event
+        .tags
+        .iter()
+        .find(|tag| tag.first().map(String::as_str) == Some("p"))
+        .and_then(|tag| tag.get(1))
+        .and_then(|hex| decode_fixed_hex::<32>(hex))
+        .ok_or(WrapError)?;
+    if tagged != recipient_pubkey {
+        return Err(WrapError);
     }
+    let seal_json = nip44_decrypt(&wrap_event.content, recipient_secret, &wrap_event.pubkey)?;
+    let seal: serde_json::Value = serde_json::from_str(&seal_json).map_err(|_| WrapError)?;
+    let seal_event = parse_event(&seal).ok_or(WrapError)?;
+    if seal_event.kind != KIND_SEAL
+        || !seal_event.tags.is_empty()
+        || !event_id_matches(&seal_event)
+        || !signature_valid(&seal_event)
+    {
+        return Err(WrapError);
+    }
+    let rumor_json = nip44_decrypt(&seal_event.content, recipient_secret, &seal_event.pubkey)?;
+    let rumor: serde_json::Value = serde_json::from_str(&rumor_json).map_err(|_| WrapError)?;
+    if rumor.get("sig").is_some() {
+        return Err(WrapError);
+    }
+    let rumor_event = parse_event(&rumor).ok_or(WrapError)?;
+    if rumor_event.kind != KIND_LONG_FORM
+        || rumor_event.pubkey != seal_event.pubkey
+        || !event_id_matches(&rumor_event)
+    {
+        return Err(WrapError);
+    }
+    let (title, author, content, created_at) = note_fields(
+        &rumor_event.tags,
+        rumor_event.content,
+        rumor_event.created_at,
+    );
+    Ok(OpenedNote {
+        title,
+        author,
+        content,
+        created_at,
+    })
 }
 
 pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32]) -> String {
@@ -369,52 +483,24 @@ fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
 }
 
 fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<FetchedNote> {
-    let id_hex = value.get("id")?.as_str()?;
-    let pubkey_hex = value.get("pubkey")?.as_str()?;
-    let created_at = value.get("created_at")?.as_i64()?;
-    let kind = value.get("kind")?.as_u64()?;
-    if kind != u64::from(KIND_LONG_FORM) {
+    let parsed = parse_event(value)?;
+    if parsed.kind != KIND_LONG_FORM {
         return None;
     }
-    let content = value.get("content")?.as_str()?.to_string();
-    let sig_hex = value.get("sig")?.as_str()?;
-    let tags = value
-        .get("tags")?
-        .as_array()?
-        .iter()
-        .map(|tag| {
-            tag.as_array()?
-                .iter()
-                .map(|item| item.as_str().map(str::to_string))
-                .collect::<Option<Vec<String>>>()
-        })
-        .collect::<Option<Vec<Vec<String>>>>()?;
-
-    let preimage = canonical_event(pubkey_hex, created_at, kind as u32, &tags, &content);
-    let recomputed: [u8; 32] = Sha256::digest(preimage.as_bytes()).into();
-    if decode_fixed_hex::<32>(id_hex)? != recomputed {
+    if !event_id_matches(&parsed) || !signature_valid(&parsed) {
         return None;
     }
-    if decode_fixed_hex::<32>(expected_id_hex)? != recomputed {
+    if decode_fixed_hex::<32>(expected_id_hex)? != parsed.id {
         return None;
     }
-    let pubkey = XOnlyPublicKey::from_slice(&decode_fixed_hex::<32>(pubkey_hex)?).ok()?;
-    let signature = Signature::from_slice(&decode_fixed_hex::<64>(sig_hex)?).ok()?;
-    Secp256k1::new()
-        .verify_schnorr(&signature, &Message::from_digest(recomputed), &pubkey)
-        .ok()?;
-
-    let title = tag_value(&tags, "title").unwrap_or_else(|| "Untitled".to_string());
-    let author = tag_value(&tags, "author").unwrap_or_default();
-    let published_at = tag_value(&tags, "published_at")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(created_at);
+    let (title, author, content, created_at) =
+        note_fields(&parsed.tags, parsed.content, parsed.created_at);
     Some(FetchedNote {
-        id_hex: hex_encode(&recomputed),
+        id_hex: hex_encode(&parsed.id),
         title,
         author,
         content,
-        created_at: published_at,
+        created_at,
     })
 }
 
@@ -422,6 +508,19 @@ fn tag_value(tags: &[Vec<String>], name: &str) -> Option<String> {
     tags.iter()
         .find(|tag| tag.first().map(String::as_str) == Some(name))
         .and_then(|tag| tag.get(1).cloned())
+}
+
+fn note_fields(
+    tags: &[Vec<String>],
+    content: String,
+    event_created_at: i64,
+) -> (String, String, String, i64) {
+    let title = tag_value(tags, "title").unwrap_or_else(|| "Untitled".to_string());
+    let author = tag_value(tags, "author").unwrap_or_default();
+    let created_at = tag_value(tags, "published_at")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(event_created_at);
+    (title, author, content, created_at)
 }
 
 fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
@@ -474,13 +573,85 @@ fn canonical_event(
     out
 }
 
-fn wire_event(
+fn long_form_tags(title: &str, author: &str, created_at: i64) -> Vec<Vec<String>> {
+    let mut tags = vec![
+        vec!["d".to_string(), random_hex(16)],
+        vec!["title".to_string(), title.to_string()],
+        vec!["published_at".to_string(), created_at.to_string()],
+    ];
+    if !author.is_empty() {
+        tags.push(vec!["author".to_string(), author.to_string()]);
+    }
+    tags
+}
+
+fn signed_event(
+    keypair: &Keypair,
+    created_at: i64,
+    kind: u32,
+    tags: &[Vec<String>],
+    content: &str,
+) -> SignedNote {
+    let secp = Secp256k1::new();
+    let pubkey = keypair.x_only_public_key().0.serialize();
+    let pubkey_hex = hex_encode(&pubkey);
+    let id = event_id(&pubkey_hex, created_at, kind, tags, content);
+    let sig = secp.sign_schnorr(&Message::from_digest(id), keypair);
+    let event_json = event_wire(
+        &hex_encode(&id),
+        &pubkey_hex,
+        created_at,
+        kind,
+        tags,
+        content,
+        Some(&hex_encode(&sig.serialize())),
+    );
+    SignedNote {
+        id,
+        pubkey,
+        event_json,
+    }
+}
+
+#[cfg(test)]
+fn rumor_json(
+    keypair: &Keypair,
+    created_at: i64,
+    kind: u32,
+    tags: &[Vec<String>],
+    content: &str,
+) -> String {
+    let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
+    let id = event_id(&pubkey_hex, created_at, kind, tags, content);
+    event_wire(
+        &hex_encode(&id),
+        &pubkey_hex,
+        created_at,
+        kind,
+        tags,
+        content,
+        None,
+    )
+}
+
+fn event_id(
+    pubkey_hex: &str,
+    created_at: i64,
+    kind: u32,
+    tags: &[Vec<String>],
+    content: &str,
+) -> [u8; 32] {
+    Sha256::digest(canonical_event(pubkey_hex, created_at, kind, tags, content).as_bytes()).into()
+}
+
+fn event_wire(
     id_hex: &str,
     pubkey_hex: &str,
     created_at: i64,
+    kind: u32,
     tags: &[Vec<String>],
     content: &str,
-    sig_hex: &str,
+    sig_hex: Option<&str>,
 ) -> String {
     let mut out = String::from("{\"id\":");
     push_json_string(&mut out, id_hex);
@@ -489,15 +660,136 @@ fn wire_event(
     out.push_str(",\"created_at\":");
     out.push_str(&created_at.to_string());
     out.push_str(",\"kind\":");
-    out.push_str(&KIND_LONG_FORM.to_string());
+    out.push_str(&kind.to_string());
     out.push_str(",\"tags\":");
     push_tags(&mut out, tags);
     out.push_str(",\"content\":");
     push_json_string(&mut out, content);
-    out.push_str(",\"sig\":");
-    push_json_string(&mut out, sig_hex);
+    if let Some(sig_hex) = sig_hex {
+        out.push_str(",\"sig\":");
+        push_json_string(&mut out, sig_hex);
+    }
     out.push('}');
     out
+}
+
+struct ParsedEvent {
+    id: [u8; 32],
+    pubkey: [u8; 32],
+    pubkey_hex: String,
+    created_at: i64,
+    kind: u32,
+    tags: Vec<Vec<String>>,
+    content: String,
+    sig: Option<[u8; 64]>,
+}
+
+fn parse_event(value: &serde_json::Value) -> Option<ParsedEvent> {
+    let id_hex = value.get("id")?.as_str()?;
+    let pubkey_hex = value.get("pubkey")?.as_str()?.to_string();
+    let created_at = value.get("created_at")?.as_i64()?;
+    let kind = value.get("kind")?.as_u64()?.try_into().ok()?;
+    let content = value.get("content")?.as_str()?.to_string();
+    let tags = event_tags(value)?;
+    let id = decode_fixed_hex::<32>(id_hex)?;
+    let pubkey = decode_fixed_hex::<32>(&pubkey_hex)?;
+    let sig = match value.get("sig") {
+        Some(item) => Some(decode_fixed_hex::<64>(item.as_str()?)?),
+        None => None,
+    };
+    Some(ParsedEvent {
+        id,
+        pubkey,
+        pubkey_hex,
+        created_at,
+        kind,
+        tags,
+        content,
+        sig,
+    })
+}
+
+fn event_tags(value: &serde_json::Value) -> Option<Vec<Vec<String>>> {
+    value
+        .get("tags")?
+        .as_array()?
+        .iter()
+        .map(|tag| {
+            tag.as_array()?
+                .iter()
+                .map(|item| item.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        })
+        .collect()
+}
+
+fn event_id_matches(parsed: &ParsedEvent) -> bool {
+    event_id(
+        &parsed.pubkey_hex,
+        parsed.created_at,
+        parsed.kind,
+        &parsed.tags,
+        &parsed.content,
+    ) == parsed.id
+}
+
+fn signature_valid(parsed: &ParsedEvent) -> bool {
+    let Some(sig) = parsed.sig else {
+        return false;
+    };
+    let Ok(xonly) = XOnlyPublicKey::from_slice(&parsed.pubkey) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(&sig) else {
+        return false;
+    };
+    Secp256k1::new()
+        .verify_schnorr(&signature, &Message::from_digest(parsed.id), &xonly)
+        .is_ok()
+}
+
+#[cfg(test)]
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn random_past(now: i64) -> i64 {
+    now.saturating_sub(thread_rng().gen_range(0..=TWO_DAYS_SECS))
+}
+
+#[cfg(test)]
+fn nip44_encrypt(
+    plaintext: &str,
+    private_key: &[u8; 32],
+    public_key: &[u8; 32],
+) -> Result<String, WrapError> {
+    let conversation =
+        crate::nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
+    let mut nonce = [0u8; 32];
+    thread_rng().fill(&mut nonce);
+    crate::nip44::encrypt(plaintext, &conversation, &nonce).map_err(|_| WrapError)
+}
+
+#[cfg(test)]
+fn nip44_decrypt(
+    payload: &str,
+    private_key: &[u8; 32],
+    public_key: &[u8; 32],
+) -> Result<String, WrapError> {
+    let conversation =
+        crate::nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
+    crate::nip44::decrypt(payload, &conversation).map_err(|_| WrapError)
+}
+
+#[cfg(test)]
+fn xonly_pubkey(secret: &[u8; 32]) -> Result<[u8; 32], WrapError> {
+    let secret_key = secp256k1::SecretKey::from_slice(secret).map_err(|_| WrapError)?;
+    let keypair = Keypair::from_secret_key(&Secp256k1::new(), &secret_key);
+    Ok(keypair.x_only_public_key().0.serialize())
 }
 
 fn push_tags(out: &mut String, tags: &[Vec<String>]) {
@@ -599,6 +891,50 @@ mod tests {
         assert_eq!(parsed["tags"][1][1], "Hello");
         assert_eq!(parsed["tags"][3][0], "author");
         assert_eq!(parsed["tags"][3][1], "Ada");
+    }
+
+    #[test]
+    fn test_gift_wrap_hides_title_alias_and_text() {
+        let title = "relay-hidden-title";
+        let alias = "relay-hidden-alias";
+        let text = "relay-hidden-text";
+        let created_at = 1_700_000_000;
+        let before = unix_now();
+        let wrapped = wrap_note(title, alias, text, created_at).unwrap();
+        let after = unix_now();
+        let payload = format!("[\"EVENT\",{}]", wrapped.event_json);
+        assert!(!payload.contains(title));
+        assert!(!payload.contains(alias));
+        assert!(!payload.contains(text));
+        assert!(!payload.contains(&hex_encode(&wrapped.recipient_secret)));
+
+        let parsed: serde_json::Value = serde_json::from_str(&wrapped.event_json).unwrap();
+        assert_eq!(parsed["kind"], KIND_GIFT_WRAP);
+        assert_eq!(parsed["tags"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["tags"][0][0], "p");
+        assert_ne!(parsed["pubkey"], parsed["tags"][0][1]);
+        let wrap_time = parsed["created_at"].as_i64().unwrap();
+        assert!(wrap_time <= after);
+        assert!(wrap_time >= before.saturating_sub(TWO_DAYS_SECS));
+        assert_signature(&SignedNote {
+            id: wrapped.id,
+            pubkey: decode_fixed_hex(parsed["pubkey"].as_str().unwrap()).unwrap(),
+            event_json: wrapped.event_json.clone(),
+        });
+
+        let opened = open_wrapped_note(&wrapped.event_json, &wrapped.recipient_secret).unwrap();
+        assert_eq!(opened.title, title);
+        assert_eq!(opened.author, alias);
+        assert_eq!(opened.content, text);
+        assert_eq!(opened.created_at, created_at);
+
+        let clear = format!(
+            "[\"EVENT\",{}]",
+            sign_note(title, alias, text, created_at).event_json
+        );
+        assert!(clear.contains(title));
+        assert!(clear.contains(alias));
+        assert!(clear.contains(text));
     }
 
     #[test]
