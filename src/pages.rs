@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rocket::http::{ContentType, Status};
 use rocket::response::content;
@@ -460,13 +460,14 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
     }
 }
 
-fn post_description(raw: &str) -> String {
-    if raw.chars().count() > 160 {
-        let truncated: String = raw.chars().take(160).collect();
-        format!("{truncated}...")
-    } else {
-        raw.to_string()
-    }
+pub(crate) fn post_description(raw: &str) -> String {
+    // Stop at the 161st character. A longer post must not be walked to the end.
+    let Some((end, _)) = raw.char_indices().nth(160) else {
+        return raw.to_string();
+    };
+    let mut description = raw[..end].to_string();
+    description.push_str("...");
+    description
 }
 
 fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id: &str) {
@@ -565,106 +566,128 @@ fn render_post(
         };
     }
 
-    let post_from_memory = {
-        let mut posts = storage.lock().unwrap();
-        if let Some(post_ref) = posts.get_ref(file_id) {
-            Some(post_ref.clone())
-        } else {
-            None
-        }
+    let public_id = if decoded.is_some() { post_id } else { file_id };
+    let cached = {
+        let posts = storage.read().unwrap();
+        posts.lookup(file_id, nojs, public_id)
     };
-
-    let post = match post_from_memory {
-        Some(post) => Some(post),
-        None => {
-            if crate::save::post_file_exists(file_id) {
-                if let Ok(file_content) = std::fs::read_to_string(format!("content/{file_id}.md")) {
-                    let parsed = if file_content.starts_with("---\n") {
-                        parse_yaml_frontmatter(&file_content)
-                    } else {
-                        parse_legacy_frontmatter(&file_content)
-                    };
-
-                    if let Some((title, author, created_at, raw_content)) = parsed {
-                        let new_post = Post {
-                            id: file_id.to_string(),
-                            title,
-                            author,
-                            content: nonograph_parser::render_markdown_with_config(
-                                &raw_content,
-                                &render_options(config),
-                            ),
-                            raw_content,
-                            created_at,
-                        };
-
-                        {
-                            let mut posts_write = storage.lock().unwrap();
-                            posts_write.insert(file_id.to_string(), new_post.clone());
-                        }
-
-                        Some(new_post)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else if let Some(nevent) = &decoded {
-                fetch_missing_note(nevent, nsec, storage, config)
-            } else {
-                None
-            }
+    if let Some(hit) = cached {
+        hit.note_access();
+        if let Some(html) = hit.html {
+            return Ok(rocket::Either::Left(content::RawHtml(html.to_string())));
         }
+        return serve_article(storage, file_id, &hit.post, nojs, public_id);
+    }
+
+    let post = if crate::save::post_file_exists(file_id) {
+        load_post_from_disk(file_id, storage, config)
+    } else if let Some(nevent) = &decoded {
+        fetch_missing_note(nevent, nsec, storage, config)
+    } else {
+        None
     };
 
     match post {
-        Some(post) => {
-            let mut context = HashMap::new();
-            context.insert("title".to_string(), post.title.clone());
-            context.insert("content".to_string(), post.content.clone());
-            let author = if post.author.is_empty() {
-                "Anonymous".to_string()
-            } else {
-                post.author.clone()
-            };
-            context.insert("author".to_string(), author);
-            let author_display = if post.author.is_empty() {
-                "Anonymous · ".to_string()
-            } else {
-                format!("{} · ", post.author)
-            };
-            context.insert("author_display".to_string(), author_display);
-            context.insert(
-                "created_at".to_string(),
-                post.created_at.format("%B %d, %Y").to_string(),
-            );
-            context.insert(
-                "created_at_iso".to_string(),
-                post.created_at
-                    .format("%Y-%m-%dT00:00:00+00:00")
-                    .to_string(),
-            );
-            let public_id = if decoded.is_some() { post_id } else { file_id };
-            context.insert("url".to_string(), format!("/{public_id}"));
-            context.insert(
-                "description".to_string(),
-                post_description(&post.raw_content),
-            );
-            fill_page_chrome(&mut context, nojs, public_id);
-
-            match template::shared().render("post", &context) {
-                Ok(html) => Ok(rocket::Either::Left(content::RawHtml(html))),
-                Err(error) => Ok(rocket::Either::Left(content::RawHtml(format!(
-                    "Template error: {error}"
-                )))),
-            }
-        }
+        Some(post) => serve_article(storage, file_id, &post, nojs, public_id),
         None => Err((
             Status::NotFound,
             rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
         )),
     }
+}
+
+fn load_post_from_disk(
+    file_id: &str,
+    storage: &State<PostStorage>,
+    config: &State<Config>,
+) -> Option<Arc<Post>> {
+    let file_content = std::fs::read_to_string(format!("content/{file_id}.md")).ok()?;
+    let parsed = if file_content.starts_with("---\n") {
+        parse_yaml_frontmatter(&file_content)
+    } else {
+        parse_legacy_frontmatter(&file_content)
+    };
+    let (title, author, created_at, raw_content) = parsed?;
+    let post = Arc::new(Post {
+        id: file_id.to_string(),
+        title,
+        author,
+        content: nonograph_parser::render_markdown_with_config(
+            &raw_content,
+            &render_options(config),
+        ),
+        raw_content,
+        created_at,
+    });
+    storage
+        .write()
+        .unwrap()
+        .insert(file_id.to_string(), Arc::clone(&post));
+    Some(post)
+}
+
+fn serve_article(
+    storage: &State<PostStorage>,
+    file_id: &str,
+    post: &Post,
+    nojs: bool,
+    public_id: &str,
+) -> Result<
+    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
+    (
+        Status,
+        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
+    ),
+> {
+    match article_html(post, nojs, public_id) {
+        Ok(html) => {
+            storage.write().unwrap().remember_html(
+                file_id,
+                nojs,
+                public_id,
+                Arc::from(html.as_str()),
+            );
+            Ok(rocket::Either::Left(content::RawHtml(html)))
+        }
+        Err(error) => Ok(rocket::Either::Left(content::RawHtml(format!(
+            "Template error: {error}"
+        )))),
+    }
+}
+
+fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, String> {
+    let mut context = HashMap::new();
+    context.insert("title".to_string(), post.title.clone());
+    context.insert("content".to_string(), post.content.clone());
+    let author = if post.author.is_empty() {
+        "Anonymous".to_string()
+    } else {
+        post.author.clone()
+    };
+    context.insert("author".to_string(), author);
+    let author_display = if post.author.is_empty() {
+        "Anonymous · ".to_string()
+    } else {
+        format!("{} · ", post.author)
+    };
+    context.insert("author_display".to_string(), author_display);
+    context.insert(
+        "created_at".to_string(),
+        post.created_at.format("%B %d, %Y").to_string(),
+    );
+    context.insert(
+        "created_at_iso".to_string(),
+        post.created_at
+            .format("%Y-%m-%dT00:00:00+00:00")
+            .to_string(),
+    );
+    context.insert("url".to_string(), format!("/{public_id}"));
+    context.insert(
+        "description".to_string(),
+        post_description(&post.raw_content),
+    );
+    fill_page_chrome(&mut context, nojs, public_id);
+    template::shared().render("post", &context)
 }
 
 const NOT_FOUND_HTML: &str = r#"<!doctype html>

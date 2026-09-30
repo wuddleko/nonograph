@@ -30,18 +30,8 @@ onion_hostname_file = "/var/lib/tor/hidden_service/hostname"
 # Maximum cache size in MB
 max_cache_size_mb = 128
 
-# Cache buffer size for streaming processing in bytes
-stream_buffer_size = 8192
-
 # How often to check for deleted posts and remove them from cache (minutes)
 cache_purge_interval_mins = 60
-
-[performance]
-# Content size threshold for simple pre-formatted fallback (characters)
-large_content_threshold = 30000
-
-# Content size threshold for streaming processing (characters)
-streaming_threshold = 50000
 
 [security]
 # Maximum URL length for link processing

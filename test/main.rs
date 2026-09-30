@@ -1,5 +1,6 @@
 use super::*;
 use crate::template::TemplateEngine;
+use std::collections::HashMap;
 
 fn assert_unguessable_id(post_id: &str, slug: &str, date: &str) {
     let prefix = format!("{slug}-");
@@ -27,7 +28,7 @@ fn assert_unguessable_id(post_id: &str, slug: &str, date: &str) {
 
 #[test]
 fn test_post_id_generation() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
 
     let id1 = generate_post_id("Hello World", &storage).unwrap();
@@ -87,7 +88,7 @@ fn test_generated_ids_are_always_valid() {
     // otherwise a freshly created post would 404. These titles exercise
     // each slug branch: a normal slug, the symbol-only and whitespace-only
     // fallbacks ("na-XXXX"), and the long-title truncation ("-etc").
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     for title in [
         "Hello World",
         "Special!@#$%Characters",
@@ -360,7 +361,7 @@ fn test_xss_attack_vectors() {
 
 #[test]
 fn test_post_creation_sanitization_integration() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let malicious_title = "<script>alert('xss')</script>Clean Title";
     let malicious_author = "<b>Bold</b><img src=x>Author";
     let clean_content = "This is safe content";
@@ -379,31 +380,6 @@ fn test_post_creation_sanitization_integration() {
 
     assert_eq!(post.title, "Clean Title");
     assert_eq!(post.author, "BoldAuthor");
-}
-
-#[test]
-fn test_post_storage() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
-    let post = Post {
-        id: "test-post".to_string(),
-        title: "Test Post".to_string(),
-        author: "Test Author".to_string(),
-        content: "Test content".to_string(),
-        raw_content: "Test content".to_string(),
-        created_at: Utc::now(),
-    };
-
-    {
-        let mut posts = storage.lock().unwrap();
-        posts.insert("test-post".to_string(), post.clone());
-    }
-
-    {
-        let mut posts = storage.lock().unwrap();
-        let retrieved = posts.get_ref("test-post").unwrap();
-        assert_eq!(retrieved.title, "Test Post");
-        assert_eq!(retrieved.content, "Test content");
-    }
 }
 
 #[test]
@@ -443,12 +419,15 @@ fn insert_cached_post(storage: &PostStorage, id: &str) {
         raw_content: "Content".to_string(),
         created_at: Utc::now(),
     };
-    storage.lock().unwrap().insert(id.to_string(), post);
+    storage
+        .write()
+        .unwrap()
+        .insert(id.to_string(), Arc::new(post));
 }
 
 #[test]
 fn test_same_title_gets_a_different_random_segment() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
 
     let first = generate_post_id("Hello World", &storage).unwrap();
@@ -462,7 +441,7 @@ fn test_same_title_gets_a_different_random_segment() {
 
 #[test]
 fn test_empty_title_ids_differ() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
 
     let first = generate_post_id("", &storage).unwrap();
@@ -476,7 +455,7 @@ fn test_empty_title_ids_differ() {
 
 #[test]
 fn test_cached_exact_id_takes_the_next_suffix() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
     let random = "0123456789abcdef0123456789abcdef";
 
@@ -495,7 +474,7 @@ fn test_cached_exact_id_takes_the_next_suffix() {
 
 #[test]
 fn test_cached_id_slots_exhausted() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
     let random = "fedcba9876543210fedcba9876543210";
 
@@ -512,7 +491,7 @@ fn test_cached_id_slots_exhausted() {
 
 #[test]
 fn test_max_length_id_stays_within_path_limit() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let date_str = Utc::now().format("%m-%d-%Y").to_string();
     let long_title = "word ".repeat(80);
     let id = generate_post_id(&long_title, &storage).unwrap();
@@ -616,7 +595,7 @@ fn test_character_limits() {
 
 #[test]
 fn test_emoji_handling() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     let emoji_title = "🍆 Test Post with Emojis 🎉";
     let emoji_content = "🌟 ".repeat(80) + "This is content with lots of emojis! 🎯🔥💯";
@@ -633,12 +612,7 @@ fn test_emoji_handling() {
         created_at: Utc::now(),
     };
 
-    let description = if post.raw_content.chars().count() > 160 {
-        let truncated: String = post.raw_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        post.raw_content.clone()
-    };
+    let description = pages::post_description(&post.raw_content);
 
     assert!(description.len() <= emoji_content.len());
     assert!(!description.is_empty());
@@ -665,7 +639,7 @@ fn test_emoji_parsing_edge_cases() {
     let boundary_result = parser::render_markdown(boundary_content);
     assert!(boundary_result.contains("AB"));
 
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let emoji_title = "🎯";
     let result = generate_post_id(emoji_title, &storage);
     assert!(result.is_ok());
@@ -677,7 +651,7 @@ fn test_emoji_parsing_edge_cases() {
 
 #[test]
 fn test_chinese_characters_transliteration() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test Chinese characters get transliterated
     let chinese_title = "李琴峰";
@@ -709,7 +683,7 @@ fn test_chinese_characters_transliteration() {
 
 #[test]
 fn test_unicode_languages_transliteration() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test various unicode languages and scripts get transliterated
     let test_cases = vec![
@@ -773,7 +747,7 @@ fn test_unicode_languages_transliteration() {
 
 #[test]
 fn test_unicode_transliteration() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test transliteration of various Unicode characters
     let test_cases = vec![
@@ -835,7 +809,7 @@ fn test_unicode_transliteration() {
 
 #[test]
 fn test_title_truncation_with_etc_marker() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test long transliterated title gets truncated with etc marker
     let long_title = "🍆".repeat(100); // 100 eggplant emojis
@@ -886,7 +860,7 @@ fn test_title_truncation_with_etc_marker() {
 
 #[test]
 fn test_deunicode_processes_all_titles() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test that deunicode is applied to ALL titles, not just non-ASCII
     let test_cases = vec![
@@ -945,7 +919,7 @@ fn test_deunicode_processes_all_titles() {
 
 #[test]
 fn test_bypass_prevention() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     // Test that it's impossible to bypass deunicode processing
     // All these attempts should be safely processed
@@ -997,12 +971,7 @@ fn test_truncation_with_200_characters() {
     let emoji_content = "🎯".repeat(200);
     assert_eq!(emoji_content.chars().count(), 200);
 
-    let description = if emoji_content.chars().count() > 160 {
-        let truncated: String = emoji_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        emoji_content.clone()
-    };
+    let description = pages::post_description(&emoji_content);
 
     assert_eq!(description.chars().count(), 163);
     assert!(description.ends_with("..."));
@@ -1012,12 +981,7 @@ fn test_truncation_with_200_characters() {
     let random_content = &random_content[..200];
     assert_eq!(random_content.chars().count(), 200);
 
-    let description2 = if random_content.chars().count() > 160 {
-        let truncated: String = random_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        random_content.to_string()
-    };
+    let description2 = pages::post_description(random_content);
 
     assert_eq!(description2.chars().count(), 163);
     assert!(description2.ends_with("..."));
@@ -1025,12 +989,7 @@ fn test_truncation_with_200_characters() {
     let short_content = "🌟".repeat(50);
     assert_eq!(short_content.chars().count(), 50);
 
-    let description3 = if short_content.chars().count() > 160 {
-        let truncated: String = short_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        short_content.clone()
-    };
+    let description3 = pages::post_description(&short_content);
 
     assert_eq!(description3.chars().count(), 50);
     assert!(!description3.ends_with("..."));
@@ -1220,7 +1179,7 @@ fn test_yaml_round_trip_unicode_symbols() {
 
 #[test]
 fn test_opengraph_description_integration() {
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
 
     let long_emoji_content = "🚀🎉🌟💯".repeat(50);
     let emoji_title = "Emoji Test Post";
@@ -1235,12 +1194,7 @@ fn test_opengraph_description_integration() {
         created_at: Utc::now(),
     };
 
-    let description = if post.raw_content.chars().count() > 160 {
-        let truncated: String = post.raw_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        post.raw_content.clone()
-    };
+    let description = pages::post_description(&post.raw_content);
 
     assert_eq!(description.chars().count(), 163);
     assert!(description.starts_with("🚀🎉🌟💯"));
@@ -1260,12 +1214,7 @@ fn test_opengraph_description_integration() {
         created_at: Utc::now(),
     };
 
-    let description2 = if post2.raw_content.chars().count() > 160 {
-        let truncated: String = post2.raw_content.chars().take(160).collect();
-        format!("{}...", truncated)
-    } else {
-        post2.raw_content.clone()
-    };
+    let description2 = pages::post_description(&post2.raw_content);
 
     assert_eq!(description2.chars().count(), 163);
     assert!(description2.starts_with("This is a very long"));
@@ -1334,7 +1283,7 @@ fn test_ammonia_configuration() {
 fn test_edge_cases() {
     // Test very short titles
     let short_title = "A";
-    let storage = Arc::new(Mutex::new(PostCache::new(128)));
+    let storage = PostCache::shared(128);
     let id = generate_post_id(short_title, &storage);
     assert!(id.is_ok());
     assert!(id.unwrap().starts_with("a-"));

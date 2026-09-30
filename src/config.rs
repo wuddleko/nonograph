@@ -7,7 +7,6 @@ pub struct Config {
     pub limits: Limits,
     pub server: Server,
     pub cache: Cache,
-    pub performance: Performance,
     pub security: Security,
     pub theme: Theme,
     #[serde(default)]
@@ -37,14 +36,7 @@ fn default_onion_hostname_file() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cache {
     pub max_cache_size_mb: usize,
-    pub stream_buffer_size: usize,
     pub cache_purge_interval_mins: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Performance {
-    pub large_content_threshold: usize,
-    pub streaming_threshold: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,12 +97,7 @@ impl Default for Config {
             },
             cache: Cache {
                 max_cache_size_mb: 128,
-                stream_buffer_size: 8192,
                 cache_purge_interval_mins: 60,
-            },
-            performance: Performance {
-                large_content_threshold: 30000,
-                streaming_threshold: 50000,
             },
             security: Security {
                 max_url_length: 4096,

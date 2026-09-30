@@ -168,6 +168,22 @@ fn post_scripts_do_not_load_the_wasm_renderer() {
 }
 
 #[test]
+fn description_stops_after_160_characters() {
+    let long = format!("🎯{}", "x".repeat(10_000));
+    let description = post_description(&long);
+    assert_eq!(description.chars().count(), 163);
+    assert!(description.ends_with("..."));
+    assert_eq!(
+        description.chars().take(160).collect::<String>(),
+        long.chars().take(160).collect::<String>()
+    );
+
+    let exact = "y".repeat(160);
+    assert_eq!(post_description(&exact), exact);
+    assert_eq!(post_description("short"), "short");
+}
+
+#[test]
 fn long_description_is_escaped_once() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

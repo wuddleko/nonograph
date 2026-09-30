@@ -2,6 +2,7 @@
 extern crate rocket;
 
 mod archiver;
+pub(crate) mod cache;
 pub(crate) mod config;
 pub(crate) mod csrf;
 mod nip44;
@@ -9,6 +10,8 @@ pub(crate) mod nostr;
 mod pages;
 pub(crate) mod save;
 pub(crate) mod template;
+
+pub(crate) use cache::{Post, PostCache, PostStorage};
 
 use config::Config;
 use nonograph_parser as parser;
@@ -24,156 +27,7 @@ use rocket::{
     http::{Header, Status},
     Request, Response,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-use std::sync::{Arc, Mutex};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Post {
-    id: String,
-    title: String,
-    author: String,
-    content: String,
-    raw_content: String,
-    created_at: DateTime<Utc>,
-}
-
-impl Post {
-    fn memory_size(&self) -> usize {
-        self.id.len()
-            + self.title.len()
-            + self.author.len()
-            + self.content.len()
-            + self.raw_content.len()
-            + 64 // Rough estimate for DateTime and struct overhead
-    }
-}
-
-#[derive(Debug)]
-struct CacheEntry {
-    post: Post,
-    last_accessed: DateTime<Utc>,
-}
-
-#[derive(Debug)]
-struct PostCache {
-    entries: HashMap<String, CacheEntry>,
-    total_size: usize,
-    max_size: usize, // 128 MB = 128 * 1024 * 1024
-}
-
-impl PostCache {
-    fn new(max_size_mb: usize) -> Self {
-        PostCache {
-            entries: HashMap::new(),
-            total_size: 0,
-            max_size: max_size_mb * 1024 * 1024,
-        }
-    }
-
-    // Add a non-cloning get for read-only access
-    fn get_ref(&mut self, post_id: &str) -> Option<&Post> {
-        if let Some(entry) = self.entries.get_mut(post_id) {
-            entry.last_accessed = Utc::now();
-            Some(&entry.post)
-        } else {
-            None
-        }
-    }
-
-    #[cfg(test)]
-    fn contains_key(&self, post_id: &str) -> bool {
-        self.entries.contains_key(post_id)
-    }
-
-    fn insert(&mut self, post_id: String, post: Post) {
-        let post_size = post.memory_size();
-
-        // Remove existing entry if it exists
-        if let Some(old_entry) = self.entries.remove(&post_id) {
-            self.total_size -= old_entry.post.memory_size();
-            println!("Nonograph: Cache UPDATE for post: {}", post_id);
-        } else {
-            println!("Nonograph: Cache INSERT for post: {}", post_id);
-        }
-
-        // Add new entry size
-        self.total_size += post_size;
-
-        // Evict oldest entries if over limit
-        let mut evicted_count = 0;
-        while self.total_size > self.max_size && !self.entries.is_empty() {
-            self.evict_oldest();
-            evicted_count += 1;
-        }
-
-        if evicted_count > 0 {
-            println!(
-                "Nonograph: Cache EVICT {} old posts to stay under 128MB limit",
-                evicted_count
-            );
-        }
-
-        // Insert new entry
-        let entry = CacheEntry {
-            post,
-            last_accessed: Utc::now(),
-        };
-
-        self.entries.insert(post_id.clone(), entry);
-        let (size_val, size_unit) = match self.total_size {
-            b if b < 1_024 => (b as f64, "B"),
-            b if b < 1_024 * 1_024 => (b as f64 / 1_024.0, "KB"),
-            b if b < 1_024 * 1_024 * 1_024 => (b as f64 / (1_024.0 * 1_024.0), "MB"),
-            b => (b as f64 / (1_024.0 * 1_024.0 * 1_024.0), "GB"),
-        };
-        println!(
-            "Nonograph: Cache now contains {} posts, total size: {:.2} {}",
-            self.entries.len(),
-            size_val,
-            size_unit
-        );
-    }
-
-    fn evict_oldest(&mut self) {
-        if let Some(oldest_id) = self.find_oldest_entry() {
-            if let Some(old_entry) = self.entries.remove(&oldest_id) {
-                self.total_size -= old_entry.post.memory_size();
-                println!(
-                    "Nonograph: Cache EVICT for post: {} (freed: {} KB)",
-                    oldest_id,
-                    old_entry.post.memory_size() / 1024
-                );
-            }
-        }
-    }
-
-    fn find_oldest_entry(&self) -> Option<String> {
-        self.entries
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_accessed)
-            .map(|(id, _)| id.clone())
-    }
-
-    fn purge_deleted(&mut self) {
-        let stale: Vec<String> = self
-            .entries
-            .keys()
-            .filter(|id| !std::path::Path::new(&format!("content/{}.md", id)).exists())
-            .cloned()
-            .collect();
-
-        for id in stale {
-            if let Some(entry) = self.entries.remove(&id) {
-                self.total_size -= entry.post.memory_size();
-                println!("Nonograph: Cache EVICT for post: {}.md", id);
-            }
-        }
-    }
-}
-
-type PostStorage = Arc<Mutex<PostCache>>;
+use std::sync::Arc;
 
 struct OnionLocationFairing {
     onion_url: String,
@@ -383,7 +237,7 @@ fn generate_post_id_with_segment(
             .collect();
 
         let fallback_slug = format!("na-{}", chars);
-        let posts = storage.lock().unwrap();
+        let posts = storage.read().unwrap();
 
         for i in 0..1000 {
             let post_id = assemble_post_id(&fallback_slug, random, &date_str, i);
@@ -398,7 +252,7 @@ fn generate_post_id_with_segment(
         );
     }
 
-    let posts = storage.lock().unwrap();
+    let posts = storage.read().unwrap();
 
     // Try to find an available slot (0-999)
     for i in 0..1000 {
@@ -464,18 +318,18 @@ fn publish_note(
         nostr::KIND_GIFT_WRAP,
     );
     let nsec = nostr::encode_nsec(&wrapped.recipient_secret);
-    let post = Post {
+    let post = Arc::new(Post {
         id: wrapped.id_hex(),
         title: parser::sanitize_text(title),
         author: parser::sanitize_text(author),
         content: rendered_content.to_string(),
         raw_content: raw_content.to_string(),
         created_at,
-    };
+    });
     if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
         return Err(PublishFailure::Save(error.to_string()));
     }
-    storage.lock().unwrap().insert(post.id.clone(), post);
+    storage.write().unwrap().insert(post.id.clone(), post);
     Ok(format!("{nevent}?nsec={nsec}"))
 }
 
@@ -546,7 +400,7 @@ fn fetch_missing_note(
     nsec: Option<&str>,
     storage: &PostStorage,
     config: &Config,
-) -> Option<Post> {
+) -> Option<Arc<Post>> {
     let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
     let secret = nsec.and_then(nostr::decode_nsec);
     let fetched = nostr::fetch_note(&nevent.relays, &nevent.event_id_hex, timeout, secret)?;
@@ -554,31 +408,30 @@ fn fetch_missing_note(
         return None;
     }
     let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
-    let post = Post {
+    let post = Arc::new(Post {
         id: fetched.id_hex,
         title: parser::sanitize_text(&fetched.title),
         author: parser::sanitize_text(&fetched.author),
         content: parser::render_markdown_with_config(&fetched.content, &render_options(config)),
         raw_content: fetched.content,
         created_at,
-    };
+    });
     if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
         if !matches!(error, save::SaveError::AlreadyExists) {
             eprintln!("Nonograph: Failed to save fetched post: {error}");
         }
     }
     storage
-        .lock()
+        .write()
         .unwrap()
-        .insert(post.id.clone(), post.clone());
+        .insert(post.id.clone(), Arc::clone(&post));
     Some(post)
 }
 
 fn start_cache_purge_worker(storage: PostStorage, interval_mins: u64) {
     thread::spawn(move || loop {
         thread::sleep(std::time::Duration::from_secs(interval_mins * 60));
-        let mut cache = storage.lock().unwrap();
-        cache.purge_deleted();
+        cache::purge_missing(&storage);
     });
 }
 
@@ -681,7 +534,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         .limit("data-form", config.form_data_limit_bytes().bytes())
         .limit("string", config.form_data_limit_bytes().bytes());
 
-    let storage = Arc::new(Mutex::new(PostCache::new(config.cache.max_cache_size_mb)));
+    let storage = PostCache::shared(config.cache.max_cache_size_mb);
     start_cache_purge_worker(Arc::clone(&storage), config.cache.cache_purge_interval_mins);
 
     let onion_url = config.resolve_onion_url();
