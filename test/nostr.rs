@@ -1,5 +1,5 @@
 use super::*;
-use secp256k1::XOnlyPublicKey;
+use secp256k1::{Secp256k1, XOnlyPublicKey};
 
 #[test]
 fn test_npub_bech32_matches_nip19() {
@@ -308,6 +308,185 @@ fn wrap_custom_rumor(tags: &[Vec<String>], content: &str, created_at: i64) -> Wr
         event_json: wrap.event_json,
         recipient_secret,
     }
+}
+
+#[test]
+fn a_relay_does_not_connect_after_its_deadline() {
+    let started = Instant::now();
+    let error = connect_relay("wss://127.0.0.1:9", Instant::now(), None).unwrap_err();
+    assert_eq!(error, RELAY_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_millis(50));
+}
+
+#[test]
+fn publish_waits_for_every_relay_it_will_name() {
+    let slow = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let slow_port = slow.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = slow.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0u8; 64];
+        loop {
+            match std::io::Read::read(&mut stream, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    });
+    let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused_port = refused.local_addr().unwrap().port();
+    drop(refused);
+
+    let note = sign_note("Title", "Ada", "body", 1_700_000_000);
+    let started = Instant::now();
+    let accepted = publish_to_relays(
+        &[
+            format!("wss://127.0.0.1:{refused_port}"),
+            format!("wss://127.0.0.1:{slow_port}"),
+        ],
+        &note,
+        Duration::from_millis(200),
+    );
+    let elapsed = started.elapsed();
+    assert!(accepted.is_empty());
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "returned when the first relay failed: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "waited longer than one deadline: {elapsed:?}"
+    );
+}
+
+#[test]
+fn fetch_stops_threads_at_the_deadline() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0u8; 64];
+        loop {
+            match std::io::Read::read(&mut stream, &mut buf) {
+                Ok(0) | Err(_) => {
+                    let _ = closed_tx.send(());
+                    break;
+                }
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let note = fetch_note(
+        &[format!("wss://127.0.0.1:{port}")],
+        &"cd".repeat(32),
+        Duration::from_millis(200),
+        None,
+    );
+    let elapsed = started.elapsed();
+    assert!(note.is_none());
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "ran past one deadline: {elapsed:?}"
+    );
+    assert!(
+        closed_rx.recv_timeout(Duration::from_millis(400)).is_ok(),
+        "fetch thread still held the relay socket"
+    );
+}
+
+#[test]
+fn cancel_stops_a_relay_before_the_deadline() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = accepted_tx.send(());
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut buf = [0u8; 64];
+        loop {
+            match std::io::Read::read(&mut stream, &mut buf) {
+                Ok(0) | Err(_) => {
+                    let _ = closed_tx.send(());
+                    break;
+                }
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let handle = std::thread::spawn(move || {
+        connect_relay(
+            &format!("wss://127.0.0.1:{port}"),
+            Instant::now() + Duration::from_secs(5),
+            Some(&flag),
+        )
+    });
+    accepted_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("relay did not accept");
+    cancel.store(true, Ordering::Relaxed);
+    let started = Instant::now();
+    let error = handle.join().unwrap().unwrap_err();
+    let elapsed = started.elapsed();
+    assert_eq!(error, RELAY_TIMEOUT);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "cancel left the relay running: {elapsed:?}"
+    );
+    assert!(
+        closed_rx.recv_timeout(Duration::from_millis(400)).is_ok(),
+        "fetch thread still held the relay socket"
+    );
+}
+
+#[test]
+fn a_name_is_not_resolved_after_the_deadline() {
+    let started = Instant::now();
+    let error = resolve_host("relay.example", 443, Instant::now(), None).unwrap_err();
+    assert_eq!(error, RELAY_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_millis(50));
+}
+
+#[test]
+fn a_cancelled_name_is_not_resolved() {
+    let cancel = Arc::new(AtomicBool::new(true));
+    let started = Instant::now();
+    let error = resolve_host(
+        "relay.example",
+        443,
+        Instant::now() + Duration::from_secs(5),
+        Some(&cancel),
+    )
+    .unwrap_err();
+    assert_eq!(error, RELAY_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_millis(50));
+}
+
+#[test]
+fn the_system_resolver_answers_localhost() {
+    let addresses = resolve_host(
+        "localhost",
+        9,
+        Instant::now() + Duration::from_secs(2),
+        None,
+    )
+    .unwrap();
+    assert!(addresses.iter().any(|address| address.ip().is_loopback()));
+    assert!(addresses.iter().all(|address| address.port() == 9));
 }
 
 fn assert_signature(note: &SignedNote) {

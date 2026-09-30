@@ -1,12 +1,15 @@
-use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
+
+use socket2::{Domain, SockAddr, Socket, Type};
 
 use bech32::primitives::decode::CheckedHrpstring;
 use bech32::{Bech32, Hrp};
 use rand::{thread_rng, Rng};
 use secp256k1::schnorr::Signature;
-use secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
+use secp256k1::{Keypair, Message, XOnlyPublicKey, SECP256K1};
 use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
@@ -42,8 +45,7 @@ impl SignedNote {
 
 #[cfg(test)]
 pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> SignedNote {
-    let secp = Secp256k1::new();
-    let keypair = Keypair::new(&secp, &mut thread_rng());
+    let keypair = Keypair::new(SECP256K1, &mut thread_rng());
     signed_event(
         &keypair,
         created_at,
@@ -90,10 +92,9 @@ pub fn wrap_note(
     content: &str,
     created_at: i64,
 ) -> Result<WrappedNote, WrapError> {
-    let secp = Secp256k1::new();
-    let author_key = Keypair::new(&secp, &mut thread_rng());
-    let recipient_key = Keypair::new(&secp, &mut thread_rng());
-    let wrap_key = Keypair::new(&secp, &mut thread_rng());
+    let author_key = Keypair::new(SECP256K1, &mut thread_rng());
+    let recipient_key = Keypair::new(SECP256K1, &mut thread_rng());
+    let wrap_key = Keypair::new(SECP256K1, &mut thread_rng());
     let recipient_secret = recipient_key.secret_bytes();
     let recipient_pubkey = recipient_key.x_only_public_key().0.serialize();
 
@@ -253,6 +254,8 @@ pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration
         return Vec::new();
     }
 
+    // Every relay named in the nevent has to answer, or hit this same deadline.
+    let deadline = Instant::now() + timeout;
     let event_id = note.id_hex();
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(relays.len());
@@ -261,7 +264,7 @@ pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration
             let event_json = note.event_json.clone();
             let event_id = event_id.clone();
             handles.push(scope.spawn(move || {
-                match send_event(&relay, &event_json, &event_id, timeout) {
+                match send_event(&relay, &event_json, &event_id, deadline) {
                     Ok(()) => Some(relay),
                     Err(error) => {
                         eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
@@ -296,36 +299,400 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
 
 type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
 
-fn connect_relay(relay: &str, timeout: Duration) -> Result<RelaySocket, String> {
+const RELAY_TIMEOUT: &str = "timed out waiting for the relay";
+/// A relay thread blocks for at most this long, then checks the deadline and cancel flag.
+const FETCH_POLL: Duration = Duration::from_millis(100);
+
+fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
+    static CONNECTOR: OnceLock<Result<native_tls::TlsConnector, String>> = OnceLock::new();
+    match CONNECTOR
+        .get_or_init(|| native_tls::TlsConnector::new().map_err(|error| error.to_string()))
+    {
+        Ok(connector) => Ok(connector),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn relay_wait_is_over(deadline: Instant, cancel: Option<&AtomicBool>) -> bool {
+    Instant::now() >= deadline || cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
+}
+
+fn wait_budget(deadline: Instant, cancel: Option<&AtomicBool>) -> Result<Duration, String> {
+    if relay_wait_is_over(deadline, cancel) {
+        return Err(RELAY_TIMEOUT.to_string());
+    }
+    let wait = deadline.saturating_duration_since(Instant::now());
+    if wait.is_zero() {
+        Err(RELAY_TIMEOUT.to_string())
+    } else {
+        Ok(wait)
+    }
+}
+
+fn io_slice(deadline: Instant, cancel: Option<&AtomicBool>) -> Result<Duration, String> {
+    let wait = wait_budget(deadline, cancel)?;
+    Ok(if cancel.is_some() {
+        wait.min(FETCH_POLL)
+    } else {
+        wait
+    })
+}
+
+fn arm_stream(stream: &TcpStream, wait: Duration) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(wait))
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_write_timeout(Some(wait))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+struct Ready {
+    readable: bool,
+    writable: bool,
+    failed: bool,
+}
+
+impl Ready {
+    fn idle() -> Self {
+        Self {
+            readable: false,
+            writable: false,
+            failed: false,
+        }
+    }
+
+    fn waiting(&self) -> bool {
+        !self.readable && !self.writable && !self.failed
+    }
+}
+
+trait PollReady {
+    fn poll_ready(&self, wait: Duration, read: bool, write: bool) -> Result<Ready, String>;
+}
+
+#[cfg(unix)]
+impl<S: std::os::fd::AsRawFd> PollReady for S {
+    fn poll_ready(&self, wait: Duration, read: bool, write: bool) -> Result<Ready, String> {
+        let mut events = libc::POLLERR | libc::POLLHUP;
+        if read {
+            events |= libc::POLLIN;
+        }
+        if write {
+            events |= libc::POLLOUT;
+        }
+        let mut poll_fd = libc::pollfd {
+            fd: self.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        let millis = wait.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, millis) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return Ok(Ready::idle());
+            }
+            return Err(error.to_string());
+        }
+        if ready == 0 {
+            return Ok(Ready::idle());
+        }
+        Ok(Ready {
+            readable: poll_fd.revents & libc::POLLIN != 0,
+            writable: poll_fd.revents & libc::POLLOUT != 0,
+            failed: poll_fd.revents & (libc::POLLERR | libc::POLLHUP) != 0,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl<S: std::os::windows::io::AsRawSocket> PollReady for S {
+    fn poll_ready(&self, wait: Duration, read: bool, write: bool) -> Result<Ready, String> {
+        const POLLERR: i16 = 0x0001;
+        const POLLHUP: i16 = 0x0002;
+        const POLLNVAL: i16 = 0x0004;
+        const POLLWRNORM: i16 = 0x0010;
+        const POLLRDNORM: i16 = 0x0100;
+        let mut events = POLLERR | POLLHUP | POLLNVAL;
+        if read {
+            events |= POLLRDNORM;
+        }
+        if write {
+            events |= POLLWRNORM;
+        }
+        let mut poll_fd = WsaPollFd {
+            fd: self.as_raw_socket(),
+            events,
+            revents: 0,
+        };
+        let millis = wait.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let ready = unsafe { WSAPoll(&mut poll_fd, 1, millis) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return Ok(Ready::idle());
+            }
+            return Err(error.to_string());
+        }
+        if ready == 0 {
+            return Ok(Ready::idle());
+        }
+        Ok(Ready {
+            readable: poll_fd.revents & POLLRDNORM != 0,
+            writable: poll_fd.revents & POLLWRNORM != 0,
+            failed: poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL) != 0,
+        })
+    }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WsaPollFd {
+    fd: std::os::windows::io::RawSocket,
+    events: i16,
+    revents: i16,
+}
+
+#[cfg(windows)]
+#[link(name = "ws2_32")]
+extern "system" {
+    fn WSAPoll(fds: *mut WsaPollFd, nfds: u32, timeout: i32) -> i32;
+}
+
+/// Wait until a handshake can move, without spinning on a socket that is only writable.
+/// After one immediate write-ready poll, the next wait listens for the peer.
+fn wait_for_handshake(
+    socket: &impl PollReady,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    saw_immediate_write: &mut bool,
+) -> Result<(), String> {
+    let wait = io_slice(deadline, cancel)?;
+    let started = Instant::now();
+    let ready = socket.poll_ready(wait, true, !*saw_immediate_write)?;
+    let immediate = started.elapsed() < Duration::from_millis(5);
+    let write_only = ready.writable && !ready.readable && !ready.failed;
+    *saw_immediate_write = immediate && write_only;
+    Ok(())
+}
+
+fn set_blocking(stream: &TcpStream) -> Result<(), String> {
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| error.to_string())
+}
+
+fn connection_pending(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+    ) {
+        return true;
+    }
+    match error.raw_os_error() {
+        #[cfg(unix)]
+        Some(code)
+            if code == libc::EINPROGRESS || code == libc::EALREADY || code == libc::EWOULDBLOCK =>
+        {
+            true
+        }
+        // WSAEWOULDBLOCK, WSAEINPROGRESS, WSAEALREADY
+        #[cfg(windows)]
+        Some(10035 | 10036 | 10037) => true,
+        _ => false,
+    }
+}
+
+fn already_connected(error: &std::io::Error) -> bool {
+    match error.raw_os_error() {
+        #[cfg(unix)]
+        Some(code) if code == libc::EISCONN => true,
+        #[cfg(windows)]
+        Some(10056) => true,
+        _ => false,
+    }
+}
+
+fn connect_tcp(
+    address: SocketAddr,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<TcpStream, String> {
+    let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)
+        .map_err(|error| error.to_string())?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    match socket.connect(&SockAddr::from(address)) {
+        Ok(()) => {}
+        Err(error) if already_connected(&error) => {}
+        Err(error) if connection_pending(&error) => loop {
+            let wait = io_slice(deadline, cancel)?;
+            let ready = socket.poll_ready(wait, false, true)?;
+            if ready.waiting() {
+                continue;
+            }
+            match socket.take_error().map_err(|error| error.to_string())? {
+                Some(error) => return Err(error.to_string()),
+                None => break,
+            }
+        },
+        Err(error) => return Err(error.to_string()),
+    }
+    socket
+        .set_nonblocking(false)
+        .map_err(|error| error.to_string())?;
+    Ok(TcpStream::from(socket))
+}
+
+fn tls_handshake(
+    connector: &native_tls::TlsConnector,
+    host: &str,
+    tcp: TcpStream,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<native_tls::TlsStream<TcpStream>, String> {
+    tcp.set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let mut pending = match connector.connect(host, tcp) {
+        Ok(stream) => {
+            set_blocking(stream.get_ref())?;
+            return Ok(stream);
+        }
+        Err(native_tls::HandshakeError::WouldBlock(mid)) => mid,
+        Err(native_tls::HandshakeError::Failure(error)) => return Err(error.to_string()),
+    };
+    let mut saw_immediate_write = false;
+    loop {
+        wait_for_handshake(
+            pending.get_ref(),
+            deadline,
+            cancel,
+            &mut saw_immediate_write,
+        )?;
+        match pending.handshake() {
+            Ok(stream) => {
+                set_blocking(stream.get_ref())?;
+                return Ok(stream);
+            }
+            Err(native_tls::HandshakeError::WouldBlock(mid)) => pending = mid,
+            Err(native_tls::HandshakeError::Failure(error)) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn websocket_handshake(
+    request: tungstenite::http::Request<()>,
+    tls: native_tls::TlsStream<TcpStream>,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<RelaySocket, String> {
+    tls.get_ref()
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let mut saw_immediate_write = false;
+    let mut pending = match tungstenite::client::client(request, tls) {
+        Ok((socket, _)) => {
+            set_blocking(socket.get_ref().get_ref())?;
+            return Ok(socket);
+        }
+        Err(tungstenite::HandshakeError::Interrupted(mid)) => mid,
+        Err(tungstenite::HandshakeError::Failure(error)) => return Err(error.to_string()),
+    };
+    loop {
+        wait_for_handshake(
+            pending.get_ref().get_ref().get_ref(),
+            deadline,
+            cancel,
+            &mut saw_immediate_write,
+        )?;
+        match pending.handshake() {
+            Ok((socket, _)) => {
+                set_blocking(socket.get_ref().get_ref())?;
+                return Ok(socket);
+            }
+            Err(tungstenite::HandshakeError::Interrupted(mid)) => pending = mid,
+            Err(tungstenite::HandshakeError::Failure(error)) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn resolve_host(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<SocketAddr>, String> {
+    wait_budget(deadline, cancel)?;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+
+    let host = host.to_string();
+    let (tx, rx) = mpsc::channel();
+    // The system resolver cannot be interrupted. The relay thread returns at the
+    // deadline, and this thread exits when that call returns.
+    std::thread::spawn(move || {
+        let resolved = (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|addresses| addresses.collect::<Vec<_>>())
+            .map_err(|error| error.to_string());
+        let _ = tx.send(resolved);
+    });
+
+    loop {
+        let wait = io_slice(deadline, cancel)?;
+        match rx.recv_timeout(wait) {
+            Ok(Ok(addresses)) if addresses.is_empty() => {
+                return Err("relay address did not resolve".to_string());
+            }
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("relay address did not resolve".to_string());
+            }
+        }
+    }
+}
+
+fn connect_relay(
+    relay: &str,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<RelaySocket, String> {
     let request = relay
         .into_client_request()
         .map_err(|error| error.to_string())?;
     let uri = request.uri().clone();
     let host = uri.host().ok_or("relay url has no host")?.to_string();
     let port = uri.port_u16().unwrap_or(443);
+    let addresses = resolve_host(&host, port, deadline, cancel)?;
+    let connector = tls_connector()?;
     let mut last_error = "relay address did not resolve".to_string();
-    let addresses = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|error| error.to_string())?;
     for address in addresses {
-        let tcp = match TcpStream::connect_timeout(&address, timeout) {
+        let tcp = match connect_tcp(address, deadline, cancel) {
             Ok(tcp) => tcp,
+            Err(error) if error == RELAY_TIMEOUT => return Err(error),
             Err(error) => {
-                last_error = error.to_string();
+                last_error = error;
                 continue;
             }
         };
-        tcp.set_read_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
-        tcp.set_write_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
-        let connector = native_tls::TlsConnector::new().map_err(|error| error.to_string())?;
-        let tls = connector
-            .connect(&host, tcp)
-            .map_err(|error| error.to_string())?;
-        let (socket, _) =
-            tungstenite::client::client(request, tls).map_err(|error| error.to_string())?;
-        return Ok(socket);
+        let tls = match tls_handshake(connector, &host, tcp, deadline, cancel) {
+            Ok(tls) => tls,
+            Err(error) if error == RELAY_TIMEOUT => return Err(error),
+            Err(error) => {
+                last_error = error;
+                continue;
+            }
+        };
+        match websocket_handshake(request.clone(), tls, deadline, cancel) {
+            Ok(socket) => return Ok(socket),
+            Err(error) if error == RELAY_TIMEOUT => return Err(error),
+            Err(error) => last_error = error,
+        }
     }
     Err(last_error)
 }
@@ -335,11 +702,14 @@ enum Incoming {
     Closed,
 }
 
-fn read_incoming(socket: &mut RelaySocket, deadline: Instant) -> Result<Incoming, String> {
+fn read_incoming(
+    socket: &mut RelaySocket,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<Incoming, String> {
     loop {
-        if Instant::now() >= deadline {
-            return Err("timed out waiting for the relay".to_string());
-        }
+        let wait = io_slice(deadline, cancel)?;
+        arm_stream(socket.get_ref().get_ref(), wait)?;
         match socket.read() {
             Ok(tungstenite::Message::Text(text)) => return Ok(Incoming::Text(text.to_string())),
             Ok(tungstenite::Message::Ping(payload)) => {
@@ -351,10 +721,7 @@ fn read_incoming(socket: &mut RelaySocket, deadline: Instant) -> Result<Incoming
             Ok(_) => {}
             Err(tungstenite::Error::Io(error))
                 if error.kind() == std::io::ErrorKind::TimedOut
-                    || error.kind() == std::io::ErrorKind::WouldBlock =>
-            {
-                return Err("timed out waiting for the relay".to_string());
-            }
+                    || error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -364,17 +731,17 @@ fn send_event(
     relay: &str,
     event_json: &str,
     event_id_hex: &str,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<(), String> {
-    let mut socket = connect_relay(relay, timeout)?;
+    let mut socket = connect_relay(relay, deadline, None)?;
     let payload = format!("[\"EVENT\",{event_json}]");
+    arm_stream(socket.get_ref().get_ref(), wait_budget(deadline, None)?)?;
     socket
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
-    let deadline = Instant::now() + timeout;
     loop {
-        match read_incoming(&mut socket, deadline)? {
+        match read_incoming(&mut socket, deadline, None)? {
             Incoming::Closed => return Err("relay closed the connection".to_string()),
             Incoming::Text(text) => {
                 if let Some(result) = parse_ok(&text, event_id_hex) {
@@ -409,23 +776,42 @@ pub fn fetch_note(
         return None;
     }
 
+    let deadline = Instant::now() + timeout;
+    let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
+    let mut handles = Vec::with_capacity(relays.len());
     for relay in relays {
         let tx = tx.clone();
         let event_id_hex = event_id_hex.to_string();
-        std::thread::spawn(move || {
-            let found = match fetch_from_relay(&relay, &event_id_hex, timeout, recipient_secret) {
+        let cancel = Arc::clone(&cancel);
+        handles.push(std::thread::spawn(move || {
+            let found = match fetch_from_relay(
+                &relay,
+                &event_id_hex,
+                deadline,
+                &cancel,
+                recipient_secret,
+            ) {
                 Ok(note) => note,
                 Err(error) => {
-                    eprintln!("Nonograph: relay {relay} did not return the note: {error}");
+                    if error != RELAY_TIMEOUT {
+                        eprintln!("Nonograph: relay {relay} did not return the note: {error}");
+                    }
                     None
                 }
             };
             let _ = tx.send(found);
-        });
+        }));
     }
     drop(tx);
-    take_first_note(rx, Instant::now() + timeout)
+    let note = take_first_note(rx, deadline);
+    // A note can arrive before the deadline. Stop every other relay thread,
+    // including one still in lookup or a handshake, and join it before returning.
+    cancel.store(true, Ordering::Relaxed);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    note
 }
 
 fn take_first_note(
@@ -448,19 +834,23 @@ fn take_first_note(
 fn fetch_from_relay(
     relay: &str,
     event_id_hex: &str,
-    timeout: Duration,
+    deadline: Instant,
+    cancel: &AtomicBool,
     recipient_secret: Option<[u8; 32]>,
 ) -> Result<Option<FetchedNote>, String> {
-    let mut socket = connect_relay(relay, timeout)?;
+    let mut socket = connect_relay(relay, deadline, Some(cancel))?;
     let sub_id = random_hex(8);
     let payload = format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#);
+    arm_stream(
+        socket.get_ref().get_ref(),
+        wait_budget(deadline, Some(cancel))?,
+    )?;
     socket
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
-    let deadline = Instant::now() + timeout;
     loop {
-        match read_incoming(&mut socket, deadline)? {
+        match read_incoming(&mut socket, deadline, Some(cancel))? {
             Incoming::Closed => return Err("relay closed the connection".to_string()),
             Incoming::Text(text) => {
                 if let Some(note) =
@@ -637,11 +1027,10 @@ fn signed_event(
     tags: &[Vec<String>],
     content: &str,
 ) -> SignedNote {
-    let secp = Secp256k1::new();
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
     let id = event_id(&pubkey_hex, created_at, kind, tags, content);
-    let sig = secp.sign_schnorr(&Message::from_digest(id), keypair);
+    let sig = SECP256K1.sign_schnorr(&Message::from_digest(id), keypair);
     let event_json = event_wire(
         &hex_encode(&id),
         &pubkey_hex,
@@ -795,7 +1184,7 @@ fn verify_sig(parsed: &ParsedEvent) -> bool {
     let Ok(signature) = Signature::from_slice(&sig) else {
         return false;
     };
-    Secp256k1::new()
+    SECP256K1
         .verify_schnorr(&signature, &Message::from_digest(parsed.id), &xonly)
         .is_ok()
 }
@@ -853,7 +1242,7 @@ fn nip44_decrypt(
 
 fn xonly_pubkey(secret: &[u8; 32]) -> Result<[u8; 32], WrapError> {
     let secret_key = secp256k1::SecretKey::from_slice(secret).map_err(|_| WrapError)?;
-    let keypair = Keypair::from_secret_key(&Secp256k1::new(), &secret_key);
+    let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
     Ok(keypair.x_only_public_key().0.serialize())
 }
 

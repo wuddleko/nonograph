@@ -8,10 +8,11 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::csrf::{self, CsrfProtected};
+use crate::publish::{self, publish_failure_redirect, publish_note};
 use crate::template;
 use crate::{
     fetch_missing_note, is_valid_post_id, parse_legacy_frontmatter, parse_yaml_frontmatter,
-    publish_failure_redirect, publish_note, render_options, Post, PostStorage,
+    render_options, Post, PostStorage,
 };
 
 pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
@@ -293,7 +294,7 @@ pub(crate) struct NewPost {
     csrf_token: String,
 }
 
-fn handle_create(
+async fn handle_create(
     nojs: bool,
     form: &NewPost,
     storage: &PostStorage,
@@ -315,14 +316,20 @@ fn handle_create(
 
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&form.content, &render_options(config));
-    match publish_note(
-        storage,
-        config,
-        &form.title,
-        &form.alias,
-        &rendered_content,
-        &form.content,
-    ) {
+    let storage = storage.clone();
+    let config = config.clone();
+    let title = form.title.clone();
+    let author = form.alias.clone();
+    let raw = form.content.clone();
+    let published = rocket::tokio::task::spawn_blocking(move || {
+        publish_note(&storage, &config, &title, &author, &rendered_content, &raw)
+    })
+    .await;
+    let published = match published {
+        Ok(result) => result,
+        Err(_) => Err(publish::PublishFailure::Relays),
+    };
+    match published {
         Ok(nevent) => {
             let prefix = if nojs { "/nojs" } else { "" };
             rocket::response::Redirect::to(format!("{prefix}/{nevent}"))
@@ -332,23 +339,23 @@ fn handle_create(
 }
 
 #[post("/create", data = "<form>")]
-pub fn create_post(
+pub async fn create_post(
     _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(false, &form, storage, config))
+    Ok(handle_create(false, &form, storage, config).await)
 }
 
 #[post("/nojs/create", data = "<form>")]
-pub fn nojs_create_post(
+pub async fn nojs_create_post(
     _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(true, &form, storage, config))
+    Ok(handle_create(true, &form, storage, config).await)
 }
 
 fn static_page_cache() -> &'static Mutex<HashMap<String, String>> {
@@ -491,7 +498,7 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
 }
 
 #[get("/<post_id>?<nsec>")]
-pub fn view_post(
+pub async fn view_post(
     post_id: &str,
     nsec: Option<&str>,
     storage: &State<PostStorage>,
@@ -503,11 +510,11 @@ pub fn view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, nsec, storage, config, false)
+    render_post(post_id, nsec, storage, config, false).await
 }
 
 #[get("/nojs/<post_id>?<nsec>")]
-pub fn nojs_view_post(
+pub async fn nojs_view_post(
     post_id: &str,
     nsec: Option<&str>,
     storage: &State<PostStorage>,
@@ -519,10 +526,10 @@ pub fn nojs_view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, nsec, storage, config, true)
+    render_post(post_id, nsec, storage, config, true).await
 }
 
-fn render_post(
+async fn render_post(
     post_id: &str,
     nsec: Option<&str>,
     storage: &State<PostStorage>,
@@ -583,7 +590,7 @@ fn render_post(
     let post = if crate::save::post_file_exists(file_id) {
         load_post_from_disk(file_id, storage, config)
     } else if let Some(nevent) = &decoded {
-        fetch_missing_note(nevent, nsec, storage, config)
+        fetch_missing_note(nevent, nsec, storage, config).await
     } else {
         None
     };

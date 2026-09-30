@@ -8,6 +8,7 @@ pub(crate) mod csrf;
 mod nip44;
 pub(crate) mod nostr;
 mod pages;
+pub(crate) mod publish;
 pub(crate) mod save;
 pub(crate) mod template;
 
@@ -274,65 +275,6 @@ fn render_options(config: &Config) -> parser::RenderOptions {
     }
 }
 
-fn publish_failure_redirect(nojs: bool, failure: PublishFailure) -> rocket::response::Redirect {
-    let error = match failure {
-        PublishFailure::Relays => "nostr_publish_failed",
-        PublishFailure::Save(message) => {
-            eprintln!("Nonograph: Failed to save post: {message}");
-            "save_failed"
-        }
-    };
-    let url = if nojs {
-        format!("/nojs?error={error}")
-    } else {
-        format!("/?error={error}")
-    };
-    rocket::response::Redirect::to(url)
-}
-
-enum PublishFailure {
-    Relays,
-    Save(String),
-}
-
-fn publish_note(
-    storage: &PostStorage,
-    config: &Config,
-    title: &str,
-    author: &str,
-    rendered_content: &str,
-    raw_content: &str,
-) -> Result<String, PublishFailure> {
-    let created_at = Utc::now();
-    let wrapped = nostr::wrap_note(title, author, raw_content, created_at.timestamp())
-        .map_err(|_| PublishFailure::Relays)?;
-    let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let accepted = nostr::publish_to_relays(&config.nostr.relays, &wrapped.signed_note(), timeout);
-    if accepted.is_empty() {
-        return Err(PublishFailure::Relays);
-    }
-    let nevent = nostr::encode_nevent(
-        &wrapped.id,
-        &accepted,
-        &wrapped.pubkey,
-        nostr::KIND_GIFT_WRAP,
-    );
-    let nsec = nostr::encode_nsec(&wrapped.recipient_secret);
-    let post = Arc::new(Post {
-        id: wrapped.id_hex(),
-        title: parser::sanitize_text(title),
-        author: parser::sanitize_text(author),
-        content: rendered_content.to_string(),
-        raw_content: raw_content.to_string(),
-        created_at,
-    });
-    if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
-        return Err(PublishFailure::Save(error.to_string()));
-    }
-    storage.write().unwrap().insert(post.id.clone(), post);
-    Ok(format!("{nevent}?nsec={nsec}"))
-}
-
 fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
     let after_open = file_content.strip_prefix("---\n")?;
 
@@ -395,15 +337,24 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
     Some((title, author, created_at, raw_content))
 }
 
-fn fetch_missing_note(
+async fn fetch_missing_note(
     nevent: &nostr::Nevent,
     nsec: Option<&str>,
     storage: &PostStorage,
     config: &Config,
 ) -> Option<Arc<Post>> {
     let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
+    let relays = nevent.relays.clone();
+    let event_id = nevent.event_id_hex.clone();
     let secret = nsec.and_then(nostr::decode_nsec);
-    let fetched = nostr::fetch_note(&nevent.relays, &nevent.event_id_hex, timeout, secret)?;
+    let fetched = match rocket::tokio::task::spawn_blocking(move || {
+        nostr::fetch_note(&relays, &event_id, timeout, secret)
+    })
+    .await
+    {
+        Ok(note) => note?,
+        Err(_) => return None,
+    };
     if fetched.content.len() > config.limits.content_max_length {
         return None;
     }
