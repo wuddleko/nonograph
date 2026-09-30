@@ -18,14 +18,15 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVICE_PORT=8009
 TOR_DATA_DIR="/var/lib/tor/nonograph"
 TORRC_PATH="/etc/tor/torrc"
 SERVICE_NAME="nonograph"
-LOG_FILE="$SCRIPT_DIR/nonograph.log"
-PID_FILE="$SCRIPT_DIR/nonograph.pid"
+LOG_FILE="$ROOT_DIR/nonograph.log"
+PID_FILE="$ROOT_DIR/nonograph.pid"
 
-cd "$SCRIPT_DIR"
+cd "$ROOT_DIR"
 
 # Logging functions
 log_info() {
@@ -250,7 +251,7 @@ backup_onion_keys() {
     if sudo test -d "$TOR_DATA_DIR" 2>/dev/null; then
         log_info "Backing up existing onion service keys..."
 
-        local backup_dir="$SCRIPT_DIR/onion_backup_$(date +%Y%m%d_%H%M%S)"
+        local backup_dir="$ROOT_DIR/onion_backup_$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$backup_dir"
 
         # Copy keys with proper permissions
@@ -288,7 +289,7 @@ setup_tor() {
     fi
 
     # Restore backed up keys if we want to reuse the same onion address
-    local latest_backup=$(ls -t "$SCRIPT_DIR"/onion_backup_* 2>/dev/null | head -1)
+    local latest_backup=$(ls -t "$ROOT_DIR"/onion_backup_* 2>/dev/null | head -1)
     if [ -n "$latest_backup" ] && [ -d "$latest_backup" ]; then
         log_info "Restoring previous onion service keys..."
         sudo cp "$latest_backup"/* "$TOR_DATA_DIR/" 2>/dev/null || true
@@ -327,7 +328,7 @@ start_service() {
     log_info "Starting Nonograph service..."
 
     # Make sure we're in the right directory
-    cd "$SCRIPT_DIR"
+    cd "$ROOT_DIR"
 
     # Start the service in background
     nohup cargo run --release > "$LOG_FILE" 2>&1 &
@@ -396,10 +397,10 @@ show_status() {
 
     # Show management commands
     echo -e "${CYAN}Management Commands:${NC}"
-    echo "  ./run stop          - Stop the service"
-    echo "  ./run restart       - Restart the service"
-    echo "  ./run logs          - View full logs"
-    echo "  ./run status        - Show this status"
+    echo "  ./scripts/run stop          - Stop the service"
+    echo "  ./scripts/run restart       - Restart the service"
+    echo "  ./scripts/run logs          - View full logs"
+    echo "  ./scripts/run status        - Show this status"
     echo "  tail -f $LOG_FILE   - Follow logs in real-time"
     echo
 }

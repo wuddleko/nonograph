@@ -53,7 +53,7 @@ make status    # 检查状态
 make down      # 停止容器
 make clean     # 彻底移除容器
 ```
-讨厌 Docker 吗？运行 `./run` 以原生方式构建并运行（仅限 Linux）。
+讨厌 Docker 吗？运行 `./scripts/run` 以原生方式构建并运行（仅限 Linux）。
 
 ## 功能
 - 支持带表格、代码块、脚注和 `#spoiler#` 语法的 Markdown 格式

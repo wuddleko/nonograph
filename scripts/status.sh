@@ -1,5 +1,7 @@
 #!/bin/bash
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 echo "╔══════════════════════════════════════╗"
 echo "║         Nonograph Status             ║"
 echo "║    Anonymous Publishing Service      ║"
@@ -49,8 +51,8 @@ echo
 
 # Show recent log entries
 echo "📝 Recent Log Entries:"
-if [ -f "nonograph.log" ]; then
-    tail -5 nonograph.log | while read line; do
+if [ -f "$ROOT_DIR/nonograph.log" ]; then
+    tail -5 "$ROOT_DIR/nonograph.log" | while read line; do
         echo "   $line"
     done
 else
@@ -62,7 +64,7 @@ echo
 # Show system resources
 echo "💻 System Resources:"
 echo "   Memory Usage: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
-echo "   Disk Usage: $(df -h . | awk 'NR==2 {print $3 "/" $2 " (" $5 " used)"}')"
+echo "   Disk Usage: $(df -h "$ROOT_DIR" | awk 'NR==2 {print $3 "/" $2 " (" $5 " used)"}')"
 
 echo
 
@@ -81,4 +83,4 @@ echo "  Start Nonograph: cargo run --release"
 echo "  Stop Nonograph:  pkill -f nonograph"
 echo "  Start Tor:          sudo systemctl start tor"
 echo "  Stop Tor:           sudo systemctl stop tor"
-echo "  View logs:          tail -f nonograph.log"
+echo "  View logs:          tail -f $ROOT_DIR/nonograph.log"

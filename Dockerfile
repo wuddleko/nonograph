@@ -1,19 +1,20 @@
-FROM rust:latest as builder
+FROM rust:latest AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY Cargo.toml ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release && rm -rf src
+RUN rustup target add wasm32-unknown-unknown
 
-COPY src/ ./src/
-COPY templates/ ./templates/
-COPY Config.toml ./
-RUN touch src/main.rs && cargo build --release
+WORKDIR /app
+
+COPY Cargo.toml build.rs robots.txt ./
+COPY parser ./parser
+COPY page ./page
+COPY src ./src
+
+RUN cargo build --release
 
 FROM debian:bookworm-slim
 
@@ -35,8 +36,6 @@ RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
     echo "HiddenServiceDir /var/lib/tor/hidden_service/" >> /etc/tor/torrc && \
     echo "HiddenServicePort 80 127.0.0.1:8009" >> /etc/tor/torrc
 
-
-
 RUN useradd -r -s /bin/false -u 1000 nonograph
 RUN mkdir -p /app/content /app/templates /var/lib/tor && \
     mkdir -p /var/lib/tor/hidden_service && \
@@ -47,13 +46,15 @@ RUN mkdir -p /app/content /app/templates /var/lib/tor && \
     echo "nonograph ALL=(debian-tor) NOPASSWD: /usr/bin/tor" >> /etc/sudoers && \
     echo "root ALL=(nonograph) NOPASSWD: /app/nonograph" >> /etc/sudoers
 
-COPY --from=builder /app/target/release/nonograph /app/
-COPY --from=builder /app/Config.toml /app/
-COPY --from=builder /app/templates/ /app/templates/
+COPY --from=builder /app/target/release/nonograph /app/nonograph
+COPY Config.toml /app/Config.toml
+COPY templates/ /app/templates/
+COPY pages/ /app/pages/
 COPY entrypoint.sh /app/entrypoint.sh
 
 RUN sed -i 's/address = "127.0.0.1"/address = "0.0.0.0"/' /app/Config.toml || true && \
-    chmod +x /app/entrypoint.sh
+    chmod +x /app/entrypoint.sh && \
+    chown -R nonograph:nonograph /app/pages /app/templates /app/Config.toml /app/nonograph
 
 WORKDIR /app
 EXPOSE 8009

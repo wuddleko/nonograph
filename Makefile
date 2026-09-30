@@ -15,6 +15,10 @@ help:
 	@echo "  install-docker   - Install Docker on this system"
 	@echo ""
 	@echo "Note: All commands will automatically check for Docker and offer to install it if missing."
+	@echo ""
+	@echo "Native Debian install: ./scripts/run"
+	@echo "Native service control: ./scripts/nonograph.sh"
+	@echo "Native status: ./scripts/status.sh"
 
 # Check if Docker and Docker Compose are installed
 check-docker:

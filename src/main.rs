@@ -982,18 +982,11 @@ fn parser_wasm() -> (ContentType, &'static [u8]) {
     (ContentType::new("application", "wasm"), PAGE_WASM)
 }
 
+const ROBOTS_TXT: &str = include_str!("../robots.txt");
+
 #[get("/robots.txt")]
 fn robots_txt() -> content::RawText<&'static str> {
-    content::RawText(
-        "User-agent: *\n\
-         Disallow: /\n\
-         \n\
-         # Allow specific paths\n\
-         Allow: /api\n\
-         Allow: /legal\n\
-         Allow: /about\n\
-         Allow: /markup\n",
-    )
+    content::RawText(ROBOTS_TXT)
 }
 
 #[get("/nojs")]
@@ -1163,8 +1156,64 @@ async fn main() -> Result<(), rocket::Error> {
     Ok(())
 }
 
+fn install_bundled_pages() {
+    match install_bundled_pages_from(
+        std::path::Path::new("pages"),
+        std::path::Path::new("content"),
+    ) {
+        Ok(mut installed) => {
+            installed.sort();
+            for name in installed {
+                println!("Nonograph: Installed bundled page {name}");
+            }
+        }
+        Err(error) => eprintln!("Nonograph: {error}"),
+    }
+}
+
+fn install_bundled_pages_from(
+    pages_dir: &std::path::Path,
+    content_dir: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(pages_dir).map_err(|error| {
+        format!(
+            "Bundled pages directory '{}' is not available: {error}",
+            pages_dir.display()
+        )
+    })?;
+    std::fs::create_dir_all(content_dir).map_err(|error| {
+        format!(
+            "Failed to create content directory '{}': {error}",
+            content_dir.display()
+        )
+    })?;
+
+    let mut installed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Failed to read bundled pages: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") || !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let dest = content_dir.join(name);
+        if dest.exists() {
+            continue;
+        }
+        std::fs::copy(&path, &dest).map_err(|error| {
+            format!("Failed to install bundled page {}: {error}", path.display())
+        })?;
+        installed.push(name.to_string_lossy().into_owned());
+    }
+    Ok(installed)
+}
+
 fn rocket() -> rocket::Rocket<rocket::Build> {
     use rocket::data::{Limits, ToByteUnit};
+
+    install_bundled_pages();
 
     let config = Config::load_with_logging();
 

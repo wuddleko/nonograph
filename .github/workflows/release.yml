@@ -83,8 +83,9 @@ jobs:
           mkdir -p release
           cp target/${{ matrix.target }}/release/nonograph${{ matrix.binary-suffix }} release/nonograph${{ matrix.binary-suffix }}
           cp README.md LICENSE Config.toml release/
-          cp -r content templates release/
-          cp run status.sh release/
+          cp -r pages templates release/
+          mkdir -p release/scripts
+          cp scripts/run scripts/nonograph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
           tar -czf ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
@@ -95,7 +96,9 @@ jobs:
           mkdir -p release
           cp target/${{ matrix.target }}/release/nonograph${{ matrix.binary-suffix }} release/nonograph${{ matrix.binary-suffix }}
           cp README.md LICENSE Config.toml release/
-          cp -r content templates release/
+          cp -r pages templates release/
+          mkdir -p release/scripts
+          cp scripts/run scripts/nonograph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
           zip -r ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
@@ -106,7 +109,7 @@ jobs:
           mkdir release
           Copy-Item "target\${{ matrix.target }}\release\nonograph${{ matrix.binary-suffix }}" "release\nonograph${{ matrix.binary-suffix }}"
           Copy-Item README.md, LICENSE, Config.toml -Destination release
-          Copy-Item content, templates -Destination release -Recurse
+          Copy-Item pages, templates, scripts -Destination release -Recurse
           Copy-Item build-info-${{ matrix.target }}.txt -Destination release
           cd release
           Compress-Archive -Path * -DestinationPath ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }}

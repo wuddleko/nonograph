@@ -4,7 +4,8 @@
 # This script helps manage the Nonograph service and Tor hidden service
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
 
 show_header() {
     echo "╔══════════════════════════════════════╗"
@@ -93,8 +94,8 @@ restart_service() {
 }
 
 show_status() {
-    if [ -f "status.sh" ]; then
-        ./status.sh
+    if [ -f "$SCRIPT_DIR/status.sh" ]; then
+        "$SCRIPT_DIR/status.sh"
     else
         show_header
 

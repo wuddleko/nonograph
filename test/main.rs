@@ -1,4 +1,3 @@
-
 use super::*;
 
 #[test]
@@ -1671,4 +1670,42 @@ fn test_nojs_footer_link_replacement() {
     assert!(result.contains(r#"href="/api" target="_blank">api</a>"#));
     assert!(result
         .contains(r#"href="https://github.com/du82/nonograph" target="_blank">source code</a>"#));
+}
+
+#[test]
+fn robots_txt_is_the_file() {
+    assert_eq!(robots_txt().0, include_str!("../robots.txt"));
+}
+
+#[test]
+fn bundled_pages_copy_when_missing_and_do_not_overwrite() {
+    use std::fs;
+
+    let temp = tempfile::tempdir().unwrap();
+    let pages = temp.path().join("pages");
+    let content = temp.path().join("content");
+    fs::create_dir(&pages).unwrap();
+    fs::write(pages.join("about.md"), "bundled about").unwrap();
+    fs::write(pages.join("notes.txt"), "ignore me").unwrap();
+
+    let installed = install_bundled_pages_from(&pages, &content).unwrap();
+    assert_eq!(installed, vec!["about.md".to_string()]);
+    assert_eq!(
+        fs::read_to_string(content.join("about.md")).unwrap(),
+        "bundled about"
+    );
+    assert!(!content.join("notes.txt").exists());
+
+    fs::write(content.join("about.md"), "local edit").unwrap();
+    fs::write(pages.join("legal.md"), "bundled legal").unwrap();
+    let installed = install_bundled_pages_from(&pages, &content).unwrap();
+    assert_eq!(installed, vec!["legal.md".to_string()]);
+    assert_eq!(
+        fs::read_to_string(content.join("about.md")).unwrap(),
+        "local edit"
+    );
+    assert_eq!(
+        fs::read_to_string(content.join("legal.md")).unwrap(),
+        "bundled legal"
+    );
 }

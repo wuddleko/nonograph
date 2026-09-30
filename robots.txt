@@ -1,6 +1,7 @@
 User-agent: *
 Disallow: /
 
+# Allow specific paths
 Allow: /api
 Allow: /legal
 Allow: /about

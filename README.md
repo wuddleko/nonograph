@@ -69,7 +69,7 @@ Then check logs for your `.onion` address:
 docker logs nonograph
 ```
 
-Hate Docker? Run `./run` to build and run natively (Debian only).
+Hate Docker? Run `./scripts/run` to build and run natively (Debian only).
 
 ## Features
 Nonograph comes with an extensive list of markup options; type `/` on a new line to display a list of them.

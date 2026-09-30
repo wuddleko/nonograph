@@ -11,12 +11,8 @@ nonograph.pid
 *.log
 *.pid
 
-# User-generated content files (keep core documentation pages)
+# Published posts. Shipped pages live in /pages and are copied here when missing.
 /content/*.md
-!/content/about.md
-!/content/legal.md
-!/content/api.md
-!/content/markup.md
 
 # Tor backup directories created by run script
 onion_backup_*/
