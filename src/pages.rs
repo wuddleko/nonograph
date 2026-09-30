@@ -105,6 +105,7 @@ struct Assets {
 }
 
 pub fn warm() {
+    nonograph_parser::warm();
     let _ = assets();
     let _ = page_asset_tags();
     if let Err(error) = template::shared().preload(&["home", "post"]) {

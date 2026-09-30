@@ -55,6 +55,48 @@ fn test_links() {
 }
 
 #[test]
+fn render_options_reach_links_and_images() {
+    let config = RenderOptions {
+        max_url_length: 12,
+        external_link_security: false,
+        ..RenderOptions::default()
+    };
+
+    let short = render_markdown_with_config("[Go](https://a.co)", &config);
+    assert!(short.contains("href=\"https://a.co\""));
+    assert!(short.contains(">Go</a>"));
+    assert!(!short.contains("target=\"_blank\""));
+
+    let long = render_markdown_with_config("[Go](https://example.com/long)", &config);
+    assert!(!long.contains("<a "));
+    assert!(long.contains("https://example.com/long"));
+
+    let image = render_markdown_with_config("![alt](https://example.com/long.png)", &config);
+    assert!(!image.contains("<img"));
+    assert!(image.contains("https://example.com/long.png"));
+}
+
+#[test]
+fn breaks_before_tables_collapse_in_one_pass() {
+    assert_eq!(
+        clear_breaks_before_tables("<br><br>keep".to_string()),
+        "<br><br>keep"
+    );
+    assert_eq!(
+        clear_breaks_before_tables("<br><br><br><br>x<br><table>".to_string()),
+        "<br><br>x<table>"
+    );
+    assert_eq!(
+        clear_breaks_before_tables("<br> <br><table>".to_string()),
+        "<br> <table>"
+    );
+    assert_eq!(
+        clear_breaks_before_tables("<br>\n<table>".to_string()),
+        "<br>\n<table>"
+    );
+}
+
+#[test]
 fn test_simple_links() {
     let text = "[https://example.com]";
     let result = render_markdown(text);

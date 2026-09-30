@@ -7,10 +7,6 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use url::Url;
 
-fn process_images(text: &str) -> String {
-    process_images_with_config(text, &RenderOptions::default())
-}
-
 fn is_ip_blocked(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -182,8 +178,7 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
 
     working_content = restore_media_syntax(&working_content, &media_blocks);
     working_content = restore_link_syntax(&working_content, &link_blocks);
-    working_content = process_images(&working_content);
-    working_content = process_links(&working_content);
+    working_content = process_images_and_links(&working_content, config);
     working_content = process_tables(&working_content);
     working_content = process_lists(&working_content);
     working_content = process_dividers(&working_content);
@@ -196,104 +191,154 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
     sanitize_html(working_content)
 }
 
-fn process_images_with_config(text: &str, config: &RenderOptions) -> String {
+fn process_images_and_links(text: &str, config: &RenderOptions) -> String {
+    let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len() + 1024);
-    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        if chars.len() >= 2 && i < chars.len() - 1 && chars[i] == '!' && chars[i + 1] == '[' {
-            // Find closing bracket
-            let mut bracket_end = None;
-            let mut j = i + 2;
-            while j < chars.len() && chars[j] != '\n' {
-                if chars[j] == ']' {
-                    bracket_end = Some(j);
-                    break;
-                }
-                j += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some(next) = try_consume_image(&mut result, text, i, config) {
+                i = next;
+                continue;
             }
-
-            if let Some(bracket_end_idx) = bracket_end {
-                // Check for ![alt](url) pattern
-                if bracket_end_idx + 1 < chars.len() && chars[bracket_end_idx + 1] == '(' {
-                    let mut paren_end = None;
-                    let mut k = bracket_end_idx + 2;
-                    while k < chars.len() && chars[k] != '\n' {
-                        if chars[k] == ')' {
-                            paren_end = Some(k);
-                            break;
-                        }
-                        k += 1;
-                    }
-
-                    if let Some(paren_end_idx) = paren_end {
-                        let alt_text: String = chars[(i + 2)..bracket_end_idx].iter().collect();
-                        let image_url: String =
-                            chars[(bracket_end_idx + 2)..paren_end_idx].iter().collect();
-
-                        if !image_url.is_empty()
-                            && image_url.len() <= config.max_url_length
-                            && is_safe_url(&image_url)
-                        {
-                            let is_video = is_video_url(&image_url);
-
-                            // Check if alt text is present for caption
-                            if !alt_text.trim().is_empty() {
-                                result.push_str("<div class=\"media-with-caption\">");
-                                if is_video {
-                                    result.push_str("<video controls style=\"width: 100%;\">");
-                                    result.push_str("<source src=\"");
-                                    result.push_str(&html_escape(&image_url));
-                                    result.push_str("\" type=\"");
-                                    result.push_str(&get_video_mime_type(&image_url));
-                                    result.push_str("\">");
-                                    result.push_str("Your browser does not support the video tag.");
-                                    result.push_str("</video>");
-                                } else {
-                                    result.push_str("<img src=\"");
-                                    result.push_str(&html_escape(&image_url));
-                                    result.push_str("\" alt=\"");
-                                    result.push_str(&html_escape(&alt_text));
-                                    result.push_str("\">");
-                                }
-                                result.push_str("<div class=\"media-caption\">");
-                                result.push_str(&html_escape(&alt_text));
-                                result.push_str("</div>");
-                                result.push_str("</div>");
-                            } else {
-                                if is_video {
-                                    result.push_str("<video controls style=\"width: 100%;\">");
-                                    result.push_str("<source src=\"");
-                                    result.push_str(&html_escape(&image_url));
-                                    result.push_str("\" type=\"");
-                                    result.push_str(&get_video_mime_type(&image_url));
-                                    result.push_str("\">");
-                                    result.push_str("Your browser does not support the video tag.");
-                                    result.push_str("</video>");
-                                } else {
-                                    result.push_str("<img src=\"");
-                                    result.push_str(&html_escape(&image_url));
-                                    result.push_str("\" alt=\"");
-                                    result.push_str(&html_escape(&alt_text));
-                                    result.push_str("\">");
-                                }
-                            }
-
-                            i = paren_end_idx + 1;
-                            continue;
-                        }
-                    }
-                }
-            }
+            result.push('!');
+            i += 1;
+            continue;
         }
-
-        // No pattern matched, add current character
-        result.push(chars[i]);
-        i += 1;
+        if bytes[i] == b'[' {
+            if let Some(next) = try_consume_link(&mut result, text, i, config) {
+                i = next;
+                continue;
+            }
+            result.push('[');
+            i += 1;
+            continue;
+        }
+        let next = next_ascii_marker(bytes, i, b'!', b'[');
+        result.push_str(&text[i..next]);
+        i = next;
     }
 
     result
+}
+
+fn try_consume_image(
+    result: &mut String,
+    text: &str,
+    i: usize,
+    config: &RenderOptions,
+) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let bracket_end = find_ascii_until_newline(bytes, i + 2, b']')?;
+    if bracket_end + 1 >= bytes.len() || bytes[bracket_end + 1] != b'(' {
+        return None;
+    }
+    let paren_end = find_ascii_until_newline(bytes, bracket_end + 2, b')')?;
+    let alt_text = &text[i + 2..bracket_end];
+    let image_url = &text[bracket_end + 2..paren_end];
+    if image_url.is_empty() || image_url.len() > config.max_url_length || !is_safe_url(image_url) {
+        return None;
+    }
+    push_image_html(result, alt_text, image_url);
+    Some(paren_end + 1)
+}
+
+fn push_image_html(result: &mut String, alt_text: &str, image_url: &str) {
+    let is_video = is_video_url(image_url);
+    if !alt_text.trim().is_empty() {
+        result.push_str("<div class=\"media-with-caption\">");
+        push_media_tag(result, image_url, alt_text, is_video);
+        result.push_str("<div class=\"media-caption\">");
+        push_html_escape(result, alt_text, false);
+        result.push_str("</div></div>");
+    } else {
+        push_media_tag(result, image_url, alt_text, is_video);
+    }
+}
+
+fn push_media_tag(result: &mut String, image_url: &str, alt_text: &str, is_video: bool) {
+    if is_video {
+        result.push_str("<video controls style=\"width: 100%;\"><source src=\"");
+        push_html_escape(result, image_url, false);
+        result.push_str("\" type=\"");
+        result.push_str(get_video_mime_type(image_url));
+        result.push_str("\">Your browser does not support the video tag.</video>");
+    } else {
+        result.push_str("<img src=\"");
+        push_html_escape(result, image_url, false);
+        result.push_str("\" alt=\"");
+        push_html_escape(result, alt_text, false);
+        result.push_str("\">");
+    }
+}
+
+fn try_consume_link(
+    result: &mut String,
+    text: &str,
+    i: usize,
+    config: &RenderOptions,
+) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let bracket_end = find_ascii_until_newline(bytes, i + 1, b']')?;
+    if bracket_end + 1 < bytes.len() && bytes[bracket_end + 1] == b'(' {
+        if let Some(paren_end) = find_ascii_until_newline(bytes, bracket_end + 2, b')') {
+            let link_text = &text[i + 1..bracket_end];
+            let link_url = &text[bracket_end + 2..paren_end];
+            if !link_text.is_empty()
+                && !link_url.is_empty()
+                && link_url.len() <= config.max_url_length
+            {
+                push_anchor(result, link_url, link_text, config.external_link_security);
+                return Some(paren_end + 1);
+            }
+        }
+    }
+    let link_url = &text[i + 1..bracket_end];
+    if link_url.len() <= config.max_url_length && link_url.starts_with("http") {
+        push_anchor(result, link_url, link_url, config.external_link_security);
+        return Some(bracket_end + 1);
+    }
+    None
+}
+
+fn push_anchor(result: &mut String, href: &str, text: &str, external: bool) {
+    result.push_str("<a href=\"");
+    result.push_str(href);
+    if external {
+        result.push_str("\" target=\"_blank\">");
+    } else {
+        result.push_str("\">");
+    }
+    result.push_str(text);
+    result.push_str("</a>");
+}
+
+fn find_ascii_until_newline(bytes: &[u8], start: usize, target: u8) -> Option<usize> {
+    let mut j = start;
+    while j < bytes.len() && bytes[j] != b'\n' {
+        if bytes[j] == target {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+fn next_byte(bytes: &[u8], start: usize, marker: u8) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len() && bytes[i] != marker {
+        i += 1;
+    }
+    i
+}
+
+fn next_ascii_marker(bytes: &[u8], start: usize, first: u8, second: u8) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len() && bytes[i] != first && bytes[i] != second {
+        i += 1;
+    }
+    i
 }
 
 fn is_video_url(url: &str) -> bool {
@@ -321,10 +366,6 @@ fn get_video_mime_type(url: &str) -> &'static str {
     } else {
         "video/mp4" // fallback
     }
-}
-
-fn process_links(text: &str) -> String {
-    process_links_with_config(text, &RenderOptions::default())
 }
 
 fn safe_replace(
@@ -362,94 +403,104 @@ fn safe_replace(
     result
 }
 
-fn sanitize_html(html: String) -> String {
-    let mut builder = ammonia::Builder::default();
-    builder
-        .add_tags(&[
-            "video",
-            "source",
-            "pre",
-            "p",
-            "table",
-            "thead",
-            "tbody",
-            "tr",
-            "th",
-            "td",
-            "em",
-            "strong",
-            "u",
-            "del",
-            "sup",
-            "mark",
-            "span",
-            "code",
-            "a",
-            "img",
-            "br",
-            "hr",
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "blockquote",
-            "div",
-            "ol",
-            "ul",
-            "li",
-            "input",
-            "button",
-            "svg",
-            "polyline",
-            "line",
-            "rect",
-            "path",
-        ])
-        .add_tag_attributes("video", &["controls", "style"])
-        .add_tag_attributes("source", &["src", "type"])
-        .add_tag_attributes("img", &["src", "alt", "style"])
-        .add_tag_attributes("code", &["class", "data-line-count", "style"])
-        .add_tag_attributes("span", &["class", "style"])
-        .add_tag_attributes("th", &["style"])
-        .add_tag_attributes("td", &["style"])
-        .add_tag_attributes("a", &["href", "target", "id", "class"])
-        .add_tag_attributes("div", &["class"])
-        .add_tag_attributes("hr", &["class"])
-        .add_tag_attributes("ul", &["class"])
-        .add_tag_attributes("li", &["id", "class"])
-        .add_tag_attributes("input", &["type", "checked", "disabled"])
-        .add_tag_attributes("sup", &["id"])
-        .add_tag_attributes("h1", &["id"])
-        .add_tag_attributes("h2", &["id"])
-        .add_tag_attributes("h3", &["id"])
-        .add_tag_attributes("h4", &["id"])
-        .add_tag_attributes("button", &["class", "data-icon-expand", "data-icon-check"])
-        .add_tag_attributes(
-            "svg",
-            &[
-                "class",
-                "viewBox",
-                "fill",
-                "stroke",
-                "stroke-width",
-                "stroke-linecap",
-                "stroke-linejoin",
-                "aria-hidden",
-            ],
-        )
-        .add_tag_attributes("polyline", &["points"])
-        .add_tag_attributes("line", &["x1", "y1", "x2", "y2"])
-        .add_tag_attributes("rect", &["x", "y", "width", "height", "rx"])
-        .add_tag_attributes("path", &["d", "fill-rule"])
-        .add_tag_attributes("pre", &["class"])
-        .link_rel(Some("noopener noreferrer"));
+fn html_cleaner() -> &'static ammonia::Builder<'static> {
+    static CLEANER: OnceLock<ammonia::Builder<'static>> = OnceLock::new();
+    CLEANER.get_or_init(|| {
+        let mut builder = ammonia::Builder::default();
+        builder
+            .add_tags(&[
+                "video",
+                "source",
+                "pre",
+                "p",
+                "table",
+                "thead",
+                "tbody",
+                "tr",
+                "th",
+                "td",
+                "em",
+                "strong",
+                "u",
+                "del",
+                "sup",
+                "mark",
+                "span",
+                "code",
+                "a",
+                "img",
+                "br",
+                "hr",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "blockquote",
+                "div",
+                "ol",
+                "ul",
+                "li",
+                "input",
+                "button",
+                "svg",
+                "polyline",
+                "line",
+                "rect",
+                "path",
+            ])
+            .add_tag_attributes("video", &["controls", "style"])
+            .add_tag_attributes("source", &["src", "type"])
+            .add_tag_attributes("img", &["src", "alt", "style"])
+            .add_tag_attributes("code", &["class", "data-line-count", "style"])
+            .add_tag_attributes("span", &["class", "style"])
+            .add_tag_attributes("th", &["style"])
+            .add_tag_attributes("td", &["style"])
+            .add_tag_attributes("a", &["href", "target", "id", "class"])
+            .add_tag_attributes("div", &["class"])
+            .add_tag_attributes("hr", &["class"])
+            .add_tag_attributes("ul", &["class"])
+            .add_tag_attributes("li", &["id", "class"])
+            .add_tag_attributes("input", &["type", "checked", "disabled"])
+            .add_tag_attributes("sup", &["id"])
+            .add_tag_attributes("h1", &["id"])
+            .add_tag_attributes("h2", &["id"])
+            .add_tag_attributes("h3", &["id"])
+            .add_tag_attributes("h4", &["id"])
+            .add_tag_attributes("button", &["class", "data-icon-expand", "data-icon-check"])
+            .add_tag_attributes(
+                "svg",
+                &[
+                    "class",
+                    "viewBox",
+                    "fill",
+                    "stroke",
+                    "stroke-width",
+                    "stroke-linecap",
+                    "stroke-linejoin",
+                    "aria-hidden",
+                ],
+            )
+            .add_tag_attributes("polyline", &["points"])
+            .add_tag_attributes("line", &["x1", "y1", "x2", "y2"])
+            .add_tag_attributes("rect", &["x", "y", "width", "height", "rx"])
+            .add_tag_attributes("path", &["d", "fill-rule"])
+            .add_tag_attributes("pre", &["class"])
+            .link_rel(Some("noopener noreferrer"));
+        builder
+    })
+}
 
-    builder.clean(&html).to_string()
+fn sanitize_html(html: String) -> String {
+    html_cleaner().clean(&html).to_string()
+}
+
+fn text_cleaner() -> &'static ammonia::Builder<'static> {
+    static CLEANER: OnceLock<ammonia::Builder<'static>> = OnceLock::new();
+    CLEANER.get_or_init(ammonia::Builder::empty)
 }
 
 pub fn sanitize_text(text: &str) -> String {
-    let builder = ammonia::Builder::empty();
-    let sanitized = builder.clean(text).to_string();
+    let sanitized = text_cleaner().clean(text).to_string();
     sanitized
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -462,13 +513,9 @@ pub fn sanitize_text(text: &str) -> String {
 
 // Thanks for the code. You know who you are.
 pub fn html_attr_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-        .replace('\n', " ") // Replace newlines with space, not entity
-        .replace('\r', "") // Remove carriage returns
+    let mut out = String::with_capacity(text.len());
+    push_html_escape(&mut out, text, true);
+    out
 }
 
 fn sanitize_language(lang: &str) -> String {
@@ -1125,6 +1172,12 @@ fn restore_fenced_code_blocks_with_config(
     result
 }
 
+pub fn warm() {
+    let _ = syntax_and_themes();
+    let _ = html_cleaner();
+    let _ = text_cleaner();
+}
+
 fn syntax_and_themes() -> (&'static SyntaxSet, &'static ThemeSet) {
     static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
     static THEMES: OnceLock<ThemeSet> = OnceLock::new();
@@ -1303,16 +1356,93 @@ fn format_paragraphs_with_headers(text: &str) -> String {
     result = result.replace("<p></p>", "");
     result = result.replace("\n\n\n", "\n\n");
 
-    // Remove excessive br tags before tables - more aggressive cleanup
-    let mut iterations = 0;
-    while result.contains("<br><table>") && iterations < 50 {
-        result = result.replace("<br><br>", "<br>");
-        result = result.replace("<br><table>", "<table>");
-        result = result.replace("<br>\n<table>", "\n<table>");
-        iterations += 1;
+    clear_breaks_before_tables(result)
+}
+
+fn clear_breaks_before_tables(input: String) -> String {
+    let iterations = table_break_iterations(&input);
+    if iterations == 0 {
+        return input;
     }
 
-    result
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"<br>") {
+            let mut count = 0;
+            let mut end = i;
+            while bytes[end..].starts_with(b"<br>") {
+                count += 1;
+                end += 4;
+            }
+            let strip =
+                bytes[end..].starts_with(b"<table>") || bytes[end..].starts_with(b"\n<table>");
+            let keep = transformed_break_count(count, strip, iterations);
+            for _ in 0..keep {
+                out.push_str("<br>");
+            }
+            i = end;
+            continue;
+        }
+        let next = bytes[i + 1..]
+            .iter()
+            .position(|&byte| byte == b'<')
+            .map(|offset| i + 1 + offset)
+            .unwrap_or(bytes.len());
+        out.push_str(&input[i..next]);
+        i = next;
+    }
+    out
+}
+
+fn table_break_iterations(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut iterations = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"<br>") {
+            let mut count = 0;
+            while bytes[i..].starts_with(b"<br>") {
+                count += 1;
+                i += 4;
+            }
+            if bytes[i..].starts_with(b"<table>") {
+                iterations = iterations.max(iterations_to_clear_breaks(count));
+                if iterations == 50 {
+                    return 50;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    iterations
+}
+
+fn iterations_to_clear_breaks(mut count: usize) -> usize {
+    let mut iterations = 0;
+    while count > 0 && iterations < 50 {
+        count = (count + 1) / 2;
+        if count > 0 {
+            count -= 1;
+        }
+        iterations += 1;
+    }
+    iterations
+}
+
+fn transformed_break_count(mut count: usize, strip: bool, iterations: usize) -> usize {
+    for _ in 0..iterations {
+        if count == 0 {
+            break;
+        }
+        count = (count + 1) / 2;
+        if strip && count > 0 {
+            count -= 1;
+        }
+    }
+    count
 }
 
 fn process_dividers(content: &str) -> String {
@@ -1525,55 +1655,56 @@ fn parse_table_alignments(separator: &str) -> Vec<TableAlignment> {
 }
 
 pub fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
+    let mut out = String::with_capacity(text.len());
+    push_html_escape(&mut out, text, false);
+    out
+}
+
+fn push_html_escape(out: &mut String, text: &str, for_attr: bool) {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        let replacement = match byte {
+            b'&' => Some("&amp;"),
+            b'<' => Some("&lt;"),
+            b'>' => Some("&gt;"),
+            b'"' => Some("&quot;"),
+            b'\'' => Some("&#x27;"),
+            b'\n' if for_attr => Some(" "),
+            b'\r' if for_attr => Some(""),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            out.push_str(&text[start..index]);
+            out.push_str(replacement);
+            start = index + 1;
+        }
+    }
+    out.push_str(&text[start..]);
 }
 
 fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
-    let mut result = String::new();
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
     let mut media_blocks = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '!' && chars[i + 1] == '[' {
-            // Find closing bracket
-            let mut bracket_end = None;
-            let mut j = i + 2;
-            while j < chars.len() && chars[j] != '\n' {
-                if chars[j] == ']' {
-                    bracket_end = Some(j);
-                    break;
-                }
-                j += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some(end) = delimited_span(bytes, i + 2) {
+                let placeholder = format!("{{{{MEDIASYNTAX{}}}}}", media_blocks.len());
+                media_blocks.push(text[i..end].to_string());
+                result.push_str(&placeholder);
+                i = end;
+                continue;
             }
-            if let Some(b_end) = bracket_end {
-                if b_end + 1 < chars.len() && chars[b_end + 1] == '(' {
-                    let mut paren_end = None;
-                    let mut k = b_end + 2;
-                    while k < chars.len() && chars[k] != '\n' {
-                        if chars[k] == ')' {
-                            paren_end = Some(k);
-                            break;
-                        }
-                        k += 1;
-                    }
-                    if let Some(p_end) = paren_end {
-                        let raw: String = chars[i..=p_end].iter().collect();
-                        let placeholder = format!("{{{{MEDIASYNTAX{}}}}}", media_blocks.len());
-                        media_blocks.push(raw);
-                        result.push_str(&placeholder);
-                        i = p_end + 1;
-                        continue;
-                    }
-                }
-            }
+            result.push('!');
+            i += 1;
+            continue;
         }
-        result.push(chars[i]);
-        i += 1;
+        let next = next_byte(bytes, i, b'!');
+        result.push_str(&text[i..next]);
+        i = next;
     }
 
     (result, media_blocks)
@@ -1589,61 +1720,51 @@ fn restore_media_syntax(text: &str, media_blocks: &[String]) -> String {
 }
 
 fn extract_link_syntax(text: &str) -> (String, Vec<String>) {
-    let mut result = String::new();
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
     let mut link_blocks = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        if chars[i] == '[' && !(i > 0 && chars[i - 1] == '!') {
-            let mut bracket_end = None;
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '\n' {
-                if chars[j] == ']' {
-                    bracket_end = Some(j);
-                    break;
-                }
-                j += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && !(i > 0 && bytes[i - 1] == b'!') {
+            if let Some(end) = link_syntax_end(text, i) {
+                let placeholder = format!("{{{{LINKSYNTAX{}}}}}", link_blocks.len());
+                link_blocks.push(text[i..end].to_string());
+                result.push_str(&placeholder);
+                i = end;
+                continue;
             }
-
-            if let Some(b_end) = bracket_end {
-                if b_end + 1 < chars.len() && chars[b_end + 1] == '(' {
-                    let mut paren_end = None;
-                    let mut k = b_end + 2;
-                    while k < chars.len() && chars[k] != '\n' {
-                        if chars[k] == ')' {
-                            paren_end = Some(k);
-                            break;
-                        }
-                        k += 1;
-                    }
-                    if let Some(p_end) = paren_end {
-                        let raw: String = chars[i..=p_end].iter().collect();
-                        let placeholder = format!("{{{{LINKSYNTAX{}}}}}", link_blocks.len());
-                        link_blocks.push(raw);
-                        result.push_str(&placeholder);
-                        i = p_end + 1;
-                        continue;
-                    }
-                }
-
-                let inner: String = chars[(i + 1)..b_end].iter().collect();
-                if inner.starts_with("http") {
-                    let raw: String = chars[i..=b_end].iter().collect();
-                    let placeholder = format!("{{{{LINKSYNTAX{}}}}}", link_blocks.len());
-                    link_blocks.push(raw);
-                    result.push_str(&placeholder);
-                    i = b_end + 1;
-                    continue;
-                }
-            }
+            result.push('[');
+            i += 1;
+            continue;
         }
-
-        result.push(chars[i]);
-        i += 1;
+        let next = next_byte(bytes, i, b'[');
+        result.push_str(&text[i..next]);
+        i = next;
     }
 
     (result, link_blocks)
+}
+
+fn delimited_span(bytes: &[u8], bracket_start: usize) -> Option<usize> {
+    let bracket_end = find_ascii_until_newline(bytes, bracket_start, b']')?;
+    if bracket_end + 1 >= bytes.len() || bytes[bracket_end + 1] != b'(' {
+        return None;
+    }
+    let paren_end = find_ascii_until_newline(bytes, bracket_end + 2, b')')?;
+    Some(paren_end + 1)
+}
+
+fn link_syntax_end(text: &str, i: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let bracket_end = find_ascii_until_newline(bytes, i + 1, b']')?;
+    if let Some(end) = delimited_span(bytes, i + 1) {
+        return Some(end);
+    }
+    if text[i + 1..bracket_end].starts_with("http") {
+        return Some(bracket_end + 1);
+    }
+    None
 }
 
 fn restore_link_syntax(text: &str, link_blocks: &[String]) -> String {
@@ -1656,39 +1777,31 @@ fn restore_link_syntax(text: &str, link_blocks: &[String]) -> String {
 }
 
 fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
-    let mut result = String::new();
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
     let mut code_blocks = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        if chars[i] == '`' {
-            // Look for closing backtick
-            let start = i + 1;
-            let mut end = None;
-
-            for j in start..chars.len() {
-                if chars[j] == '`' {
-                    end = Some(j);
-                    break;
-                }
-            }
-
-            if let Some(end_pos) = end {
-                let code_content: String = chars[start..end_pos].iter().collect();
-
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            if let Some(offset) = bytes[i + 1..].iter().position(|&byte| byte == b'`') {
+                let end = i + 1 + offset;
+                let code_content = &text[i + 1..end];
                 if !code_content.is_empty() && !code_content.contains('\n') {
                     let placeholder = format!("{{{{CODEBLOCK{}}}}}", code_blocks.len());
-                    code_blocks.push(code_content);
+                    code_blocks.push(code_content.to_string());
                     result.push_str(&placeholder);
-                    i = end_pos + 1;
+                    i = end + 1;
                     continue;
                 }
             }
+            result.push('`');
+            i += 1;
+            continue;
         }
-
-        result.push(chars[i]);
-        i += 1;
+        let next = next_byte(bytes, i, b'`');
+        result.push_str(&text[i..next]);
+        i = next;
     }
 
     (result, code_blocks)
@@ -1800,77 +1913,44 @@ fn process_footnotes(content: &str) -> String {
     }
 
     let content_text = content_lines.join("\n");
-    let chars: Vec<char> = content_text.chars().collect();
+    let bytes = content_text.as_bytes();
     let mut i = 0;
     let mut footnote_references = Vec::new();
     let mut inline_footnotes = Vec::new();
 
     // Second pass: process footnote references and inline footnotes
-    while i < chars.len() {
-        if chars.len() >= 3 && i < chars.len() - 2 && chars[i] == '^' && chars[i + 1] == '[' {
-            // Inline footnote: ^[text]
-            let mut bracket_end = None;
-            let mut j = i + 2;
-            let mut bracket_depth = 1;
-
-            while j < chars.len() && bracket_depth > 0 {
-                if chars[j] == '[' {
-                    bracket_depth += 1;
-                } else if chars[j] == ']' {
-                    bracket_depth -= 1;
-                    if bracket_depth == 0 {
-                        bracket_end = Some(j);
-                        break;
-                    }
-                }
-                j += 1;
-            }
-
-            if let Some(end_pos) = bracket_end {
+    while i < bytes.len() {
+        if i + 2 < bytes.len() && bytes[i] == b'^' && bytes[i + 1] == b'[' {
+            if let Some(end_pos) = matching_bracket(bytes, i + 1) {
                 inline_footnote_counter += 1;
-                let footnote_text: String = chars[(i + 2)..end_pos].iter().collect();
+                let footnote_text = content_text[i + 2..end_pos].to_string();
                 let footnote_id = format!("ifn{}", inline_footnote_counter);
-
-                inline_footnotes.push((footnote_id.clone(), footnote_text));
-
-                // Use placeholder to avoid processing by other markdown processors
+                inline_footnotes.push((footnote_id, footnote_text));
                 result.push_str(&format!("XFOOTNOTEINLINEX{}XENDX", inline_footnote_counter));
-
                 i = end_pos + 1;
                 continue;
             }
-        } else if chars.len() >= 4 && i < chars.len() - 3 && chars[i] == '[' && chars[i + 1] == '^'
-        {
-            // Reference footnote: [^id]
-            let mut bracket_end = None;
-            let mut j = i + 2;
-
-            while j < chars.len() && chars[j] != '\n' {
-                if chars[j] == ']' {
-                    bracket_end = Some(j);
-                    break;
-                }
-                j += 1;
-            }
-
-            if let Some(end_pos) = bracket_end {
-                let footnote_id: String = chars[(i + 2)..end_pos].iter().collect();
-
-                if footnote_definitions.contains_key(&footnote_id) {
+        } else if i + 3 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'^' {
+            if let Some(end_pos) = find_ascii_until_newline(bytes, i + 2, b']') {
+                let footnote_id = &content_text[i + 2..end_pos];
+                if footnote_definitions.contains_key(footnote_id) {
                     footnote_counter += 1;
-                    footnote_references.push((footnote_id.clone(), footnote_counter));
-
-                    // Use placeholder to avoid processing by other markdown processors
+                    footnote_references.push((footnote_id.to_string(), footnote_counter));
                     result.push_str(&format!("XFOOTNOTEREFX{}XENDX", footnote_counter));
-
                     i = end_pos + 1;
                     continue;
                 }
             }
         }
 
-        result.push(chars[i]);
-        i += 1;
+        if bytes[i] == b'^' || bytes[i] == b'[' {
+            result.push(bytes[i] as char);
+            i += 1;
+        } else {
+            let next = next_ascii_marker(bytes, i, b'^', b'[');
+            result.push_str(&content_text[i..next]);
+            i = next;
+        }
     }
 
     // Replace placeholders with actual HTML
@@ -1936,85 +2016,21 @@ fn restore_footnotes(text: &str) -> String {
     result
 }
 
-fn process_links_with_config(text: &str, config: &RenderOptions) -> String {
-    let mut result = String::with_capacity(text.len() + 1024);
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        if chars[i] == '[' {
-            // Find closing bracket
-            let mut bracket_end = None;
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '\n' {
-                if chars[j] == ']' {
-                    bracket_end = Some(j);
-                    break;
-                }
-                j += 1;
-            }
-
-            if let Some(bracket_end_idx) = bracket_end {
-                // Check for [text](url) pattern
-                if bracket_end_idx + 1 < chars.len() && chars[bracket_end_idx + 1] == '(' {
-                    let mut paren_end = None;
-                    let mut k = bracket_end_idx + 2;
-                    while k < chars.len() && chars[k] != '\n' {
-                        if chars[k] == ')' {
-                            paren_end = Some(k);
-                            break;
-                        }
-                        k += 1;
-                    }
-
-                    if let Some(paren_end_idx) = paren_end {
-                        let link_text: String = chars[(i + 1)..bracket_end_idx].iter().collect();
-                        let link_url: String =
-                            chars[(bracket_end_idx + 2)..paren_end_idx].iter().collect();
-
-                        if !link_text.is_empty()
-                            && !link_url.is_empty()
-                            && link_url.len() <= config.max_url_length
-                        {
-                            result.push_str("<a href=\"");
-                            result.push_str(&link_url);
-                            if config.external_link_security {
-                                result.push_str("\" target=\"_blank\">");
-                            } else {
-                                result.push_str("\">");
-                            }
-                            result.push_str(&link_text);
-                            result.push_str("</a>");
-                            i = paren_end_idx + 1;
-                            continue;
-                        }
-                    }
-                }
-
-                // Check for [url] pattern (bare URL in brackets)
-                let link_url: String = chars[(i + 1)..bracket_end_idx].iter().collect();
-                if link_url.len() <= config.max_url_length && link_url.starts_with("http") {
-                    result.push_str("<a href=\"");
-                    result.push_str(&link_url);
-                    if config.external_link_security {
-                        result.push_str("\" target=\"_blank\">");
-                    } else {
-                        result.push_str("\">");
-                    }
-                    result.push_str(&link_url);
-                    result.push_str("</a>");
-                    i = bracket_end_idx + 1;
-                    continue;
-                }
+fn matching_bracket(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 1;
+    let mut j = open + 1;
+    while j < bytes.len() && depth > 0 {
+        if bytes[j] == b'[' {
+            depth += 1;
+        } else if bytes[j] == b']' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j);
             }
         }
-
-        // No pattern matched, add current character
-        result.push(chars[i]);
-        i += 1;
+        j += 1;
     }
-
-    result
+    None
 }
 
 #[cfg(test)]
