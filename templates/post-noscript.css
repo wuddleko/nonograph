@@ -1,0 +1,24 @@
+/* Fallback styles for when JavaScript is disabled */
+.secret {
+    filter: none !important;
+    user-select: text !important;
+    background: #f0f0f0 !important;
+    color: #333 !important;
+    cursor: default !important;
+}
+.secret::before {
+    content: "[Secret text: ";
+}
+.secret::after {
+    content: "]";
+}
+
+/* Process code blocks for no-JS environment */
+.article-content pre {
+    position: relative;
+}
+
+/* Hide the interactive elements that won't work without JS */
+.code-controls {
+    display: none;
+}

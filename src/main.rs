@@ -2,12 +2,13 @@
 extern crate rocket;
 
 mod archiver;
-mod config;
+pub(crate) mod config;
+pub(crate) mod csrf;
 mod nip44;
-mod nojs;
-mod nostr;
-mod save;
-mod template;
+pub(crate) mod nostr;
+mod pages;
+pub(crate) mod save;
+pub(crate) mod template;
 
 use config::Config;
 use nonograph_parser as parser;
@@ -20,16 +21,13 @@ use deunicode::deunicode;
 use rand::{thread_rng, Rng};
 use rocket::{
     fairing::{Fairing, Info, Kind},
-    http::{ContentType, Header, Status},
-    request::{FromRequest, Outcome},
-    response::content,
-    Request, Response, State,
+    http::{Header, Status},
+    Request, Response,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
-use template::TemplateEngine;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Post {
@@ -177,46 +175,6 @@ impl PostCache {
 
 type PostStorage = Arc<Mutex<PostCache>>;
 
-#[get("/")]
-fn index(config: &State<Config>) -> content::RawHtml<String> {
-    let engine = TemplateEngine::new("templates");
-    let mut context = HashMap::new();
-    context.insert("error".to_string(), "".to_string());
-    context.insert("success".to_string(), "".to_string());
-    context.insert(
-        "title_max_length".to_string(),
-        config.limits.title_max_length.to_string(),
-    );
-    context.insert(
-        "alias_max_length".to_string(),
-        config.limits.alias_max_length.to_string(),
-    );
-    context.insert(
-        "content_max_length".to_string(),
-        config.limits.content_max_length.to_string(),
-    );
-
-    let csrf_token = if config.security.csrf_protection_enabled {
-        generate_csrf_token_with_timestamp()
-    } else {
-        String::new()
-    };
-    context.insert("csrf_token".to_string(), csrf_token);
-
-    match engine.render_with_defaults("home", &context) {
-        Ok(html) => content::RawHtml(html),
-        Err(e) => content::RawHtml(format!("Template error: {}", e)),
-    }
-}
-
-#[derive(FromForm)]
-struct NewPost {
-    title: String,
-    content: String,
-    alias: String,
-    csrf_token: String,
-}
-
 struct OnionLocationFairing {
     onion_url: String,
 }
@@ -300,32 +258,22 @@ impl Fairing for SecurityHeadersFairing {
         response.set_header(Header::new("X-Frame-Options", "SAMEORIGIN"));
         response.set_header(Header::new("X-Permitted-Cross-Domain-Policies", "none"));
         response.set_header(Header::new("X-XSS-Protection", "0"));
+        let path = request.uri().path().as_str();
         response.set_header(Header::new(
             "Cache-Control",
-            cache_control_for_path(request.uri().path().as_str()),
+            pages::cache_control_for_path(path),
         ));
-    }
-}
-
-const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
-const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
-
-fn cache_control_for_path(path: &str) -> &'static str {
-    if path == PAGE_JS_PATH || path == PAGE_WASM_PATH {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-store, max-age=0"
-    }
-}
-
-struct CsrfProtected;
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for CsrfProtected {
-    type Error = ();
-
-    async fn from_request(_request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        Outcome::Success(CsrfProtected)
+        if let Some(etag) = pages::entity_tag_for_path(path) {
+            response.set_header(Header::new("ETag", etag));
+            if request
+                .headers()
+                .get_one("If-None-Match")
+                .is_some_and(|presented| pages::if_none_match_matches(presented, etag))
+            {
+                response.set_status(Status::NotModified);
+                response.body_mut().take();
+            }
+        }
     }
 }
 
@@ -464,111 +412,6 @@ fn generate_post_id_with_segment(
     Err("All slots for this title and date are taken. Please choose another title.".to_string())
 }
 
-fn generate_csrf_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..32)
-        .map(|_| format!("{:02x}", rng.gen::<u8>()))
-        .collect::<String>()
-}
-
-fn generate_csrf_token_with_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let random_part = generate_csrf_token();
-    let combined = format!("{}:{}", timestamp, random_part);
-
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    combined.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{}.{:x}", combined, hash)
-}
-
-fn is_valid_csrf_token(token: &str) -> bool {
-    if token.is_empty() {
-        return false;
-    }
-
-    // Split token into data and hash parts
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-
-    let data = parts[0];
-    let provided_hash = parts[1];
-
-    // Recreate hash from data
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    let expected_hash = format!("{:x}", hasher.finish());
-
-    // Verify hash matches
-    if provided_hash != expected_hash {
-        return false;
-    }
-
-    // Check timestamp (token expires after 1 hour)
-    let data_parts: Vec<&str> = data.split(':').collect();
-    if data_parts.len() != 2 {
-        return false;
-    }
-
-    if let Ok(timestamp) = data_parts[0].parse::<u64>() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Token is valid for 24 hours
-        current_time - timestamp < 86400
-    } else {
-        false
-    }
-}
-
-fn insert_local_parser(context: &mut HashMap<String, String>, raw_content: &str, config: &Config) {
-    context.insert(
-        "raw_post_json".to_string(),
-        json_for_script(&parser::markdown_for_page(raw_content)),
-    );
-    context.insert(
-        "parser_asset_version".to_string(),
-        PARSER_ASSET_VERSION.trim().to_string(),
-    );
-    context.insert("parser_js_path".to_string(), PAGE_JS_PATH.to_string());
-    context.insert("parser_wasm_path".to_string(), PAGE_WASM_PATH.to_string());
-    context.insert(
-        "syntax_theme".to_string(),
-        config.theme.syntax_highlighting.clone(),
-    );
-    context.insert(
-        "max_url_length".to_string(),
-        config.security.max_url_length.to_string(),
-    );
-    context.insert(
-        "external_link_security".to_string(),
-        config.security.external_link_security.to_string(),
-    );
-}
-
-fn json_for_script(value: &str) -> String {
-    serde_json::to_string(value)
-        .unwrap_or_else(|_| "\"\"".to_string())
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026")
-}
-
 fn render_options(config: &Config) -> parser::RenderOptions {
     parser::RenderOptions {
         max_url_length: config.security.max_url_length,
@@ -586,7 +429,7 @@ fn publish_failure_redirect(nojs: bool, failure: PublishFailure) -> rocket::resp
         }
     };
     let url = if nojs {
-        format!("/nojs/?error={error}")
+        format!("/nojs?error={error}")
     } else {
         format!("/?error={error}")
     };
@@ -634,54 +477,6 @@ fn publish_note(
     }
     storage.lock().unwrap().insert(post.id.clone(), post);
     Ok(format!("{nevent}?nsec={nsec}"))
-}
-
-fn handle_create(
-    nojs: bool,
-    form: &NewPost,
-    storage: &PostStorage,
-    config: &Config,
-) -> rocket::response::Redirect {
-    let home = if nojs { "/nojs/" } else { "/" };
-    if config.security.csrf_protection_enabled && !is_valid_csrf_token(&form.csrf_token) {
-        return rocket::response::Redirect::to(format!("{home}?error=csrf_token_invalid"));
-    }
-
-    let alias = if form.alias.trim().is_empty() {
-        None
-    } else {
-        Some(form.alias.as_str())
-    };
-    if let Err(error) = config.validate_post(&form.title, &form.content, alias) {
-        return rocket::response::Redirect::to(format!("{home}?error={error}"));
-    }
-
-    let rendered_content =
-        parser::render_markdown_with_config(&form.content, &render_options(config));
-    match publish_note(
-        storage,
-        config,
-        &form.title,
-        &form.alias,
-        &rendered_content,
-        &form.content,
-    ) {
-        Ok(nevent) => {
-            let prefix = if nojs { "/nojs" } else { "" };
-            rocket::response::Redirect::to(format!("{prefix}/{nevent}"))
-        }
-        Err(failure) => publish_failure_redirect(nojs, failure),
-    }
-}
-
-#[post("/create", data = "<form>")]
-fn create_post(
-    _csrf: CsrfProtected,
-    form: rocket::form::Form<NewPost>,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(false, &form, storage, config))
 }
 
 fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
@@ -777,343 +572,6 @@ fn fetch_missing_note(
         .unwrap()
         .insert(post.id.clone(), post.clone());
     Some(post)
-}
-
-#[get("/<post_id>?<nsec>")]
-fn view_post(
-    post_id: &str,
-    nsec: Option<&str>,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
-    let decoded = nostr::decode_nevent(post_id);
-    let is_raw_request = decoded.is_none() && post_id.ends_with(".md");
-    let file_id = match &decoded {
-        Some(nevent) => nevent.event_id_hex.as_str(),
-        None => post_id.strip_suffix(".md").unwrap_or(post_id),
-    };
-
-    // Reject identifiers that could escape the content directory before any
-    // filesystem access takes place. See `is_valid_post_id`.
-    if !is_valid_post_id(file_id) {
-        return Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
-        ));
-    }
-
-    if is_raw_request {
-        let file_path = format!("content/{}.md", file_id);
-        return match std::fs::read_to_string(&file_path) {
-            Ok(raw_bytes) => Ok(rocket::Either::Right(content::RawText(raw_bytes))),
-            Err(_) => Err((
-                Status::NotFound,
-                rocket::Either::Left(content::RawText("Page not found".to_string())),
-            )),
-        };
-    }
-
-    // Try to load from memory first with minimal lock time
-    let post_from_memory = {
-        let mut posts = storage.lock().unwrap();
-        // Use the non-cloning get_ref for better performance
-        if let Some(post_ref) = posts.get_ref(file_id) {
-            Some(post_ref.clone()) // Only clone when we actually found it
-        } else {
-            None
-        }
-    };
-
-    let post = match post_from_memory {
-        Some(post) => Some(post),
-        None => {
-            if save::post_file_exists(file_id) {
-                if let Ok(file_content) = std::fs::read_to_string(format!("content/{}.md", file_id))
-                {
-                    let parsed = if file_content.starts_with("---\n") {
-                        parse_yaml_frontmatter(&file_content)
-                    } else {
-                        parse_legacy_frontmatter(&file_content)
-                    };
-
-                    if let Some((title, author, created_at, raw_content)) = parsed {
-                        let new_post = Post {
-                            id: file_id.to_string(),
-                            title,
-                            author,
-                            content: parser::render_markdown_with_config(
-                                &raw_content,
-                                &render_options(config),
-                            ),
-                            raw_content,
-                            created_at,
-                        };
-
-                        {
-                            let mut posts_write = storage.lock().unwrap();
-                            posts_write.insert(file_id.to_string(), new_post.clone());
-                        }
-
-                        Some(new_post)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else if let Some(nevent) = &decoded {
-                fetch_missing_note(nevent, nsec, storage, config)
-            } else {
-                None
-            }
-        }
-    };
-
-    match post {
-        Some(post) => {
-            let engine = TemplateEngine::new("templates");
-            let mut context = HashMap::new();
-
-            let rendered_content = post.content.clone();
-
-            context.insert("title".to_string(), post.title.clone());
-            context.insert("content".to_string(), rendered_content);
-            context.insert("raw_content".to_string(), post.raw_content.clone());
-            let author = if post.author.is_empty() {
-                "Anonymous".to_string()
-            } else {
-                post.author.clone()
-            };
-            context.insert("author".to_string(), author);
-
-            let author_display = if post.author.is_empty() {
-                "Anonymous · ".to_string()
-            } else {
-                format!("{} · ", post.author)
-            };
-            context.insert("author_display".to_string(), author_display);
-
-            context.insert(
-                "created_at".to_string(),
-                post.created_at.format("%B %d, %Y").to_string(),
-            );
-            context.insert(
-                "created_at_iso".to_string(),
-                post.created_at
-                    .format("%Y-%m-%dT00:00:00+00:00")
-                    .to_string(),
-            );
-            let public_id = if decoded.is_some() { post_id } else { file_id };
-            context.insert("post_id".to_string(), public_id.to_string());
-            insert_local_parser(&mut context, &post.raw_content, config);
-
-            // OpenGraph variables
-            context.insert("url".to_string(), format!("/{}", public_id));
-
-            let description = if post.raw_content.chars().count() > 160 {
-                let truncated: String = post.raw_content.chars().take(160).collect();
-                format!("{}...", parser::html_attr_escape(&truncated))
-            } else {
-                post.raw_content.clone()
-            };
-            context.insert("description".to_string(), description);
-
-            match engine.render("post", &context) {
-                Ok(html) => Ok(rocket::Either::Left(content::RawHtml(html))),
-                Err(e) => Ok(rocket::Either::Left(content::RawHtml(format!(
-                    "Template error: {}",
-                    e
-                )))),
-            }
-        }
-        None => Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
-        )),
-    }
-}
-
-#[get("/markup")]
-fn markup_page(
-    config: &State<Config>,
-) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    serve_static_page("markup", config)
-}
-
-#[get("/legal")]
-fn legal_page(
-    config: &State<Config>,
-) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    serve_static_page("legal", config)
-}
-
-#[get("/about")]
-fn about_page(
-    config: &State<Config>,
-) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    serve_static_page("about", config)
-}
-
-#[get("/api")]
-fn api_page(
-    config: &State<Config>,
-) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    serve_static_page("api", config)
-}
-
-const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
-const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
-const PARSER_ASSET_VERSION: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/parser_asset_version.txt"));
-
-#[get("/page/nonograph_page.js")]
-fn parser_js() -> (ContentType, &'static str) {
-    (ContentType::JavaScript, PAGE_JS)
-}
-
-#[get("/page/nonograph_page_bg.wasm")]
-fn parser_wasm() -> (ContentType, &'static [u8]) {
-    (ContentType::new("application", "wasm"), PAGE_WASM)
-}
-
-const ROBOTS_TXT: &str = include_str!("../robots.txt");
-
-#[get("/robots.txt")]
-fn robots_txt() -> content::RawText<&'static str> {
-    content::RawText(ROBOTS_TXT)
-}
-
-#[get("/nojs")]
-fn nojs_index(config: &State<Config>) -> content::RawHtml<String> {
-    let html = index(config).0;
-    let clean_html = nojs::strip_javascript(&html);
-    // Update form action to point to /nojs/create
-    let nojs_html = clean_html.replace(r#"action="/create""#, r#"action="/nojs/create""#);
-    content::RawHtml(nojs_html)
-}
-
-#[get("/nojs/<post_id>?<nsec>")]
-fn nojs_view_post(
-    post_id: &str,
-    nsec: Option<&str>,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
-    match view_post(post_id, nsec, storage, config) {
-        Ok(rocket::Either::Left(content::RawHtml(html))) => {
-            let clean_html = nojs::strip_javascript(&html);
-            let fixed_html = clean_html
-                .replace(
-                    &format!(r#"href="/nojs/{}"#, post_id),
-                    &format!(r#"href="/{}"#, post_id),
-                )
-                .replace(r#"target="_blank">nojs</a>"#, r#"target="_blank">js</a>"#);
-            Ok(rocket::Either::Left(content::RawHtml(fixed_html)))
-        }
-        Ok(rocket::Either::Right(raw_text)) => Ok(rocket::Either::Right(raw_text)),
-        Err(error) => Err(error),
-    }
-}
-
-#[post("/nojs/create", data = "<form>")]
-fn nojs_create_post(
-    _csrf: CsrfProtected,
-    form: rocket::form::Form<NewPost>,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(true, &form, storage, config))
-}
-
-const NOT_FOUND_HTML: &str = r#"<!doctype html>
-<html>
-<head>
-    <title>404 - Page not found</title>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-        body {
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            text-align: center;
-            color: #333;
-        }
-        h1 { font-weight: 300; margin-bottom: 16px; }
-        a { color: #333; }
-    </style>
-</head>
-<body>
-    <h1>Page Not Found</h1>
-    <p><a href="/">Write Your Own</a></p>
-</body>
-</html>"#;
-
-fn serve_static_page(
-    page_name: &str,
-    config: &State<Config>,
-) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    let file_path = format!("content/{}.md", page_name);
-
-    match std::fs::read_to_string(&file_path) {
-        Ok(file_content) => {
-            let parsed = if file_content.starts_with("---\n") {
-                parse_yaml_frontmatter(&file_content)
-            } else {
-                parse_legacy_frontmatter(&file_content)
-            };
-
-            if let Some((title, author, created_at, raw_content)) = parsed {
-                let rendered_content =
-                    parser::render_markdown_with_config(&raw_content, &render_options(config));
-
-                let engine = TemplateEngine::new("templates");
-                let mut context = HashMap::new();
-                context.insert("title".to_string(), title);
-                context.insert("content".to_string(), rendered_content);
-                context.insert(
-                    "created_at".to_string(),
-                    created_at.format("%B %d, %Y").to_string(),
-                );
-                context.insert("author".to_string(), author);
-                context.insert("author_display".to_string(), String::new());
-                context.insert(
-                    "created_at_iso".to_string(),
-                    created_at.format("%Y-%m-%dT00:00:00+00:00").to_string(),
-                );
-                context.insert("url".to_string(), format!("/{}", page_name));
-                context.insert("description".to_string(), String::new());
-                context.insert("post_id".to_string(), page_name.to_string());
-                insert_local_parser(&mut context, &raw_content, config);
-
-                match engine.render("post", &context) {
-                    Ok(html) => Ok(content::RawHtml(html)),
-                    Err(e) => Ok(content::RawHtml(format!("Template error: {}", e))),
-                }
-            } else {
-                Ok(content::RawHtml(format!(
-                    "<h1>Error</h1><p>Invalid file format for {}</p>",
-                    page_name
-                )))
-            }
-        }
-        Err(_) => Err((
-            Status::NotFound,
-            content::RawHtml(NOT_FOUND_HTML.to_string()),
-        )),
-    }
 }
 
 fn start_cache_purge_worker(storage: PostStorage, interval_mins: u64) {
@@ -1214,6 +672,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     use rocket::data::{Limits, ToByteUnit};
 
     install_bundled_pages();
+    pages::warm();
 
     let config = Config::load_with_logging();
 
@@ -1250,19 +709,25 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         .mount(
             "/",
             routes![
-                index,
-                create_post,
-                view_post,
-                markup_page,
-                legal_page,
-                about_page,
-                api_page,
-                robots_txt,
-                nojs_index,
-                nojs_view_post,
-                nojs_create_post,
-                parser_js,
-                parser_wasm
+                pages::index,
+                pages::create_post,
+                pages::view_post,
+                pages::markup_page,
+                pages::legal_page,
+                pages::about_page,
+                pages::api_page,
+                pages::robots_txt,
+                pages::nojs_index,
+                pages::nojs_view_post,
+                pages::nojs_create_post,
+                pages::parser_js,
+                pages::parser_wasm,
+                pages::home_css,
+                pages::home_js,
+                pages::post_css,
+                pages::post_js,
+                pages::post_noscript_css,
+                pages::writemark_js,
             ],
         );
 

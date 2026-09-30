@@ -1,4 +1,3 @@
-
 use super::*;
 use secp256k1::{Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
