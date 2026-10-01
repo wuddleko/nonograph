@@ -36,6 +36,8 @@ fn static_assets_are_cacheable_and_html_is_not() {
     for path in [
         HOME_CSS_PATH,
         HOME_JS_PATH,
+        NOSTR_JS_PATH,
+        SECP256K1_JS_PATH,
         POST_CSS_PATH,
         POST_JS_PATH,
         POST_NOSCRIPT_CSS_PATH,
@@ -63,6 +65,8 @@ fn asset_routes_match_path_constants() {
         PAGE_WASM_PATH,
         HOME_CSS_PATH,
         HOME_JS_PATH,
+        NOSTR_JS_PATH,
+        SECP256K1_JS_PATH,
         POST_CSS_PATH,
         POST_JS_PATH,
         POST_NOSCRIPT_CSS_PATH,
@@ -150,6 +154,9 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("<writemark-editor"));
     assert!(!js.contains("<textarea name=\"content\""));
     assert!(js.contains("/writemark.js?v="));
+    assert!(js.contains("data-relays="));
+    assert!(js.contains("wss://"));
+    assert!(js.contains("data-timeout=\"10000\""));
     assert!(js.contains("<p class=\"form-error\"></p>"));
     assert!(js.contains("0 / 128,000"));
     assert!(js.contains("class=\"\""));
@@ -923,4 +930,74 @@ fn public_note_shares_a_short_id_for_nevent_and_naddr() {
         .collect();
     assert_eq!(shorts.len(), 1);
     assert_eq!(shorts[0], via_naddr.id);
+}
+
+#[test]
+fn homepage_js_can_send_a_public_long_form_note() {
+    let nostr = include_str!("../templates/nostr.js");
+    assert!(nostr.contains("KIND_LONG_FORM = 30023"));
+    assert!(nostr.contains("publishPublicNote"));
+    assert!(nostr.contains("[\"EVENT\""));
+    assert!(nostr.contains("new WebSocket"));
+    assert!(nostr.contains("publicRelayUrl"));
+    assert!(nostr.contains("relaysForPublicPublish"));
+    assert!(nostr.contains("10_000"));
+    assert!(nostr.contains("sha256Sync"));
+    assert!(nostr.contains("ensureBip340"));
+    assert!(nostr.contains("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    assert!(nostr.contains(
+        "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0"
+    ));
+    assert!(!nostr.contains("1059"));
+    assert!(!nostr.contains("nsec"));
+    assert!(!nostr.contains("gift"));
+    assert!(!nostr.contains("wrap"));
+
+    let home = include_str!("../templates/home.js");
+    let helper = home.find("nonographPublishPublicNote").unwrap();
+    let imported = home.find("await import").unwrap();
+    assert!(helper < imported);
+    assert!(home.contains("./nostr.js"));
+    assert!(home.contains("publishPublicNote"));
+    assert!(!home.contains("1059"));
+    assert!(!home.contains("nsec"));
+
+    let html = include_str!("../templates/home.html");
+    assert!(html.contains("data-relays=\"{{nostr_relays}}\""));
+    assert!(html.contains("data-timeout=\"{{nostr_timeout_ms}}\""));
+}
+
+#[test]
+fn homepage_js_gets_the_instance_public_relays() {
+    let config = crate::config::Config::default();
+    let js = home_context(&config, false, None);
+    let relays: Vec<String> = serde_json::from_str(js.get("nostr_relays").unwrap()).unwrap();
+    assert!(!relays.is_empty());
+    assert!(relays.iter().all(|relay| relay.starts_with("wss://")));
+    assert!(!relays.iter().any(|relay| relay.contains("127.0.0.1")));
+    assert!(!relays.iter().any(|relay| relay.contains("localhost")));
+    assert_eq!(js.get("nostr_timeout_ms").unwrap(), "10000");
+    assert!(js.get("scripts").unwrap().contains("/home.js?v="));
+    assert!(!js.get("scripts").unwrap().contains("/nostr.js"));
+
+    let mut slow = config.clone();
+    slow.nostr.timeout_secs = 20;
+    let longer = home_context(&slow, false, None);
+    assert_eq!(longer.get("nostr_timeout_ms").unwrap(), "20000");
+
+    let mut private = config.clone();
+    private.nostr.relays = vec!["wss://127.0.0.1".to_string()];
+    let hidden = home_context(&private, false, None);
+    assert_eq!(hidden.get("nostr_relays").unwrap(), "[]");
+
+    let nojs = home_context(&config, true, None);
+    assert!(nojs.get("scripts").unwrap().is_empty());
+    assert!(nojs.get("nostr_relays").is_some());
+}
+
+#[test]
+fn tab_relay_timeout_is_at_least_ten_seconds() {
+    assert_eq!(tab_relay_timeout_ms(0), 10_000);
+    assert_eq!(tab_relay_timeout_ms(3), 10_000);
+    assert_eq!(tab_relay_timeout_ms(20), 20_000);
 }

@@ -2,6 +2,24 @@
             const charCount = document.getElementById("charCount");
             const mobileCharCount = document.getElementById("mobileCharCount");
             const form = document.getElementById("publishForm");
+
+            globalThis.nonographPublishPublicNote = async function (fields) {
+                const { publishPublicNote } = await import(
+                    new URL(
+                        `./nostr.js${new URL(import.meta.url).search}`,
+                        import.meta.url,
+                    )
+                );
+                const relays = JSON.parse(form.dataset.relays || "[]");
+                const timeoutMs = Number(form.dataset.timeout) || 10_000;
+                return publishPublicNote({
+                    title: fields.title,
+                    author: fields.author,
+                    content: fields.content,
+                    relays,
+                    timeoutMs,
+                });
+            };
             const progressCircle = document.getElementById("progressCircle");
             const mobileProgressCircle = document.getElementById(
                 "mobileProgressCircle",

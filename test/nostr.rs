@@ -693,3 +693,64 @@ fn assert_signature(note: &SignedNote) {
     secp.verify_schnorr(&signature, &Message::from_digest(note.id), &pubkey)
         .unwrap();
 }
+
+#[test]
+fn bip340_vector0_matches_libsecp() {
+    let mut secret = [0u8; 32];
+    secret[31] = 3;
+    let keypair = Keypair::from_seckey_slice(SECP256K1, &secret).unwrap();
+    let sig = SECP256K1.sign_schnorr_with_aux_rand(
+        &Message::from_digest([0u8; 32]),
+        &keypair,
+        &[0u8; 32],
+    );
+    assert_eq!(
+        hex_encode(&sig.serialize()),
+        "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0"
+    );
+}
+
+#[test]
+fn tab_long_form_signature_verifies() {
+    let mut secret = [0u8; 32];
+    secret[31] = 3;
+    let keypair = Keypair::from_seckey_slice(SECP256K1, &secret).unwrap();
+    let created_at = 1_700_000_000;
+    let content = "hello from the tab\nwith \"quotes\"";
+    let tags = vec![
+        vec!["d".to_string(), "4a-tab-sign".to_string()],
+        vec!["title".to_string(), "Hello".to_string()],
+        vec!["published_at".to_string(), created_at.to_string()],
+        vec!["author".to_string(), "Ada".to_string()],
+    ];
+    let pubkey = keypair.x_only_public_key().0.serialize();
+    let pubkey_hex = hex_encode(&pubkey);
+    let id = event_id(&pubkey_hex, created_at, KIND_LONG_FORM, &tags, content);
+    let sig = SECP256K1.sign_schnorr_with_aux_rand(&Message::from_digest(id), &keypair, &[0u8; 32]);
+    let json = event_wire(
+        &hex_encode(&id),
+        &pubkey_hex,
+        created_at,
+        KIND_LONG_FORM,
+        &tags,
+        content,
+        Some(&hex_encode(&sig.serialize())),
+    );
+    let parsed = parse_event(&serde_json::from_str(&json).unwrap()).unwrap();
+    assert_eq!(parsed.kind, KIND_LONG_FORM);
+    assert!(check_id(&parsed));
+    assert!(verify_sig(&parsed));
+    assert_eq!(
+        pubkey_hex,
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+    );
+}
+
+#[test]
+fn homepage_js_signed_note_verifies() {
+    let json = r#"{"id":"6d8323bd8e3e7824bf16f7983288645b2a476bcd4d6db2958edd73455b2a787b","pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","created_at":1700000000,"kind":30023,"tags":[["d","4a-tab-sign"],["title","Hello"],["published_at","1700000000"],["author","Ada"]],"content":"hello from the tab\nwith \"quotes\"","sig":"148d67d68dd5079295caa75e797894f9a8654499a3316b9849c672f69fb283b75d01374033b5c6c7dd4822fd576a8f44a9e7fa0e6ede5ed160960054ba5f5364"}"#;
+    let parsed = parse_event(&serde_json::from_str(json).unwrap()).unwrap();
+    assert_eq!(parsed.kind, KIND_LONG_FORM);
+    assert!(check_id(&parsed));
+    assert!(verify_sig(&parsed));
+}

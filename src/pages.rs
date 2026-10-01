@@ -22,6 +22,8 @@ pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
 pub const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
 pub const HOME_CSS_PATH: &str = "/home.css";
 pub const HOME_JS_PATH: &str = "/home.js";
+pub const NOSTR_JS_PATH: &str = "/nostr.js";
+pub const SECP256K1_JS_PATH: &str = "/secp256k1.js";
 pub const POST_CSS_PATH: &str = "/post.css";
 pub const POST_JS_PATH: &str = "/post.js";
 pub const POST_NOSCRIPT_CSS_PATH: &str = "/post-noscript.css";
@@ -40,6 +42,8 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         PAGE_JS_PATH | PAGE_WASM_PATH => REVALIDATE,
         HOME_CSS_PATH
         | HOME_JS_PATH
+        | NOSTR_JS_PATH
+        | SECP256K1_JS_PATH
         | POST_CSS_PATH
         | POST_JS_PATH
         | POST_NOSCRIPT_CSS_PATH
@@ -99,6 +103,8 @@ struct Assets {
     version: String,
     home_css: String,
     home_js: String,
+    nostr_js: String,
+    secp256k1_js: String,
     post_css: String,
     post_js: String,
     post_noscript_css: String,
@@ -124,6 +130,8 @@ fn assets() -> &'static Assets {
         };
         let home_css = read("home.css");
         let home_js = read("home.js");
+        let nostr_js = read("nostr.js");
+        let secp256k1_js = read("secp256k1.js");
         let post_css = read("post.css");
         let post_js = read("post.js");
         let post_noscript_css = read("post-noscript.css");
@@ -131,6 +139,8 @@ fn assets() -> &'static Assets {
         let version = asset_version(&[
             &home_css,
             &home_js,
+            &nostr_js,
+            &secp256k1_js,
             &post_css,
             &post_js,
             &post_noscript_css,
@@ -140,6 +150,8 @@ fn assets() -> &'static Assets {
             version,
             home_css,
             home_js,
+            nostr_js,
+            secp256k1_js,
             post_css,
             post_js,
             post_noscript_css,
@@ -218,6 +230,15 @@ fn mode_label(nojs: bool) -> &'static str {
     }
 }
 
+pub(crate) const MIN_TAB_RELAY_TIMEOUT_MS: u64 = 10_000;
+
+pub(crate) fn tab_relay_timeout_ms(timeout_secs: u64) -> u64 {
+    timeout_secs
+        .max(1)
+        .saturating_mul(1000)
+        .max(MIN_TAB_RELAY_TIMEOUT_MS)
+}
+
 fn format_count(value: usize) -> String {
     let digits = value.to_string();
     let mut grouped = String::new();
@@ -244,6 +265,15 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
     context.insert(
         "content_field".to_string(),
         home_content_field(nojs, &max_length),
+    );
+    context.insert(
+        "nostr_relays".to_string(),
+        serde_json::to_string(&relays_for_public_fetch(&[], &config.nostr.relays))
+            .unwrap_or_else(|_| "[]".to_string()),
+    );
+    context.insert(
+        "nostr_timeout_ms".to_string(),
+        tab_relay_timeout_ms(config.nostr.timeout_secs).to_string(),
     );
     context.insert("error".to_string(), home_error_message(error));
     let csrf_token = if config.security.csrf_protection_enabled {
@@ -1258,6 +1288,16 @@ pub fn home_css() -> (ContentType, &'static str) {
 #[get("/home.js")]
 pub fn home_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, assets().home_js.as_str())
+}
+
+#[get("/nostr.js")]
+pub fn nostr_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, assets().nostr_js.as_str())
+}
+
+#[get("/secp256k1.js")]
+pub fn secp256k1_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, assets().secp256k1_js.as_str())
 }
 
 #[get("/post.css")]

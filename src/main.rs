@@ -83,19 +83,15 @@ impl Fairing for SecurityHeadersFairing {
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
+        let relays = request
+            .rocket()
+            .state::<Config>()
+            .map(|config| config.nostr.relays.as_slice())
+            .unwrap_or(&[]);
         // TODO: Refactor HTML and remove unsafe-inline.
         response.set_header(Header::new(
             "Content-Security-Policy",
-            "default-src 'self'; \
-             base-uri 'self'; \
-             form-action 'self'; \
-             frame-ancestors 'self'; \
-             img-src 'self' https: http:; \
-             media-src 'self' https: http:; \
-             object-src 'none'; \
-             script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
-             script-src-attr 'none'; \
-             style-src 'self' https: 'unsafe-inline'",
+            content_security_policy(relays),
         ));
         response.set_header(Header::new("Cross-Origin-Opener-Policy", "same-origin"));
         response.set_header(Header::new("Cross-Origin-Resource-Policy", "same-origin"));
@@ -128,6 +124,30 @@ impl Fairing for SecurityHeadersFairing {
             }
         }
     }
+}
+
+fn content_security_policy(relays: &[String]) -> String {
+    let mut connect = String::from("'self'");
+    for relay in pages::relays_for_public_fetch(&[], relays) {
+        if relay.bytes().any(|byte| matches!(byte, b';' | b',' | b' ')) {
+            continue;
+        }
+        connect.push(' ');
+        connect.push_str(&relay);
+    }
+    format!(
+        "default-src 'self'; \
+         connect-src {connect}; \
+         base-uri 'self'; \
+         form-action 'self'; \
+         frame-ancestors 'self'; \
+         img-src 'self' https: http:; \
+         media-src 'self' https: http:; \
+         object-src 'none'; \
+         script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+         script-src-attr 'none'; \
+         style-src 'self' https: 'unsafe-inline'"
+    )
 }
 
 /// Maximum length of a post identifier, matching typical filesystem limits on
@@ -539,6 +559,8 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::parser_wasm,
                 pages::home_css,
                 pages::home_js,
+                pages::nostr_js,
+                pages::secp256k1_js,
                 pages::post_css,
                 pages::post_js,
                 pages::post_noscript_css,
