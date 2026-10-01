@@ -148,6 +148,8 @@ fn content_security_policy(_relays: &[String]) -> String {
 /// Maximum length of a post identifier, matching typical filesystem limits on
 /// a single path component.
 const MAX_POST_ID_LEN: usize = 255;
+const UNGUESSABLE_BYTES: usize = 4;
+pub(crate) const UNGUESSABLE_HEX_LEN: usize = UNGUESSABLE_BYTES * 2;
 
 /// Returns `true` if `id` is a well-formed post identifier.
 ///
@@ -179,18 +181,20 @@ pub(crate) fn is_nostr_identifier(id: &str) -> bool {
     !rest.is_empty() && id.len() <= 8192 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// 4 random bytes, hex-encoded. Enough that a title is not a usable guess,
+/// short enough that the public link stays compact: `{slug}-{8 hex}`.
 pub(crate) fn generate_unguessable_segment() -> String {
     let mut rng = thread_rng();
-    (0..16)
+    (0..UNGUESSABLE_BYTES)
         .map(|_| format!("{:02x}", rng.gen::<u8>()))
         .collect()
 }
 
-fn assemble_post_id(slug: &str, random: &str, date: &str, index: usize) -> String {
+fn assemble_post_id(slug: &str, random: &str, index: usize) -> String {
     if index == 0 {
-        format!("{slug}-{random}-{date}")
+        format!("{slug}-{random}")
     } else {
-        format!("{slug}-{random}-{date}-{index}")
+        format!("{slug}-{random}-{index}")
     }
 }
 
@@ -227,9 +231,6 @@ fn generate_post_id_with_segment_in_dir(
     random: &str,
     base_dir: &str,
 ) -> Result<String, String> {
-    let now = Utc::now();
-    let date_str = now.format("%m-%d-%Y").to_string();
-
     // Transliterate ALL characters to ASCII equivalents (safe for all input)
     let transliterated_title = deunicode(title);
 
@@ -253,8 +254,8 @@ fn generate_post_id_with_segment_in_dir(
         .collect::<Vec<&str>>()
         .join("-");
 
-    // Apply character limit with truncation if needed
-    let max_slug_length = 250 - date_str.len() - 1 - 33; // Reserve space for "-{date}"
+    // Leave room for "-{random}" and a collision suffix up to "-999".
+    let max_slug_length = 250 - 1 - UNGUESSABLE_HEX_LEN - 4;
     let final_slug = if title_slug.len() > max_slug_length {
         let truncate_to = max_slug_length.saturating_sub(4); // Reserve space for "-etc"
         if truncate_to > 0 {
@@ -282,7 +283,7 @@ fn generate_post_id_with_segment_in_dir(
         let fallback_slug = format!("na-{}", chars);
 
         for i in 0..1000 {
-            let post_id = assemble_post_id(&fallback_slug, random, &date_str, i);
+            let post_id = assemble_post_id(&fallback_slug, random, i);
 
             if !id_is_taken(storage, &post_id, base_dir) {
                 return Ok(post_id);
@@ -296,7 +297,7 @@ fn generate_post_id_with_segment_in_dir(
 
     // Try to find an available slot (0-999)
     for i in 0..1000 {
-        let post_id = assemble_post_id(&final_slug, random, &date_str, i);
+        let post_id = assemble_post_id(&final_slug, random, i);
 
         if !id_is_taken(storage, &post_id, base_dir) {
             return Ok(post_id);

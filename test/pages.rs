@@ -765,7 +765,8 @@ fn public_note_footer_prints_the_nostr_id() {
     assert!(html.contains(&format!("href=\"/{nevent}\"")));
     assert!(html.contains(&nevent));
     assert!(html.contains("class=\"nostr-id\""));
-    assert!(html.contains(&format!("content=\"/{nevent}\"")));
+    assert!(html.contains(&format!("content=\"/{}\"", post.id)));
+    assert!(!html.contains(&format!("content=\"/{nevent}\"")));
 
     let local = crate::Post {
         id: "hello-local".to_string(),
@@ -780,6 +781,20 @@ fn public_note_footer_prints_the_nostr_id() {
     assert!(!local_html.contains("nevent1"));
     assert!(!local_html.contains("class=\"nostr-id\""));
     assert!(local_html.contains("content=\"/hello-local\""));
+}
+
+#[test]
+fn nostr_path_redirects_to_the_short_id() {
+    assert_eq!(
+        short_view_href(false, "hello-a1b2c3d4", "nevent1qqsqabc").as_deref(),
+        Some("/hello-a1b2c3d4")
+    );
+    assert_eq!(
+        short_view_href(true, "hello-a1b2c3d4", "naddr1qqsqabc").as_deref(),
+        Some("/nojs/hello-a1b2c3d4")
+    );
+    assert!(short_view_href(false, "hello-a1b2c3d4", "hello-a1b2c3d4").is_none());
+    assert!(short_view_href(false, "../secret", "nevent1qqsqabc").is_none());
 }
 
 #[test]
@@ -880,6 +895,7 @@ fn public_note_upgrades_a_hex_file_to_a_short_link() {
     assert!(short.contains(&format!("nostr: {nevent}")));
     let html = article_html(&post, true, &post.id).unwrap();
     assert!(html.contains(&format!("href=\"/{nevent}\"")));
+    assert!(html.contains(&format!("content=\"/{}\"", post.id)));
 }
 
 #[test]
@@ -993,7 +1009,11 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(html.contains("class=\"nostr-publish\""));
     assert!(html.contains("On Nostr"));
     assert_eq!(html.matches("class=\"nostr-publish\"").count(), 2);
-    assert_eq!(html.matches("type=\"button\" class=\"nostr-publish\"").count(), 2);
+    assert_eq!(
+        html.matches("type=\"button\" class=\"nostr-publish\"")
+            .count(),
+        2
+    );
     assert!(html.contains("class=\"nojs-file-note\""));
     assert!(html.contains("This page only saves a file on this host."));
     assert!(html.contains("Publishing on Nostr needs JavaScript."));

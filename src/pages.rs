@@ -6,6 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rocket::http::{ContentType, Status};
 use rocket::response::content;
+use rocket::response::Responder;
 use rocket::State;
 use sha2::{Digest, Sha256};
 
@@ -563,18 +564,23 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
     context.insert("nostr_link".to_string(), String::new());
 }
 
+#[derive(Responder)]
+pub enum ViewPage {
+    Page(rocket::Either<content::RawHtml<String>, content::RawText<String>>),
+    Redirect(rocket::response::Redirect),
+}
+
+type ViewErr = (
+    Status,
+    rocket::Either<content::RawText<String>, content::RawHtml<String>>,
+);
+
 #[get("/<post_id>")]
 pub async fn view_post(
     post_id: &str,
     storage: &State<PostStorage>,
     config: &State<Config>,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
+) -> Result<ViewPage, ViewErr> {
     render_post(post_id, storage, config, false).await
 }
 
@@ -583,18 +589,20 @@ pub async fn nojs_view_post(
     post_id: &str,
     storage: &State<PostStorage>,
     config: &State<Config>,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
+) -> Result<ViewPage, ViewErr> {
     render_post(post_id, storage, config, true).await
 }
 
 pub(crate) fn leftover_wrap_file_id(post_id: &str) -> Option<String> {
     crate::nostr::decode_nevent(post_id).map(|nevent| nevent.event_id_hex)
+}
+
+pub(crate) fn short_view_href(nojs: bool, post_id: &str, requested: &str) -> Option<String> {
+    if post_id == requested || !is_valid_post_id(post_id) {
+        None
+    } else {
+        Some(publish::published_href(nojs, post_id))
+    }
 }
 
 pub(crate) fn leftover_wrap_post_in_dir(
@@ -975,13 +983,7 @@ async fn render_post(
     storage: &State<PostStorage>,
     config: &State<Config>,
     nojs: bool,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
+) -> Result<ViewPage, ViewErr> {
     let decoded = crate::nostr::decode_nevent(post_id);
     let naddr = if decoded.is_none() {
         crate::nostr::decode_naddr(post_id)
@@ -1008,7 +1010,9 @@ async fn render_post(
 
     if is_raw_request {
         return match crate::save::read_post_file_in_dir(file_id, ".") {
-            Some(raw_bytes) => Ok(rocket::Either::Right(content::RawText(raw_bytes))),
+            Some(raw_bytes) => Ok(ViewPage::Page(rocket::Either::Right(content::RawText(
+                raw_bytes,
+            )))),
             None => Err((
                 Status::NotFound,
                 rocket::Either::Left(content::RawText("Page not found".to_string())),
@@ -1018,16 +1022,14 @@ async fn render_post(
 
     if !is_nostr_path && is_static_page(file_id) {
         return match serve_static_page(file_id, config, nojs) {
-            Ok(html) => Ok(rocket::Either::Left(html)),
+            Ok(html) => Ok(ViewPage::Page(rocket::Either::Left(html))),
             Err((status, body)) => Err((status, rocket::Either::Right(body))),
         };
     }
 
-    let public_id = if is_nostr_path { post_id } else { file_id };
-    // Try to load from memory first with minimal lock time
     let cached = {
         let posts = storage.read().unwrap();
-        posts.lookup(file_id, nojs, public_id)
+        posts.lookup(file_id, nojs, file_id)
     };
     if let Some(hit) = cached {
         let live = crate::save::post_file_exists_in_dir(&hit.post.id, ".");
@@ -1041,10 +1043,18 @@ async fn render_post(
             };
             if post.nostr_id != hit.post.nostr_id {
                 remember_post(storage, Arc::clone(&post), &[]);
-            } else if let Some(html) = hit.html {
-                return Ok(rocket::Either::Left(content::RawHtml(html.to_string())));
             }
-            return serve_article(storage, file_id, &post, nojs, public_id);
+            if let Some(href) = short_view_href(nojs, &post.id, post_id) {
+                return Ok(ViewPage::Redirect(rocket::response::Redirect::to(href)));
+            }
+            if post.nostr_id == hit.post.nostr_id {
+                if let Some(html) = hit.html {
+                    return Ok(ViewPage::Page(rocket::Either::Left(content::RawHtml(
+                        html.to_string(),
+                    ))));
+                }
+            }
+            return view_post_page(storage, file_id, &post, nojs, post_id);
         }
     }
 
@@ -1107,12 +1117,25 @@ async fn render_post(
     };
 
     match post {
-        Some(post) => serve_article(storage, file_id, &post, nojs, public_id),
+        Some(post) => view_post_page(storage, file_id, &post, nojs, post_id),
         None => Err((
             Status::NotFound,
             rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
         )),
     }
+}
+
+fn view_post_page(
+    storage: &State<PostStorage>,
+    file_id: &str,
+    post: &Post,
+    nojs: bool,
+    requested: &str,
+) -> Result<ViewPage, ViewErr> {
+    if let Some(href) = short_view_href(nojs, &post.id, requested) {
+        return Ok(ViewPage::Redirect(rocket::response::Redirect::to(href)));
+    }
+    serve_article(storage, file_id, post, nojs, &post.id).map(ViewPage::Page)
 }
 
 fn load_post_from_disk(
@@ -1219,12 +1242,7 @@ fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, Stri
         .as_deref()
         .filter(|id| is_nostr_identifier(id))
         .unwrap_or("");
-    let url_id = if nostr_id.is_empty() {
-        public_id
-    } else {
-        nostr_id
-    };
-    context.insert("url".to_string(), format!("/{url_id}"));
+    context.insert("url".to_string(), format!("/{public_id}"));
     context.insert(
         "description".to_string(),
         post_description(&post.raw_content),

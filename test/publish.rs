@@ -35,7 +35,7 @@ fn publish_does_not_need_relays() {
 
 #[test]
 fn published_href_is_the_id_with_no_secret() {
-    let id = "hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026";
+    let id = "hello-a1b2c3d4";
     let href = published_href(false, id);
     let nojs = published_href(true, id);
 
@@ -51,9 +51,9 @@ fn published_href_is_the_id_with_no_secret() {
 fn published_href_drops_a_query_including_nsec() {
     let href = published_href(
         false,
-        "hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026?nsec=nsec1secret",
+        "hello-a1b2c3d4?nsec=nsec1secret",
     );
-    assert_eq!(href, "/hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026");
+    assert_eq!(href, "/hello-a1b2c3d4");
     assert!(!href.contains("nsec"));
     assert!(!href.contains('?'));
 }
