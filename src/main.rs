@@ -19,9 +19,7 @@ use nonograph_parser as parser;
 use std::thread;
 
 use chrono::{DateTime, Utc};
-#[cfg(test)]
 use deunicode::deunicode;
-#[cfg(test)]
 use rand::{thread_rng, Rng};
 use rocket::{
     fairing::{Fairing, Info, Kind},
@@ -156,15 +154,13 @@ fn is_valid_post_id(id: &str) -> bool {
 
 /// 16 random bytes, hex-encoded. Sits between the slug and the date so the
 /// address cannot be rebuilt from the title.
-#[cfg(test)]
-fn generate_unguessable_segment() -> String {
+pub(crate) fn generate_unguessable_segment() -> String {
     let mut rng = thread_rng();
     (0..16)
         .map(|_| format!("{:02x}", rng.gen::<u8>()))
         .collect()
 }
 
-#[cfg(test)]
 fn assemble_post_id(slug: &str, random: &str, date: &str, index: usize) -> String {
     if index == 0 {
         format!("{slug}-{random}-{date}")
@@ -173,9 +169,21 @@ fn assemble_post_id(slug: &str, random: &str, date: &str, index: usize) -> Strin
     }
 }
 
-#[cfg(test)]
-fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
-    generate_post_id_with_segment(title, storage, &generate_unguessable_segment())
+fn id_is_taken(storage: &PostStorage, post_id: &str, base_dir: &str) -> bool {
+    storage.read().unwrap().contains_key(post_id) || save::post_file_exists_in_dir(post_id, base_dir)
+}
+
+pub(crate) fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
+    generate_post_id_in_dir(title, storage, ".", &generate_unguessable_segment())
+}
+
+pub(crate) fn generate_post_id_in_dir(
+    title: &str,
+    storage: &PostStorage,
+    base_dir: &str,
+    random: &str,
+) -> Result<String, String> {
+    generate_post_id_with_segment_in_dir(title, storage, random, base_dir)
 }
 
 #[cfg(test)]
@@ -183,6 +191,15 @@ fn generate_post_id_with_segment(
     title: &str,
     storage: &PostStorage,
     random: &str,
+) -> Result<String, String> {
+    generate_post_id_with_segment_in_dir(title, storage, random, ".")
+}
+
+fn generate_post_id_with_segment_in_dir(
+    title: &str,
+    storage: &PostStorage,
+    random: &str,
+    base_dir: &str,
 ) -> Result<String, String> {
     let now = Utc::now();
     let date_str = now.format("%m-%d-%Y").to_string();
@@ -238,12 +255,11 @@ fn generate_post_id_with_segment(
             .collect();
 
         let fallback_slug = format!("na-{}", chars);
-        let posts = storage.read().unwrap();
 
         for i in 0..1000 {
             let post_id = assemble_post_id(&fallback_slug, random, &date_str, i);
 
-            if !posts.contains_key(&post_id) {
+            if !id_is_taken(storage, &post_id, base_dir) {
                 return Ok(post_id);
             }
         }
@@ -253,13 +269,10 @@ fn generate_post_id_with_segment(
         );
     }
 
-    let posts = storage.read().unwrap();
-
-    // Try to find an available slot (0-999)
     for i in 0..1000 {
         let post_id = assemble_post_id(&final_slug, random, &date_str, i);
 
-        if !posts.contains_key(&post_id) {
+        if !id_is_taken(storage, &post_id, base_dir) {
             return Ok(post_id);
         }
     }

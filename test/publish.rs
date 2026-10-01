@@ -1,19 +1,34 @@
 use super::*;
 use crate::cache::PostCache;
-use crate::config::Config;
+use serial_test::serial;
+use tempfile::tempdir;
 
 #[test]
-fn publish_fails_when_no_relay_can_take_the_note() {
+#[serial]
+fn publish_saves_a_file_and_returns_an_id_without_talking_to_relays() {
+    let temp = tempdir().unwrap();
+    let base = temp.path().to_str().unwrap();
     let storage = PostCache::shared(1);
-    let mut config = Config::default();
-    config.nostr.relays.clear();
-    config.nostr.timeout_secs = 1;
 
-    let error = publish_note(&storage, &config, "Title", "Ada", "<p>hi</p>", "hi").unwrap_err();
-    assert!(matches!(error, PublishFailure::Relays));
-    assert!(!storage.read().unwrap().contains_key("not-saved"));
+    let id = publish_note_in_dir(&storage, "Hello World", "Ada", "<p>hi</p>", "hi", base).unwrap();
 
-    config.nostr.relays = vec!["https://relay.example".to_string()];
-    let error = publish_note(&storage, &config, "Title", "Ada", "<p>hi</p>", "hi").unwrap_err();
-    assert!(matches!(error, PublishFailure::Relays));
+    assert!(!id.contains("nevent"));
+    assert!(!id.contains("nsec"));
+    assert!(id.contains("hello-world"));
+    assert!(crate::save::post_file_exists_in_dir(&id, base));
+    assert!(storage.read().unwrap().contains_key(&id));
+}
+
+#[test]
+#[serial]
+fn publish_does_not_need_relays() {
+    let temp = tempdir().unwrap();
+    let base = temp.path().to_str().unwrap();
+    let storage = PostCache::shared(1);
+
+    let id = publish_note_in_dir(&storage, "Title", "", "<p>hi</p>", "hi", base).unwrap();
+    assert!(id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+    assert!(!id.is_empty());
 }

@@ -185,6 +185,7 @@ fn home_error_message(error: Option<&str>) -> String {
         "alias_too_long" => "The alias is too long.".to_string(),
         "nostr_publish_failed" => "Publishing failed. Try again.".to_string(),
         "save_failed" => "Saving the post failed. Try again.".to_string(),
+        "no_available_slots" => "Could not pick an address for this post. Try again.".to_string(),
         _ => "Something went wrong. Try again.".to_string(),
     }
 }
@@ -317,22 +318,23 @@ async fn handle_create(
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&form.content, &render_options(config));
     let storage = storage.clone();
-    let config = config.clone();
     let title = form.title.clone();
     let author = form.alias.clone();
     let raw = form.content.clone();
     let published = rocket::tokio::task::spawn_blocking(move || {
-        publish_note(&storage, &config, &title, &author, &rendered_content, &raw)
+        publish_note(&storage, &title, &author, &rendered_content, &raw)
     })
     .await;
     let published = match published {
         Ok(result) => result,
-        Err(_) => Err(publish::PublishFailure::Relays),
+        Err(_) => Err(publish::PublishFailure::Save(
+            "publishing was interrupted".to_string(),
+        )),
     };
     match published {
-        Ok(nevent) => {
+        Ok(post_id) => {
             let prefix = if nojs { "/nojs" } else { "" };
-            rocket::response::Redirect::to(format!("{prefix}/{nevent}"))
+            rocket::response::Redirect::to(format!("{prefix}/{post_id}"))
         }
         Err(failure) => publish_failure_redirect(nojs, failure),
     }

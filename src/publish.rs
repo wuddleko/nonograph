@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::config::Config;
-use crate::nostr;
 use crate::save;
 use crate::{Post, PostStorage};
 
+#[derive(Debug)]
 pub(crate) enum PublishFailure {
-    Relays,
     Save(String),
+    NoSlots,
 }
 
 pub(crate) fn publish_failure_redirect(
@@ -17,11 +16,11 @@ pub(crate) fn publish_failure_redirect(
     failure: PublishFailure,
 ) -> rocket::response::Redirect {
     let error = match failure {
-        PublishFailure::Relays => "nostr_publish_failed",
         PublishFailure::Save(message) => {
             eprintln!("Nonograph: Failed to save post: {message}");
             "save_failed"
         }
+        PublishFailure::NoSlots => "no_available_slots",
     };
     let url = if nojs {
         format!("/nojs?error={error}")
@@ -33,40 +32,47 @@ pub(crate) fn publish_failure_redirect(
 
 pub(crate) fn publish_note(
     storage: &PostStorage,
-    config: &Config,
     title: &str,
     author: &str,
     rendered_content: &str,
     raw_content: &str,
 ) -> Result<String, PublishFailure> {
+    publish_note_in_dir(storage, title, author, rendered_content, raw_content, ".")
+}
+
+pub(crate) fn publish_note_in_dir(
+    storage: &PostStorage,
+    title: &str,
+    author: &str,
+    rendered_content: &str,
+    raw_content: &str,
+    base_dir: &str,
+) -> Result<String, PublishFailure> {
     let created_at = Utc::now();
-    let wrapped = nostr::wrap_note(title, author, raw_content, created_at.timestamp())
-        .map_err(|_| PublishFailure::Relays)?;
-    let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let accepted = nostr::publish_to_relays(&config.nostr.relays, &wrapped.signed_note(), timeout);
-    if accepted.is_empty() {
-        return Err(PublishFailure::Relays);
+    let id = if base_dir == "." {
+        crate::generate_post_id(title, storage)
+    } else {
+        crate::generate_post_id_in_dir(
+            title,
+            storage,
+            base_dir,
+            &crate::generate_unguessable_segment(),
+        )
     }
-    let nevent = nostr::encode_nevent(
-        &wrapped.id,
-        &accepted,
-        &wrapped.pubkey,
-        nostr::KIND_GIFT_WRAP,
-    );
-    let nsec = nostr::encode_nsec(&wrapped.recipient_secret);
+    .map_err(|_| PublishFailure::NoSlots)?;
     let post = Arc::new(Post {
-        id: wrapped.id_hex(),
+        id: id.clone(),
         title: nonograph_parser::sanitize_text(title),
         author: nonograph_parser::sanitize_text(author),
         content: rendered_content.to_string(),
         raw_content: raw_content.to_string(),
         created_at,
     });
-    if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
+    if let Err(error) = save::save_post_to_file_in_dir(&post, base_dir) {
         return Err(PublishFailure::Save(error.to_string()));
     }
     storage.write().unwrap().insert(post.id.clone(), post);
-    Ok(format!("{nevent}?nsec={nsec}"))
+    Ok(id)
 }
 
 #[cfg(test)]

@@ -94,7 +94,6 @@ impl PostCache {
         Arc::new(RwLock::new(PostCache::new(max_size_mb)))
     }
 
-    #[cfg(test)]
     pub fn contains_key(&self, post_id: &str) -> bool {
         self.entries.contains_key(post_id)
     }
