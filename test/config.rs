@@ -93,6 +93,18 @@ fn test_normalize_onion_url() {
 }
 
 #[test]
+fn test_normalize_https_url() {
+    assert_eq!(
+        normalize_https_url("https://nonogra.ph/"),
+        Some("https://nonogra.ph/".to_string())
+    );
+    assert_eq!(normalize_https_url("http://nonogra.ph"), None);
+    assert_eq!(normalize_https_url("https://abcd.onion"), None);
+    assert_eq!(normalize_https_url("javascript:alert(1)"), None);
+    assert_eq!(normalize_https_url(""), None);
+}
+
+#[test]
 fn test_csrf_configuration() {
     let default_config = Config::default();
 

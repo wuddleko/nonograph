@@ -212,7 +212,10 @@ async function sendToRelays(relays, event, timeoutMs) {
         relays.map((relay) =>
             sendEvent(relay, event, wait)
                 .then(() => relay)
-                .catch(() => null),
+                .catch((error) => {
+                    console.warn(relay, error && error.message);
+                    return null;
+                }),
         ),
     );
     return results.filter(Boolean);

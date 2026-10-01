@@ -1,15 +1,15 @@
 <Container version="2">
   <!-- Delete this file if your repository does not ship Docker apps. -->
   <Name>Nonograph</Name>
-  <Repository>ghcr.io/du82/nonograph:latest</Repository>
-  <Registry>https://ghcr.io/du82/nonograph</Registry>
+  <Repository>ghcr.io/wuddleko/nonograph:latest</Repository>
+  <Registry>https://ghcr.io/wuddleko/nonograph</Registry>
   <Network>bridge</Network>
 
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
 
   <!-- Optional but highly recommended: app icon -->
-  <Icon>https://raw.githubusercontent.com/du82/nonograph/refs/heads/main/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/wuddleko/nonograph/refs/heads/main/icon.png</Icon>
 
   <!-- NOTE: The port in the entry ALWAYS refers to the container port, not the host port-->
   <WebUI>http://[IP]:[PORT:8009]</WebUI>
@@ -19,13 +19,13 @@
 
   <!-- NOTE: Either Support or Project is REQUIRED -->
   <!-- Project page -->
-  <Project>https://github.com/du82/nonograph</Project>
+  <Project>https://github.com/wuddleko/nonograph</Project>
 
   <!-- Raw URL to this exact template file -->
   <TemplateURL>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/unraid/nonograph.xml</TemplateURL>
 
   <!-- Readme first file -->
-  <ReadMe>https://raw.githubusercontent.com/du82/nonograph/main/README.md</ReadMe>
+  <ReadMe>https://raw.githubusercontent.com/wuddleko/nonograph/main/README.md</ReadMe>
 
 
   <!-- Valid category entries can be generated from the Application Categorizer plugin available in Apps -->

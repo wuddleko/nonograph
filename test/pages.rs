@@ -162,14 +162,15 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("class=\"\""));
     assert!(!js.contains("class=\"nojs\""));
     assert!(js.contains("action=\"/create\""));
-    assert!(js.contains("On Nostr"));
-    assert_eq!(js.matches("On Nostr").count(), 2);
+    assert_eq!(js.matches("On Nostr").count(), 3); // buttons + About copy
     assert_eq!(js.matches("class=\"nostr-publish\"").count(), 2);
     assert!(js.contains("type=\"submit\""));
     assert!(nojs.contains("On Nostr"));
     assert!(nojs.contains("class=\"nojs\""));
     assert!(nojs.contains("This page only saves a file on this host."));
     assert!(nojs.contains("Publishing on Nostr needs JavaScript."));
+    assert!(js.contains("sidebar-relays"));
+    assert!(js.contains("relay.primal.net"));
 }
 
 #[test]
@@ -977,7 +978,8 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("if (publishing)"));
     assert!(home.contains("leaveBusy = true"));
     assert!(home.contains("if (!leaveBusy)"));
-    assert!(home.contains("button.hidden = true"));
+    assert!(home.contains("syncNostrButtons"));
+    assert!(home.contains("nonograph_extra_relays"));
     assert!(!home.contains("1059"));
     assert!(!home.contains("nsec"));
 
@@ -1008,7 +1010,14 @@ fn homepage_js_gets_the_instance_public_relays() {
     let config = crate::config::Config::default();
     let js = home_context(&config, false, None);
     let relays: Vec<String> = serde_json::from_str(js.get("nostr_relays").unwrap()).unwrap();
-    assert!(!relays.is_empty());
+    assert_eq!(
+        relays,
+        vec![
+            "wss://relay.primal.net".to_string(),
+            "wss://relay.snort.social".to_string(),
+            "wss://offchain.pub".to_string(),
+        ]
+    );
     assert!(relays.iter().all(|relay| relay.starts_with("wss://")));
     assert!(!relays.iter().any(|relay| relay.contains("127.0.0.1")));
     assert!(!relays.iter().any(|relay| relay.contains("localhost")));

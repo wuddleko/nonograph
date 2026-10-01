@@ -67,7 +67,7 @@ Any content that sexualizes, exploits, or fetishizes children is strictly prohib
 We may need to update this policy occasionally. If we make significant changes, we'll update the date at the top of this page. By continuing to use the service after changes are made, you're agreeing to the updated terms.
 
 ## Getting Help
-This is an open-source project available on GitHub at https://github.com/du82/nonograph. If you have questions about the SOFTWARE (read: NOT legal complaints!), found a bug, or need technical help, please create an issue in that repository.
+This is an open-source project available on GitHub at https://github.com/wuddleko/nonograph. If you have questions about the SOFTWARE (read: NOT legal complaints!), found a bug, or need technical help, please create an issue in that repository.
 
 ## Notes for law enforcement
 This server is running Nonograph, which is open-source software that anyone can download and host. For legal requests, you should attempt to contact the hosting provider of the particular server you're inquiring about, NOT the creator of the Nonograph software.

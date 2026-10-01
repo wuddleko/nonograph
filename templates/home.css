@@ -65,7 +65,7 @@
                 color: #999;
                 opacity: 1;
             }
-            input[type="text"],
+            input[type="text"]:not(.relay-url-input),
             textarea {
                 width: 100%;
                 padding: 0;
@@ -79,16 +79,16 @@
                 -webkit-appearance: none;
                 -moz-appearance: none;
             }
-            input[type="text"]:focus,
+            input[type="text"]:not(.relay-url-input):focus,
             textarea:focus {
                 outline: none;
             }
-            input[type="text"]::placeholder,
+            input[type="text"]:not(.relay-url-input)::placeholder,
             textarea::placeholder {
                 color: #999;
                 opacity: 1;
             }
-            input[type="text"] {
+            input[type="text"]:not(.relay-url-input) {
                 font-size: 30px;
                 font-weight: 600;
                 margin-bottom: 0;
@@ -265,6 +265,11 @@
                 display: flex;
                 flex-direction: column;
                 gap: 4px;
+                margin-top: 18px;
+                padding-top: 16px;
+                border-top: 1px solid #e5e5e5;
+                width: 100%;
+                max-width: 200px;
             }
             .links a {
                 color: #666;
@@ -273,6 +278,190 @@
             .links a:hover {
                 color: #333;
                 text-decoration: underline;
+            }
+
+            .sidebar-relays {
+                margin-top: 12px;
+                max-width: 200px;
+                width: 100%;
+                font-size: 12px;
+                color: #666;
+                line-height: 1.45;
+                padding-bottom: 4px;
+            }
+
+            .sidebar-relays-title {
+                font-weight: 600;
+                color: #444;
+                margin: 0 0 6px;
+            }
+
+            .sidebar-relays .relay-list {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+            }
+
+            .sidebar-relays .relay-list li {
+                margin-bottom: 4px;
+                word-break: break-word;
+            }
+
+            .sidebar-relays .relay-empty {
+                margin: 0;
+                font-size: 12px;
+            }
+
+            .relay-add {
+                margin-top: 12px;
+                padding-top: 10px;
+                border-top: 1px solid #ebebeb;
+            }
+
+            .relay-add-label {
+                margin: 0 0 6px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #444;
+            }
+
+            .relay-add-row {
+                display: flex;
+                gap: 6px;
+                align-items: stretch;
+                max-width: 200px;
+            }
+
+            .relay-url-input {
+                flex: 1;
+                min-width: 0;
+                width: auto;
+                height: 32px;
+                margin: 0;
+                padding: 0 9px;
+                font-size: 12px;
+                font-weight: 400;
+                line-height: 1.2;
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                border: 1px solid #d4d4d4;
+                border-radius: 6px;
+                background: #fff;
+                color: #333;
+                box-shadow: none;
+                -webkit-appearance: none;
+                box-sizing: border-box;
+            }
+
+            .relay-url-input:focus {
+                outline: none;
+                border-color: #999;
+            }
+
+            .relay-url-input::placeholder {
+                color: #aaa;
+                font-size: 11px;
+            }
+
+            .relay-add button.relay-add-btn {
+                flex-shrink: 0;
+                height: 32px;
+                min-height: 32px;
+                margin: 0;
+                padding: 0 12px;
+                font-size: 12px;
+                font-weight: 500;
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                line-height: 1;
+                border: 1px solid #333;
+                border-radius: 6px;
+                background: #333;
+                color: #fff;
+                cursor: pointer;
+                box-shadow: none;
+            }
+
+            .relay-add button.relay-add-btn:hover {
+                background: #000;
+            }
+
+            .relay-add button.relay-add-btn:active {
+                transform: none;
+            }
+
+            .relay-add-error {
+                margin: 6px 0 0;
+                font-size: 11px;
+                color: #c0392b;
+                min-height: 0;
+            }
+
+            .relay-add-error:empty {
+                display: none;
+            }
+
+            .relay-list-user {
+                margin: 0 0 10px;
+                padding: 0;
+                list-style: none;
+            }
+
+            .relay-list-user li {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 4px;
+                align-items: center;
+                margin-bottom: 4px;
+                font-size: 12px;
+                color: #666;
+                line-height: 1.45;
+            }
+
+            .relay-list-user .relay-name {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .relay-list-user .relay-remove {
+                flex-shrink: 0;
+                font-size: 16px;
+                line-height: 1;
+                min-height: 0;
+                margin: 0;
+                padding: 0 2px;
+                border: none;
+                border-radius: 4px;
+                background: transparent;
+                color: #999;
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                cursor: pointer;
+                box-shadow: none;
+                opacity: 0.35;
+            }
+
+            .relay-list-user li:hover .relay-remove,
+            .relay-list-user .relay-remove:focus-visible {
+                opacity: 1;
+            }
+
+            .relay-list-user .relay-remove:hover {
+                color: #333;
+            }
+
+            .help-section .relay-add {
+                border-top: none;
+                padding-top: 0;
+                margin-top: 12px;
+            }
+
+            .help-section .relay-add-row {
+                max-width: 100%;
             }
 
             /* Progress Circle Styles */
@@ -526,6 +715,38 @@
                 font-family: "Courier New", monospace;
                 font-size: 13px;
             }
+
+            .instance-list {
+                list-style: none;
+                margin: 8px 0 16px;
+                padding: 0;
+            }
+
+            .instance-list li {
+                margin-bottom: 10px;
+                line-height: 1.45;
+            }
+
+            .instance-location {
+                display: block;
+                font-weight: 600;
+                color: #444;
+            }
+
+            .instance-links a {
+                color: #1a5fb4;
+                text-decoration: none;
+            }
+
+            .instance-links a:hover {
+                text-decoration: underline;
+            }
+
+            .instance-empty {
+                color: #888;
+                font-size: 14px;
+            }
+
             .help-section .shortcut {
                 color: #888;
                 font-size: 0.85em;

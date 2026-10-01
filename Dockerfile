@@ -18,7 +18,7 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 
-LABEL org.opencontainers.image.source=https://github.com/du82/nonograph
+LABEL org.opencontainers.image.source=https://github.com/wuddleko/nonograph
 LABEL org.opencontainers.image.description="Anonymous publishing for the privacy-conscious web"
 LABEL org.opencontainers.image.licenses=Unlicense
 

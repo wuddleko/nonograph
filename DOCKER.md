@@ -37,7 +37,7 @@ docker run -d \
   -v ~/nonograph/content:/app/content \
   -v ~/nonograph/onion:/var/lib/tor/hidden_service \
   --restart unless-stopped \
-  ghcr.io/du82/nonograph:latest
+  ghcr.io/wuddleko/nonograph:latest
 ```
 
 **Windows (PowerShell):**
@@ -49,7 +49,7 @@ docker run -d `
   -v $env:USERPROFILE\nonograph\content:/app/content `
   -v $env:USERPROFILE\nonograph\onion:/var/lib/tor/hidden_service `
   --restart unless-stopped `
-  ghcr.io/du82/nonograph:latest
+  ghcr.io/wuddleko/nonograph:latest
 ```
 
 Then check logs for your `.onion` address:

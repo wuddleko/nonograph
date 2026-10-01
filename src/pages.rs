@@ -297,6 +297,15 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
             home_scripts(&version)
         },
     );
+    let relays = relays_for_public_fetch(&[], &config.nostr.relays);
+    context.insert(
+        "relays_sidebar".to_string(),
+        crate::relays::render_sidebar(&relays),
+    );
+    context.insert(
+        "relays_section".to_string(),
+        crate::relays::render_about_section(&relays),
+    );
     context
 }
 

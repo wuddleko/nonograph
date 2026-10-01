@@ -92,7 +92,13 @@ fn substitute_placeholders(template: &str, context: &HashMap<String, String>) ->
 fn placeholder_value(key: &str, value: &str) -> String {
     if matches!(
         key,
-        "content" | "scripts" | "content_field" | "fallback_css" | "nostr_link"
+        "content"
+            | "scripts"
+            | "content_field"
+            | "fallback_css"
+            | "nostr_link"
+            | "relays_section"
+            | "relays_sidebar"
     ) {
         value.to_string()
     } else {

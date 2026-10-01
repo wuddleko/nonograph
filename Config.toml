@@ -53,10 +53,12 @@ syntax_highlighting = "InspiredGitHub"
 
 [nostr]
 # Relays that receive each published note. The link includes the ones that accept it.
+# Use relays that accept public long-form writes. Search-only or dead ones
+# make On Nostr fail even when the event is valid.
 relays = [
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.nostr.band",
+    "wss://relay.primal.net",
+    "wss://relay.snort.social",
+    "wss://offchain.pub",
 ]
 # How long to wait for a relay, in seconds. The wait is the slowest relay, not the sum.
 timeout_secs = 3

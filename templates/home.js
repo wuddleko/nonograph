@@ -3,6 +3,48 @@
             const mobileCharCount = document.getElementById("mobileCharCount");
             const form = document.getElementById("publishForm");
 
+            const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
+            const MAX_EXTRA_RELAYS = 8;
+
+            function loadExtraRelays() {
+                try {
+                    const raw = localStorage.getItem(EXTRA_RELAYS_KEY);
+                    const parsed = JSON.parse(raw || "[]");
+                    if (!Array.isArray(parsed)) {
+                        return [];
+                    }
+                    return parsed.filter((entry) => typeof entry === "string");
+                } catch (error) {
+                    return [];
+                }
+            }
+
+            function saveExtraRelays(relays) {
+                localStorage.setItem(EXTRA_RELAYS_KEY, JSON.stringify(relays));
+            }
+
+            function serverRelays() {
+                try {
+                    return JSON.parse(form.dataset.relays || "[]");
+                } catch (error) {
+                    return [];
+                }
+            }
+
+            function mergePublishRelays() {
+                const merged = [...serverRelays()];
+                for (const relay of loadExtraRelays()) {
+                    if (!merged.includes(relay)) {
+                        merged.push(relay);
+                    }
+                }
+                return merged;
+            }
+
+            function hasAnyPublishRelay() {
+                return mergePublishRelays().length > 0;
+            }
+
             globalThis.nonographPublishPublicNote = async function (fields) {
                 const { publishPublicNote } = await import(
                     new URL(
@@ -10,13 +52,12 @@
                         import.meta.url,
                     )
                 );
-                const relays = JSON.parse(form.dataset.relays || "[]");
                 const timeoutMs = Number(form.dataset.timeout) || 10_000;
                 return publishPublicNote({
                     title: fields.title,
                     author: fields.author,
                     content: fields.content,
-                    relays,
+                    relays: mergePublishRelays(),
                     timeoutMs,
                 });
             };
@@ -72,17 +113,128 @@
                 'button[type="submit"], .nostr-publish',
             );
             const errorEl = form.querySelector(".form-error");
-            let publicRelays = [];
-            try {
-                publicRelays = JSON.parse(form.dataset.relays || "[]");
-            } catch (error) {
-                publicRelays = [];
-            }
-            if (!publicRelays.length) {
+            function syncNostrButtons() {
+                const show = hasAnyPublishRelay();
                 document.querySelectorAll(".nostr-publish").forEach((button) => {
-                    button.hidden = true;
+                    button.hidden = !show;
                 });
             }
+
+            function relayHost(url) {
+                const rest = url.replace(/^wss:\/\//i, "").replace(/\/$/, "");
+                const end = rest.search(/[/?#]/);
+                return end === -1 ? rest : rest.slice(0, end);
+            }
+
+            function renderExtraRelayLists() {
+                const relays = loadExtraRelays();
+                document.querySelectorAll(".relay-list-user").forEach((list) => {
+                    list.replaceChildren();
+                    for (const relay of relays) {
+                        const row = document.createElement("li");
+                        const label = document.createElement("span");
+                        label.className = "relay-name";
+                        label.textContent = relayHost(relay);
+                        label.title = relay;
+                        const remove = document.createElement("button");
+                        remove.type = "button";
+                        remove.className = "relay-remove";
+                        remove.setAttribute("aria-label", "Remove relay");
+                        remove.textContent = "×";
+                        remove.dataset.relay = relay;
+                        row.append(label, remove);
+                        list.append(row);
+                    }
+                    list.hidden = relays.length === 0;
+                });
+                syncNostrButtons();
+            }
+
+            async function addRelayFromBlock(block) {
+                const input = block.querySelector(".relay-url-input");
+                const errorEl = block.querySelector(".relay-add-error");
+                if (!input) {
+                    return;
+                }
+                const value = input.value.trim();
+                if (!value) {
+                    if (errorEl) {
+                        errorEl.textContent = "Enter a relay URL.";
+                    }
+                    return;
+                }
+                const { publicRelayUrl } = await import(
+                    new URL(
+                        `./nostr.js${new URL(import.meta.url).search}`,
+                        import.meta.url,
+                    )
+                );
+                if (!publicRelayUrl(value)) {
+                    if (errorEl) {
+                        errorEl.textContent = "Use a public wss:// relay URL.";
+                    }
+                    return;
+                }
+                const extra = loadExtraRelays();
+                if (extra.includes(value)) {
+                    if (errorEl) {
+                        errorEl.textContent = "Already in your list.";
+                    }
+                    return;
+                }
+                if (serverRelays().includes(value)) {
+                    if (errorEl) {
+                        errorEl.textContent = "That relay is already configured on this site.";
+                    }
+                    return;
+                }
+                if (extra.length >= MAX_EXTRA_RELAYS) {
+                    if (errorEl) {
+                        errorEl.textContent =
+                            "Remove one first (max " + MAX_EXTRA_RELAYS + ").";
+                    }
+                    return;
+                }
+                extra.push(value);
+                saveExtraRelays(extra);
+                input.value = "";
+                if (errorEl) {
+                    errorEl.textContent = "";
+                }
+                renderExtraRelayLists();
+            }
+
+            document.querySelectorAll("[data-relay-add]").forEach((block) => {
+                const input = block.querySelector(".relay-url-input");
+                block.querySelector(".relay-add-btn")?.addEventListener(
+                    "click",
+                    () => addRelayFromBlock(block),
+                );
+                input?.addEventListener("keydown", (event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        addRelayFromBlock(block);
+                    }
+                });
+            });
+
+            document.addEventListener("click", (event) => {
+                const target = event.target;
+                if (!(target instanceof HTMLElement)) {
+                    return;
+                }
+                const remove = target.closest(".relay-remove");
+                if (!remove || !remove.dataset.relay) {
+                    return;
+                }
+                const relay = remove.dataset.relay;
+                saveExtraRelays(
+                    loadExtraRelays().filter((entry) => entry !== relay),
+                );
+                renderExtraRelayLists();
+            });
+
+            renderExtraRelayLists();
 
             let publishing = false;
 
@@ -145,6 +297,7 @@
                     leaveBusy = true;
                     location.assign("/" + result.nevent);
                 } catch (error) {
+                    console.error(error);
                     showPublishError("Publishing failed. Try again.");
                 } finally {
                     if (!leaveBusy) {

@@ -4,6 +4,7 @@ extern crate rocket;
 mod archiver;
 pub(crate) mod cache;
 pub(crate) mod config;
+pub(crate) mod relays;
 pub(crate) mod csrf;
 mod nip44;
 pub(crate) mod nostr;
@@ -126,22 +127,16 @@ impl Fairing for SecurityHeadersFairing {
     }
 }
 
-fn content_security_policy(relays: &[String]) -> String {
-    let mut connect = String::from("'self'");
-    for relay in pages::relays_for_public_fetch(&[], relays) {
-        if relay.bytes().any(|byte| matches!(byte, b';' | b',' | b' ')) {
-            continue;
-        }
-        connect.push(' ');
-        connect.push_str(&relay);
-    }
+fn content_security_policy(_relays: &[String]) -> String {
+    // wss: so visitors can publish to relays they add in the browser.
+    let connect = "'self' wss:";
     format!(
         "default-src 'self'; \
          connect-src {connect}; \
          base-uri 'self'; \
          form-action 'self'; \
          frame-ancestors 'self'; \
-         img-src 'self' https: http:; \
+         img-src 'self' https: http: data:; \
          media-src 'self' https: http:; \
          object-src 'none'; \
          script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \

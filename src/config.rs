@@ -53,9 +53,9 @@ pub struct Theme {
 
 fn default_relays() -> Vec<String> {
     vec![
-        "wss://relay.damus.io".to_string(),
-        "wss://nos.lol".to_string(),
-        "wss://relay.nostr.band".to_string(),
+        "wss://relay.primal.net".to_string(),
+        "wss://relay.snort.social".to_string(),
+        "wss://offchain.pub".to_string(),
     ]
 }
 
@@ -112,7 +112,7 @@ impl Default for Config {
     }
 }
 
-fn normalize_onion_url(input: &str) -> Option<String> {
+pub(crate) fn normalize_onion_url(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -150,6 +150,47 @@ fn normalize_onion_url(input: &str) -> Option<String> {
     }
 
     Some(format!("{}://{}{}", scheme, host_lower, path))
+}
+
+pub(crate) fn normalize_https_url(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((s, r)) => (s.to_ascii_lowercase(), r),
+        None => return None,
+    };
+
+    if scheme != "https" {
+        return None;
+    }
+
+    let host_end = rest
+        .find(|c| c == '/' || c == '?' || c == '#')
+        .unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    let path = &rest[host_end..];
+
+    let host_lower = host.to_ascii_lowercase();
+    if host_lower.ends_with(".onion") {
+        return None;
+    }
+
+    if host_lower.is_empty()
+        || !host_lower
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':')
+    {
+        return None;
+    }
+
+    Some(format!("https://{}{}", host_lower, path))
 }
 
 impl Config {
