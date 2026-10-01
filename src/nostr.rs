@@ -31,6 +31,14 @@ pub struct Nevent {
     pub kind: Option<u32>,
 }
 
+#[derive(Clone)]
+pub struct Naddr {
+    pub identifier: String,
+    pub pubkey: [u8; 32],
+    pub kind: u32,
+    pub relays: Vec<String>,
+}
+
 pub struct FetchedNote {
     pub id_hex: String,
     pub title: String,
@@ -182,51 +190,25 @@ pub fn open_wrapped_note(
 pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32], kind: u32) -> String {
     let mut data = Vec::new();
     push_tlv(&mut data, 0, id);
-    for relay in relays {
-        if valid_relay_url(relay) {
-            push_tlv(&mut data, 1, relay.as_bytes());
-        }
-    }
+    push_relay_tlvs(&mut data, relays);
     push_tlv(&mut data, 2, pubkey);
-    let kind = kind.to_be_bytes();
-    push_tlv(&mut data, 3, &kind);
-    let hrp = Hrp::parse("nevent").expect("nevent hrp");
-    bech32::encode::<Bech32>(hrp, &data).expect("nevent fits in a bech32 string")
+    push_tlv(&mut data, 3, &kind.to_be_bytes());
+    encode_bech32("nevent", &data)
 }
 
 pub fn decode_nevent(value: &str) -> Option<Nevent> {
-    if !value.starts_with("nevent1") {
-        return None;
-    }
-    let parsed = CheckedHrpstring::new::<Bech32>(value).ok()?;
-    if parsed.hrp().as_str() != "nevent" {
-        return None;
-    }
-    let data = parsed.byte_iter().collect::<Vec<u8>>();
     let mut event_id = None;
     let mut relays = Vec::new();
     let mut kind = None;
-    let mut index = 0;
-    while index + 2 <= data.len() {
-        let tag = data[index];
-        let len = data[index + 1] as usize;
-        index += 2;
-        if index + len > data.len() {
-            return None;
-        }
-        let bytes = &data[index..index + len];
-        index += len;
+    for (tag, bytes) in nip19_tlv(value, "nevent")? {
         match tag {
-            0 if bytes.len() == 32 => event_id = Some(hex_encode(bytes)),
-            1 => relays.push(String::from_utf8(bytes.to_vec()).ok()?),
+            0 if bytes.len() == 32 => event_id = Some(hex_encode(&bytes)),
+            1 => relays.push(String::from_utf8(bytes).ok()?),
             3 if bytes.len() == 4 => {
                 kind = Some(u32::from_be_bytes(bytes.try_into().ok()?));
             }
             _ => {}
         }
-    }
-    if index != data.len() {
-        return None;
     }
     Some(Nevent {
         event_id_hex: event_id?,
@@ -235,9 +217,58 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
     })
 }
 
+pub fn encode_naddr(
+    identifier: &str,
+    relays: &[String],
+    pubkey: &[u8; 32],
+    kind: u32,
+) -> String {
+    let ident = identifier.as_bytes();
+    let mut data = Vec::new();
+    if ident.len() <= 255 {
+        push_tlv(&mut data, 0, ident);
+    }
+    push_relay_tlvs(&mut data, relays);
+    push_tlv(&mut data, 2, pubkey);
+    push_tlv(&mut data, 3, &kind.to_be_bytes());
+    encode_bech32("naddr", &data)
+}
+
+pub fn decode_naddr(value: &str) -> Option<Naddr> {
+    let mut identifier = None;
+    let mut relays = Vec::new();
+    let mut pubkey = None;
+    let mut kind = None;
+    for (tag, bytes) in nip19_tlv(value, "naddr")? {
+        match tag {
+            0 => identifier = Some(String::from_utf8(bytes).ok()?),
+            1 => relays.push(String::from_utf8(bytes).ok()?),
+            2 if bytes.len() == 32 => pubkey = Some(bytes.try_into().ok()?),
+            3 if bytes.len() == 4 => {
+                kind = Some(u32::from_be_bytes(bytes.try_into().ok()?));
+            }
+            _ => {}
+        }
+    }
+    Some(Naddr {
+        identifier: identifier?,
+        pubkey: pubkey?,
+        kind: kind?,
+        relays,
+    })
+}
+
+/// Cache key for an naddr. Stable for the same author, kind, and `d` tag.
+pub fn naddr_cache_id(naddr: &Naddr) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(naddr.pubkey);
+    hasher.update(naddr.kind.to_be_bytes());
+    hasher.update(naddr.identifier.as_bytes());
+    hex_encode(&hasher.finalize())
+}
+
 pub fn encode_nsec(secret: &[u8; 32]) -> String {
-    let hrp = Hrp::parse("nsec").expect("nsec hrp");
-    bech32::encode::<Bech32>(hrp, secret).expect("nsec fits in a bech32 string")
+    encode_bech32("nsec", secret)
 }
 
 pub fn decode_nsec(value: &str) -> Option<[u8; 32]> {
@@ -777,7 +808,15 @@ pub fn fetch_note(
     timeout: Duration,
     recipient_secret: Option<[u8; 32]>,
 ) -> Option<FetchedNote> {
-    fetch_from_relays(relays, event_id_hex, timeout, recipient_secret, false)
+    fetch_from_relays(
+        relays,
+        RelayQuery::Id {
+            event_id_hex: event_id_hex.to_string(),
+            recipient_secret,
+        },
+        timeout,
+        false,
+    )
 }
 
 pub fn fetch_public_note(
@@ -785,18 +824,52 @@ pub fn fetch_public_note(
     event_id_hex: &str,
     timeout: Duration,
 ) -> Option<FetchedNote> {
-    fetch_from_relays(relays, event_id_hex, timeout, None, true)
+    fetch_from_relays(
+        relays,
+        RelayQuery::Id {
+            event_id_hex: event_id_hex.to_string(),
+            recipient_secret: None,
+        },
+        timeout,
+        true,
+    )
+}
+
+/// Public long-form only, by replaceable address (`kind:30023` + author + `d`).
+pub fn fetch_public_addr(
+    relays: &[String],
+    naddr: &Naddr,
+    timeout: Duration,
+) -> Option<FetchedNote> {
+    fetch_from_relays(relays, RelayQuery::Addr(naddr.clone()), timeout, true)
+}
+
+#[derive(Clone)]
+enum RelayQuery {
+    Id {
+        event_id_hex: String,
+        recipient_secret: Option<[u8; 32]>,
+    },
+    Addr(Naddr),
 }
 
 fn fetch_from_relays(
     relays: &[String],
-    event_id_hex: &str,
+    query: RelayQuery,
     timeout: Duration,
-    recipient_secret: Option<[u8; 32]>,
     public_only: bool,
 ) -> Option<FetchedNote> {
-    if decode_fixed_hex::<32>(event_id_hex).is_none() {
-        return None;
+    match &query {
+        RelayQuery::Id { event_id_hex, .. } => {
+            if decode_fixed_hex::<32>(event_id_hex).is_none() {
+                return None;
+            }
+        }
+        RelayQuery::Addr(naddr) => {
+            if naddr.kind != KIND_LONG_FORM || naddr.identifier.len() > 255 {
+                return None;
+            }
+        }
     }
     let limit = if public_only {
         MAX_FETCH_RELAYS
@@ -825,17 +898,10 @@ fn fetch_from_relays(
     let mut handles = Vec::with_capacity(relays.len());
     for relay in relays {
         let tx = tx.clone();
-        let event_id_hex = event_id_hex.to_string();
+        let query = query.clone();
         let cancel = Arc::clone(&cancel);
         handles.push(std::thread::spawn(move || {
-            let found = match fetch_from_relay(
-                &relay,
-                &event_id_hex,
-                deadline,
-                &cancel,
-                recipient_secret,
-                public_only,
-            ) {
+            let found = match fetch_from_relay(&relay, &query, deadline, &cancel, public_only) {
                 Ok(note) => note,
                 Err(error) => {
                     if error != RELAY_TIMEOUT {
@@ -875,17 +941,34 @@ fn take_first_note(
     }
 }
 
+fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
+    match query {
+        RelayQuery::Id { event_id_hex, .. } => {
+            format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#)
+        }
+        RelayQuery::Addr(naddr) => serde_json::json!([
+            "REQ",
+            sub_id,
+            {
+                "authors": [hex_encode(&naddr.pubkey)],
+                "kinds": [naddr.kind],
+                "#d": [naddr.identifier],
+            }
+        ])
+        .to_string(),
+    }
+}
+
 fn fetch_from_relay(
     relay: &str,
-    event_id_hex: &str,
+    query: &RelayQuery,
     deadline: Instant,
     cancel: &AtomicBool,
-    recipient_secret: Option<[u8; 32]>,
     public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
     let mut socket = connect_relay(relay, deadline, Some(cancel), public_only)?;
     let sub_id = random_hex(8);
-    let payload = format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#);
+    let payload = req_payload(&sub_id, query);
     arm_stream(
         socket.get_ref().get_ref(),
         wait_budget(deadline, Some(cancel))?,
@@ -894,20 +977,49 @@ fn fetch_from_relay(
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
+    let newest_until_eose = matches!(query, RelayQuery::Addr(_));
+    let mut best = None;
+    let mut best_at = i64::MIN;
     loop {
-        match read_incoming(&mut socket, deadline, Some(cancel))? {
-            Incoming::Closed => return Err("relay closed the connection".to_string()),
+        let incoming = match read_incoming(&mut socket, deadline, Some(cancel)) {
+            Ok(incoming) => incoming,
+            Err(error) if error == RELAY_TIMEOUT && newest_until_eose => return Ok(best),
+            Err(error) => return Err(error),
+        };
+        match incoming {
+            Incoming::Closed => {
+                return if newest_until_eose && best.is_some() {
+                    Ok(best)
+                } else {
+                    Err("relay closed the connection".to_string())
+                };
+            }
             Incoming::Text(text) => {
-                if let Some(note) =
-                    note_from_relay_message(&text, event_id_hex, recipient_secret.as_ref())
-                {
-                    return Ok(Some(note));
+                if let Some((created_at, note)) = note_for_query(&text, query) {
+                    if !newest_until_eose {
+                        return Ok(Some(note));
+                    }
+                    if created_at >= best_at {
+                        best_at = created_at;
+                        best = Some(note);
+                    }
                 }
                 if relay_has_no_event(&text, &sub_id) {
-                    return Ok(None);
+                    return Ok(best);
                 }
             }
         }
+    }
+}
+
+fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote)> {
+    match query {
+        RelayQuery::Id {
+            event_id_hex,
+            recipient_secret,
+        } => note_from_relay_message(message, event_id_hex, recipient_secret.as_ref())
+            .map(|note| (0, note)),
+        RelayQuery::Addr(naddr) => addr_note_from_relay_message(message, naddr),
     }
 }
 
@@ -916,12 +1028,16 @@ fn note_from_relay_message(
     event_id_hex: &str,
     recipient_secret: Option<&[u8; 32]>,
 ) -> Option<FetchedNote> {
+    fetched_from_event(&event_from_relay_message(message)?, event_id_hex, recipient_secret)
+}
+
+fn event_from_relay_message(message: &str) -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(message).ok()?;
     let items = value.as_array()?;
     if items.first()?.as_str()? != "EVENT" {
         return None;
     }
-    fetched_from_event(items.get(2)?, event_id_hex, recipient_secret)
+    items.get(2).cloned()
 }
 
 fn fetched_from_event(
@@ -968,24 +1084,49 @@ fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
 }
 
 fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<FetchedNote> {
-    let parsed = parse_event(value)?;
-    if parsed.kind != KIND_LONG_FORM {
-        return None;
-    }
-    if !check_id(&parsed) || !verify_sig(&parsed) {
-        return None;
-    }
+    let parsed = verified_long_form(value)?;
     if decode_fixed_hex::<32>(expected_id_hex)? != parsed.id {
         return None;
     }
+    Some(fetched_from_parsed(parsed))
+}
+
+fn addr_note_from_relay_message(message: &str, naddr: &Naddr) -> Option<(i64, FetchedNote)> {
+    fetched_public_addr(&event_from_relay_message(message)?, naddr)
+}
+
+fn fetched_public_addr(value: &serde_json::Value, naddr: &Naddr) -> Option<(i64, FetchedNote)> {
+    if naddr.kind != KIND_LONG_FORM {
+        return None;
+    }
+    let parsed = verified_long_form(value)?;
+    if parsed.pubkey != naddr.pubkey {
+        return None;
+    }
+    if tag_value(&parsed.tags, "d").as_deref() != Some(naddr.identifier.as_str()) {
+        return None;
+    }
+    let created_at = parsed.created_at;
+    Some((created_at, fetched_from_parsed(parsed)))
+}
+
+fn verified_long_form(value: &serde_json::Value) -> Option<ParsedEvent> {
+    let parsed = parse_event(value)?;
+    if parsed.kind != KIND_LONG_FORM || !check_id(&parsed) || !verify_sig(&parsed) {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn fetched_from_parsed(parsed: ParsedEvent) -> FetchedNote {
     let (title, author, created_at) = note_fields(&parsed.tags, parsed.created_at);
-    Some(FetchedNote {
+    FetchedNote {
         id_hex: hex_encode(&parsed.id),
         title,
         author,
         content: parsed.content,
         created_at,
-    })
+    }
 }
 
 fn tag_value(tags: &[Vec<String>], name: &str) -> Option<String> {
@@ -1117,6 +1258,43 @@ fn push_tlv(out: &mut Vec<u8>, tag: u8, value: &[u8]) {
     out.push(tag);
     out.push(value.len() as u8);
     out.extend_from_slice(value);
+}
+
+fn push_relay_tlvs(out: &mut Vec<u8>, relays: &[String]) {
+    for relay in relays {
+        if valid_relay_url(relay) {
+            push_tlv(out, 1, relay.as_bytes());
+        }
+    }
+}
+
+fn encode_bech32(hrp: &str, data: &[u8]) -> String {
+    let hrp = Hrp::parse(hrp).expect("known hrp");
+    bech32::encode::<Bech32>(hrp, data).expect("payload fits in a bech32 string")
+}
+
+fn nip19_tlv(value: &str, hrp: &str) -> Option<Vec<(u8, Vec<u8>)>> {
+    if !value.starts_with(hrp) || value.as_bytes().get(hrp.len()) != Some(&b'1') {
+        return None;
+    }
+    let parsed = CheckedHrpstring::new::<Bech32>(value).ok()?;
+    if parsed.hrp().as_str() != hrp {
+        return None;
+    }
+    let data: Vec<u8> = parsed.byte_iter().collect();
+    let mut fields = Vec::new();
+    let mut index = 0;
+    while index + 2 <= data.len() {
+        let tag = data[index];
+        let len = data[index + 1] as usize;
+        index += 2;
+        if index + len > data.len() {
+            return None;
+        }
+        fields.push((tag, data[index..index + len].to_vec()));
+        index += len;
+    }
+    (index == data.len()).then_some(fields)
 }
 
 fn canonical_event(

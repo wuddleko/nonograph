@@ -585,10 +585,7 @@ fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
     relays.push(relay.to_string());
 }
 
-pub(crate) fn relays_for_public_fetch(
-    nevent: &crate::nostr::Nevent,
-    fallback: &[String],
-) -> Vec<String> {
+pub(crate) fn relays_for_public_fetch(hints: &[String], fallback: &[String]) -> Vec<String> {
     let mut relays = Vec::new();
     let keep_one_for_instance = fallback
         .iter()
@@ -598,7 +595,7 @@ pub(crate) fn relays_for_public_fetch(
     } else {
         crate::nostr::MAX_FETCH_RELAYS
     };
-    for relay in &nevent.relays {
+    for relay in hints {
         if relays.len() == hint_limit {
             break;
         }
@@ -610,22 +607,20 @@ pub(crate) fn relays_for_public_fetch(
     relays
 }
 
-pub(crate) fn may_fetch_public_note(nevent: &crate::nostr::Nevent) -> bool {
-    match nevent.kind {
-        None | Some(crate::nostr::KIND_LONG_FORM) => true,
-        Some(_) => false,
-    }
+pub(crate) fn may_fetch_public_kind(kind: Option<u32>) -> bool {
+    matches!(kind, None | Some(crate::nostr::KIND_LONG_FORM))
 }
 
 pub(crate) fn post_from_public_note(
     fetched: crate::nostr::FetchedNote,
     storage: &PostStorage,
     config: &Config,
+    cache_id: &str,
 ) -> Option<Arc<Post>> {
     if fetched.content.len() > config.limits.content_max_length {
         return None;
     }
-    if !is_valid_post_id(&fetched.id_hex) {
+    if !is_valid_post_id(cache_id) || !is_valid_post_id(&fetched.id_hex) {
         return None;
     }
     let title = nonograph_parser::sanitize_text(&fetched.title);
@@ -656,7 +651,7 @@ pub(crate) fn post_from_public_note(
     storage
         .write()
         .unwrap()
-        .insert(post.id.clone(), Arc::clone(&post));
+        .insert(cache_id.to_string(), Arc::clone(&post));
     Some(post)
 }
 
@@ -702,15 +697,18 @@ fn release_public_fetch(counter: &AtomicUsize) {
 
 struct PublicFetchBusy;
 
-async fn fetch_public_article(
-    nevent: &crate::nostr::Nevent,
+async fn fetch_public(
+    hints: &[String],
+    kind: Option<u32>,
+    cache_id: Option<String>,
     storage: &PostStorage,
     config: &Config,
+    fetch: impl FnOnce(Vec<String>, Duration) -> Option<crate::nostr::FetchedNote> + Send + 'static,
 ) -> Result<Option<Arc<Post>>, PublicFetchBusy> {
-    if !may_fetch_public_note(nevent) {
+    if !may_fetch_public_kind(kind) {
         return Ok(None);
     }
-    let relays = relays_for_public_fetch(nevent, &config.nostr.relays);
+    let relays = relays_for_public_fetch(hints, &config.nostr.relays);
     if relays.is_empty() {
         return Ok(None);
     }
@@ -718,16 +716,14 @@ async fn fetch_public_article(
         return Err(PublicFetchBusy);
     };
     let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let event_id = nevent.event_id_hex.clone();
-    let fetched = match rocket::tokio::task::spawn_blocking(move || {
-        crate::nostr::fetch_public_note(&relays, &event_id, timeout)
-    })
-    .await
-    {
+    let fetched = match rocket::tokio::task::spawn_blocking(move || fetch(relays, timeout)).await {
         Ok(note) => note,
         Err(_) => return Ok(None),
     };
-    Ok(fetched.and_then(|note| post_from_public_note(note, storage, config)))
+    Ok(fetched.and_then(|note| {
+        let cache_id = cache_id.unwrap_or_else(|| note.id_hex.clone());
+        post_from_public_note(note, storage, config, &cache_id)
+    }))
 }
 
 async fn render_post(
@@ -743,12 +739,19 @@ async fn render_post(
     ),
 > {
     let decoded = crate::nostr::decode_nevent(post_id);
-    let leftover_id = decoded.as_ref().map(|nevent| nevent.event_id_hex.clone());
-    let is_raw_request = leftover_id.is_none() && post_id.ends_with(".md");
-    let file_id = match &leftover_id {
-        Some(id) => id.as_str(),
-        None => post_id.strip_suffix(".md").unwrap_or(post_id),
+    let naddr = if decoded.is_none() {
+        crate::nostr::decode_naddr(post_id)
+    } else {
+        None
     };
+    let leftover_id = decoded.as_ref().map(|nevent| nevent.event_id_hex.clone());
+    let naddr_id = naddr.as_ref().map(crate::nostr::naddr_cache_id);
+    let is_nostr_path = leftover_id.is_some() || naddr_id.is_some();
+    let is_raw_request = !is_nostr_path && post_id.ends_with(".md");
+    let file_id = leftover_id
+        .as_deref()
+        .or(naddr_id.as_deref())
+        .unwrap_or_else(|| post_id.strip_suffix(".md").unwrap_or(post_id));
 
     if !is_valid_post_id(file_id) {
         return Err((
@@ -768,18 +771,14 @@ async fn render_post(
         };
     }
 
-    if leftover_id.is_none() && is_static_page(file_id) {
+    if !is_nostr_path && is_static_page(file_id) {
         return match serve_static_page(file_id, config, nojs) {
             Ok(html) => Ok(rocket::Either::Left(html)),
             Err((status, body)) => Err((status, rocket::Either::Right(body))),
         };
     }
 
-    let public_id = if leftover_id.is_some() {
-        post_id
-    } else {
-        file_id
-    };
+    let public_id = if is_nostr_path { post_id } else { file_id };
     let cached = {
         let posts = storage.read().unwrap();
         posts.lookup(file_id, nojs, public_id)
@@ -792,25 +791,45 @@ async fn render_post(
         return serve_article(storage, file_id, &hit.post, nojs, public_id);
     }
 
-    let local = if leftover_id.is_some() {
-        leftover_wrap_post_in_dir(post_id, storage, config, ".")
+    let local = load_post_from_disk_if_present(file_id, storage, config, ".");
+    let fetched = if local.is_some() {
+        Ok(local)
+    } else if let Some(nevent) = &decoded {
+        let event_id = nevent.event_id_hex.clone();
+        fetch_public(
+            &nevent.relays,
+            nevent.kind,
+            None,
+            storage,
+            config,
+            move |relays, timeout| crate::nostr::fetch_public_note(&relays, &event_id, timeout),
+        )
+        .await
+    } else if let Some(naddr) = &naddr {
+        let hints = naddr.relays.clone();
+        let kind = Some(naddr.kind);
+        let cache_id = crate::nostr::naddr_cache_id(naddr);
+        let naddr = naddr.clone();
+        fetch_public(
+            &hints,
+            kind,
+            Some(cache_id),
+            storage,
+            config,
+            move |relays, timeout| crate::nostr::fetch_public_addr(&relays, &naddr, timeout),
+        )
+        .await
     } else {
-        load_post_from_disk_if_present(file_id, storage, config, ".")
+        Ok(None)
     };
-    let post = match local {
-        Some(post) => Some(post),
-        None => match &decoded {
-            Some(nevent) => match fetch_public_article(nevent, storage, config).await {
-                Ok(post) => post,
-                Err(PublicFetchBusy) => {
-                    return Err((
-                        Status::ServiceUnavailable,
-                        rocket::Either::Left(content::RawText("Service unavailable".to_string())),
-                    ));
-                }
-            },
-            None => None,
-        },
+    let post = match fetched {
+        Ok(post) => post,
+        Err(PublicFetchBusy) => {
+            return Err((
+                Status::ServiceUnavailable,
+                rocket::Either::Left(content::RawText("Service unavailable".to_string())),
+            ));
+        }
     };
 
     match post {

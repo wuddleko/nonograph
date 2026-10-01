@@ -145,6 +145,108 @@ fn test_nevent_round_trip_carries_id_and_relays() {
     assert!(decode_nsec("nsec1qqqq").is_none());
 }
 
+fn d_tag(note: &SignedNote) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    parsed["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tag| tag[0] == "d")
+        .unwrap()[1]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn test_naddr_round_trip_carries_identifier_and_relays() {
+    let note = sign_note("Title", "Ada", "body", 1_700_000_000);
+    let d = d_tag(&note);
+    let relays = vec![
+        "wss://relay.damus.io".to_string(),
+        "wss://nos.lol".to_string(),
+    ];
+    let encoded = encode_naddr(&d, &relays, &note.pubkey, KIND_LONG_FORM);
+    let decoded = decode_naddr(&encoded).unwrap();
+    assert_eq!(decoded.identifier, d);
+    assert_eq!(decoded.pubkey, note.pubkey);
+    assert_eq!(decoded.kind, KIND_LONG_FORM);
+    assert_eq!(decoded.relays, relays);
+    assert!(decode_naddr("about").is_none());
+    assert!(decode_naddr("naddr1qqqq").is_none());
+    assert!(decode_naddr(&encode_nevent(&note.id, &relays, &note.pubkey, KIND_LONG_FORM)).is_none());
+    assert!(decode_nevent(&encoded).is_none());
+}
+
+#[test]
+fn test_naddr_note_must_match_author_and_d() {
+    let note = sign_note("Hello", "Ada", "body", 1_700_000_000);
+    let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let naddr = Naddr {
+        identifier: d_tag(&note),
+        pubkey: note.pubkey,
+        kind: KIND_LONG_FORM,
+        relays: Vec::new(),
+    };
+    let fetched = fetched_public_addr(&event, &naddr).unwrap();
+    assert_eq!(fetched.1.title, "Hello");
+    assert_eq!(fetched.1.content, "body");
+    let mut wrong_d = naddr.clone();
+    wrong_d.identifier = "other".to_string();
+    assert!(fetched_public_addr(&event, &wrong_d).is_none());
+    let mut wrong_author = naddr.clone();
+    wrong_author.pubkey = [0u8; 32];
+    assert!(fetched_public_addr(&event, &wrong_author).is_none());
+    let mut wrap_kind = naddr.clone();
+    wrap_kind.kind = KIND_GIFT_WRAP;
+    assert!(fetched_public_addr(&event, &wrap_kind).is_none());
+}
+
+#[test]
+fn test_naddr_keeps_the_newer_event() {
+    let keypair = Keypair::new(SECP256K1, &mut thread_rng());
+    let d = "same-article";
+    let older_tags = vec![
+        vec!["d".to_string(), d.to_string()],
+        vec!["title".to_string(), "Hello".to_string()],
+    ];
+    let newer_tags = older_tags.clone();
+    let older = signed_event(&keypair, 1_700_000_000, KIND_LONG_FORM, &older_tags, "old");
+    let newer = signed_event(&keypair, 1_800_000_000, KIND_LONG_FORM, &newer_tags, "new");
+    let naddr = Naddr {
+        identifier: d.to_string(),
+        pubkey: older.pubkey,
+        kind: KIND_LONG_FORM,
+        relays: Vec::new(),
+    };
+    let old_note =
+        fetched_public_addr(&serde_json::from_str(&older.event_json).unwrap(), &naddr).unwrap();
+    let new_note =
+        fetched_public_addr(&serde_json::from_str(&newer.event_json).unwrap(), &naddr).unwrap();
+    assert!(new_note.0 > old_note.0);
+    assert_eq!(new_note.1.content, "new");
+    assert_eq!(old_note.1.content, "old");
+}
+
+#[test]
+fn fetch_public_addr_skips_when_it_cannot_ask() {
+    let naddr = Naddr {
+        identifier: "note".to_string(),
+        pubkey: [1u8; 32],
+        kind: KIND_LONG_FORM,
+        relays: Vec::new(),
+    };
+    assert!(fetch_public_addr(&[], &naddr, Duration::from_millis(20)).is_none());
+    let mut kind1 = naddr.clone();
+    kind1.kind = 1;
+    assert!(fetch_public_addr(
+        &["wss://relay.damus.io".to_string()],
+        &kind1,
+        Duration::from_millis(20)
+    )
+    .is_none());
+}
+
 #[test]
 fn test_parse_ok_matches_the_event_id() {
     let id = "ab".repeat(32);

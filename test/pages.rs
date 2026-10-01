@@ -333,7 +333,7 @@ fn public_fetch_asks_nevent_relays_then_the_instance() {
         "wss://nos.lol".to_string(),
     ];
     assert_eq!(
-        relays_for_public_fetch(&nevent, &fallback),
+        relays_for_public_fetch(&nevent.relays, &fallback),
         vec![
             "wss://hint.example".to_string(),
             "wss://relay.damus.io".to_string(),
@@ -345,7 +345,7 @@ fn public_fetch_asks_nevent_relays_then_the_instance() {
         relays: Vec::new(),
         kind: None,
     };
-    assert_eq!(relays_for_public_fetch(&empty, &fallback), fallback);
+    assert_eq!(relays_for_public_fetch(&empty.relays, &fallback), fallback);
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn public_fetch_drops_private_hints_and_caps_relays() {
         kind: Some(crate::nostr::KIND_LONG_FORM),
     };
     let fallback = vec!["wss://nos.lol".to_string()];
-    let relays = relays_for_public_fetch(&nevent, &fallback);
+    let relays = relays_for_public_fetch(&nevent.relays, &fallback);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
     assert_eq!(relays.last().unwrap(), "wss://nos.lol");
@@ -384,7 +384,7 @@ fn public_fetch_uses_every_hint_slot_when_the_instance_has_no_public_relay() {
         kind: Some(crate::nostr::KIND_LONG_FORM),
     };
     let fallback = vec!["wss://127.0.0.1".to_string()];
-    let relays = relays_for_public_fetch(&nevent, &fallback);
+    let relays = relays_for_public_fetch(&nevent.relays, &fallback);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
     assert_eq!(relays[5], "wss://hint5.example");
@@ -413,7 +413,7 @@ fn public_note_becomes_the_same_kind_of_page_as_a_file() {
         content: "**hi**".to_string(),
         created_at: 1_700_000_000,
     };
-    let post = post_from_public_note(fetched, &storage, &config).unwrap();
+    let post = post_from_public_note(fetched, &storage, &config, &id).unwrap();
     assert_eq!(post.id, id);
     assert_eq!(post.title, "Hello");
     assert_eq!(post.author, "Ada");
@@ -428,14 +428,15 @@ fn public_note_that_is_too_long_is_not_a_page() {
     let storage = crate::cache::PostCache::shared(1);
     let mut config = crate::config::Config::default();
     config.limits.content_max_length = 4;
+    let id = "ab".repeat(32);
     let fetched = crate::nostr::FetchedNote {
-        id_hex: "ab".repeat(32),
+        id_hex: id.clone(),
         title: "Hello".to_string(),
         author: String::new(),
         content: "hello".to_string(),
         created_at: 1_700_000_000,
     };
-    assert!(post_from_public_note(fetched, &storage, &config).is_none());
+    assert!(post_from_public_note(fetched, &storage, &config, &id).is_none());
 }
 
 #[test]
@@ -452,16 +453,16 @@ fn public_note_with_a_long_title_or_author_is_not_a_page() {
         content: "hi".to_string(),
         created_at: 1_700_000_000,
     };
-    assert!(post_from_public_note(long_title, &storage, &config).is_none());
+    assert!(post_from_public_note(long_title, &storage, &config, &id).is_none());
     config.limits.title_max_length = 128;
     let long_author = crate::nostr::FetchedNote {
-        id_hex: id,
+        id_hex: id.clone(),
         title: "Hello".to_string(),
         author: "Ada Lovelace".to_string(),
         content: "hi".to_string(),
         created_at: 1_700_000_000,
     };
-    assert!(post_from_public_note(long_author, &storage, &config).is_none());
+    assert!(post_from_public_note(long_author, &storage, &config, &id).is_none());
 }
 
 #[test]
@@ -470,7 +471,7 @@ fn view_path_fetches_public_notes_and_does_not_decrypt() {
     let public =
         crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
     let public_nevent = crate::nostr::decode_nevent(&public).unwrap();
-    assert!(may_fetch_public_note(&public_nevent));
+    assert!(may_fetch_public_kind(public_nevent.kind));
 
     let wrapped = crate::nostr::wrap_note("Gone", "", "body", 1_700_000_000).unwrap();
     let wrap = crate::nostr::encode_nevent(
@@ -480,7 +481,7 @@ fn view_path_fetches_public_notes_and_does_not_decrypt() {
         crate::nostr::KIND_GIFT_WRAP,
     );
     let wrap_nevent = crate::nostr::decode_nevent(&wrap).unwrap();
-    assert!(!may_fetch_public_note(&wrap_nevent));
+    assert!(!may_fetch_public_kind(wrap_nevent.kind));
     assert_eq!(leftover_wrap_file_id(&wrap), Some(wrapped.id_hex()));
 
     let dir = tempfile::tempdir().unwrap();
@@ -503,12 +504,61 @@ fn view_path_fetches_public_notes_and_does_not_decrypt() {
     )
     .expect("leftover wrap with a file should open");
     assert_eq!(opened.raw_content, "still here");
-    assert!(!may_fetch_public_note(&wrap_nevent));
+    assert!(!may_fetch_public_kind(wrap_nevent.kind));
 
     let pages = include_str!("../src/pages.rs");
     assert!(!pages.contains("decode_nsec"));
     assert!(!pages.contains("?<nsec>"));
     assert!(!pages.contains("fetch_missing_note"));
+}
+
+#[test]
+fn view_path_fetches_naddr_like_nevent() {
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let d = parsed["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tag| tag[0] == "d")
+        .unwrap()[1]
+        .as_str()
+        .unwrap();
+    let encoded =
+        crate::nostr::encode_naddr(d, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    let naddr = crate::nostr::decode_naddr(&encoded).unwrap();
+    assert!(may_fetch_public_kind(Some(naddr.kind)));
+    let cache_id = crate::nostr::naddr_cache_id(&naddr);
+    assert!(is_valid_post_id(&cache_id));
+    assert_ne!(cache_id, note.id_hex());
+
+    let wrap = crate::nostr::encode_naddr(
+        "secret",
+        &[],
+        &note.pubkey,
+        crate::nostr::KIND_GIFT_WRAP,
+    );
+    assert!(!may_fetch_public_kind(
+        Some(crate::nostr::decode_naddr(&wrap).unwrap().kind)
+    ));
+
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let fetched = crate::nostr::FetchedNote {
+        id_hex: note.id_hex(),
+        title: "Hello".to_string(),
+        author: "Ada".to_string(),
+        content: "**hi**".to_string(),
+        created_at: 1_700_000_000,
+    };
+    let post = post_from_public_note(fetched, &storage, &config, &cache_id).unwrap();
+    assert_eq!(post.id, note.id_hex());
+    assert!(storage.read().unwrap().contains_key(&cache_id));
+    assert!(!storage.read().unwrap().contains_key(&note.id_hex()));
+
+    let pages = include_str!("../src/pages.rs");
+    assert!(pages.contains("fetch_public_addr"));
+    assert!(pages.contains("decode_naddr"));
 }
 
 #[test]
