@@ -611,6 +611,22 @@ pub(crate) fn may_fetch_public_kind(kind: Option<u32>) -> bool {
     matches!(kind, None | Some(crate::nostr::KIND_LONG_FORM))
 }
 
+pub(crate) fn is_gift_wrap(kind: Option<u32>) -> bool {
+    kind == Some(crate::nostr::KIND_GIFT_WRAP)
+}
+
+/// Leftover wrap files still open. A wrap with no file is not fetched.
+pub(crate) fn refuse_unopened_wrap(
+    kind: Option<u32>,
+    has_local_file: bool,
+) -> Option<&'static str> {
+    if has_local_file || !is_gift_wrap(kind) {
+        None
+    } else {
+        Some(WRAP_REFUSED_HTML)
+    }
+}
+
 pub(crate) fn post_from_public_note(
     fetched: crate::nostr::FetchedNote,
     storage: &PostStorage,
@@ -792,6 +808,16 @@ async fn render_post(
     }
 
     let local = load_post_from_disk_if_present(file_id, storage, config, ".");
+    let kind = decoded
+        .as_ref()
+        .and_then(|nevent| nevent.kind)
+        .or_else(|| naddr.as_ref().map(|naddr| naddr.kind));
+    if let Some(html) = refuse_unopened_wrap(kind, local.is_some()) {
+        return Err((
+            Status::NotFound,
+            rocket::Either::Right(content::RawHtml(html.to_string())),
+        ));
+    }
     let fetched = if local.is_some() {
         Ok(local)
     } else if let Some(nevent) = &decoded {
@@ -950,6 +976,31 @@ fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, Stri
     fill_page_chrome(&mut context, nojs, public_id);
     template::shared().render("post", &context)
 }
+
+pub(crate) const WRAP_REFUSED_HTML: &str = r#"<!doctype html>
+<html>
+<head>
+    <title>Open this in the extension</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+            color: #333;
+        }
+        h1 { font-weight: 300; margin-bottom: 16px; }
+        a { color: #333; }
+    </style>
+</head>
+<body>
+    <h1>Open this in the extension</h1>
+    <p>This is a private note. This site does not decrypt it.</p>
+    <p><a href="/">Write Your Own</a></p>
+</body>
+</html>"#;
 
 const NOT_FOUND_HTML: &str = r#"<!doctype html>
 <html>

@@ -319,6 +319,64 @@ fn leftover_wrap_without_a_file_cannot_open() {
 }
 
 #[test]
+fn wrap_link_without_a_file_is_refused() {
+    let wrapped = crate::nostr::wrap_note("Gone", "", "body", 1_700_000_000).unwrap();
+    let nevent = crate::nostr::encode_nevent(
+        &wrapped.id,
+        &[],
+        &wrapped.pubkey,
+        crate::nostr::KIND_GIFT_WRAP,
+    );
+    let decoded = crate::nostr::decode_nevent(&nevent).unwrap();
+    assert!(!may_fetch_public_kind(decoded.kind));
+    assert_eq!(
+        refuse_unopened_wrap(decoded.kind, false),
+        Some(WRAP_REFUSED_HTML)
+    );
+    assert!(refuse_unopened_wrap(decoded.kind, true).is_none());
+
+    let dir = tempfile::tempdir().unwrap();
+    let opened = leftover_wrap_post_in_dir(
+        &nevent,
+        &crate::cache::PostCache::shared(1),
+        &crate::config::Config::default(),
+        dir.path().to_str().unwrap(),
+    );
+    assert!(opened.is_none());
+    assert_eq!(
+        refuse_unopened_wrap(decoded.kind, opened.is_some()),
+        Some(WRAP_REFUSED_HTML)
+    );
+
+    let naddr =
+        crate::nostr::encode_naddr("secret", &[], &wrapped.pubkey, crate::nostr::KIND_GIFT_WRAP);
+    assert_eq!(
+        refuse_unopened_wrap(
+            Some(crate::nostr::decode_naddr(&naddr).unwrap().kind),
+            false
+        ),
+        Some(WRAP_REFUSED_HTML)
+    );
+
+    let public = crate::nostr::encode_nevent(
+        &wrapped.id,
+        &[],
+        &wrapped.pubkey,
+        crate::nostr::KIND_LONG_FORM,
+    );
+    let public_kind = crate::nostr::decode_nevent(&public).unwrap().kind;
+    assert!(refuse_unopened_wrap(public_kind, false).is_none());
+    assert!(refuse_unopened_wrap(None, false).is_none());
+
+    assert!(WRAP_REFUSED_HTML.contains("extension"));
+    assert!(!WRAP_REFUSED_HTML.contains("nsec"));
+    let pages = include_str!("../src/pages.rs");
+    assert!(pages.contains("refuse_unopened_wrap"));
+    assert!(!pages.contains("decode_nsec"));
+    assert!(!pages.contains("open_wrapped_note"));
+}
+
+#[test]
 fn public_fetch_asks_nevent_relays_then_the_instance() {
     let nevent = crate::nostr::Nevent {
         event_id_hex: "ab".repeat(32),
@@ -524,23 +582,18 @@ fn view_path_fetches_naddr_like_nevent() {
         .unwrap()[1]
         .as_str()
         .unwrap();
-    let encoded =
-        crate::nostr::encode_naddr(d, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    let encoded = crate::nostr::encode_naddr(d, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
     let naddr = crate::nostr::decode_naddr(&encoded).unwrap();
     assert!(may_fetch_public_kind(Some(naddr.kind)));
     let cache_id = crate::nostr::naddr_cache_id(&naddr);
     assert!(is_valid_post_id(&cache_id));
     assert_ne!(cache_id, note.id_hex());
 
-    let wrap = crate::nostr::encode_naddr(
-        "secret",
-        &[],
-        &note.pubkey,
-        crate::nostr::KIND_GIFT_WRAP,
-    );
-    assert!(!may_fetch_public_kind(
-        Some(crate::nostr::decode_naddr(&wrap).unwrap().kind)
-    ));
+    let wrap =
+        crate::nostr::encode_naddr("secret", &[], &note.pubkey, crate::nostr::KIND_GIFT_WRAP);
+    assert!(!may_fetch_public_kind(Some(
+        crate::nostr::decode_naddr(&wrap).unwrap().kind
+    )));
 
     let storage = crate::cache::PostCache::shared(1);
     let config = crate::config::Config::default();
