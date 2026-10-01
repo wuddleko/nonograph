@@ -145,6 +145,25 @@ fn test_nevent_round_trip_carries_id_and_relays() {
     assert!(decode_nsec("nsec1qqqq").is_none());
 }
 
+#[test]
+fn tab_encode_nevent_matches_the_server() {
+    let id = [0u8; 32];
+    let pubkey = decode_fixed_hex::<32>(
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    )
+    .unwrap();
+    let relays = vec!["wss://relay.damus.io".to_string()];
+    let nevent = encode_nevent(&id, &relays, &pubkey, KIND_LONG_FORM);
+    assert_eq!(
+        nevent,
+        "nevent1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpz3mhxue69uhhyetvv9ujuerpd46hxtnfdupzp7fs3gqeykxrzpyngnu9lzw4y2d4x8yytqm0nxcgvq03zw7wqdheqvzqqqr4gutzxp9l"
+    );
+    let decoded = decode_nevent(&nevent).unwrap();
+    assert_eq!(decoded.event_id_hex, hex_encode(&id));
+    assert_eq!(decoded.relays, relays);
+    assert_eq!(decoded.kind, Some(KIND_LONG_FORM));
+}
+
 fn d_tag(note: &SignedNote) -> String {
     let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     parsed["tags"]

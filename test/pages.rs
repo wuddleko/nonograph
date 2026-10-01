@@ -161,6 +161,13 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("0 / 128,000"));
     assert!(js.contains("class=\"\""));
     assert!(!js.contains("class=\"nojs\""));
+    assert!(js.contains("action=\"/create\""));
+    assert!(js.contains("On Nostr"));
+    assert_eq!(js.matches("On Nostr").count(), 2);
+    assert_eq!(js.matches("class=\"nostr-publish\"").count(), 2);
+    assert!(js.contains("type=\"submit\""));
+    assert!(nojs.contains("On Nostr"));
+    assert!(nojs.contains("class=\"nojs\""));
 }
 
 #[test]
@@ -944,6 +951,8 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(nostr.contains("10_000"));
     assert!(nostr.contains("sha256Sync"));
     assert!(nostr.contains("ensureBip340"));
+    assert!(nostr.contains("encodeNevent"));
+    assert!(nostr.contains("encodeBech32"));
     assert!(nostr.contains("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     assert!(nostr.contains(
         "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0"
@@ -959,12 +968,29 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(helper < imported);
     assert!(home.contains("./nostr.js"));
     assert!(home.contains("publishPublicNote"));
+    assert!(home.contains("location.assign(\"/\" + result.nevent)"));
+    assert!(home.contains(".nostr-publish"));
+    assert!(home.contains("Publishing failed. Try again."));
+    assert!(home.contains("A title is required."));
+    assert!(home.contains("if (publishing)"));
+    assert!(home.contains("leaveBusy = true"));
+    assert!(home.contains("if (!leaveBusy)"));
+    assert!(home.contains("button.hidden = true"));
     assert!(!home.contains("1059"));
     assert!(!home.contains("nsec"));
 
     let html = include_str!("../templates/home.html");
     assert!(html.contains("data-relays=\"{{nostr_relays}}\""));
     assert!(html.contains("data-timeout=\"{{nostr_timeout_ms}}\""));
+    assert!(html.contains("action=\"{{form_action}}\""));
+    assert!(html.contains("type=\"submit\""));
+    assert!(html.contains("class=\"nostr-publish\""));
+    assert!(html.contains("On Nostr"));
+    assert_eq!(html.matches("class=\"nostr-publish\"").count(), 2);
+    assert_eq!(html.matches("type=\"button\" class=\"nostr-publish\"").count(), 2);
+
+    let css = include_str!("../templates/home.css");
+    assert!(css.contains("body.nojs .nostr-publish"));
 }
 
 #[test]

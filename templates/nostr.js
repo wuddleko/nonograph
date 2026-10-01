@@ -67,7 +67,110 @@ export async function publishPublicNote({
         signed,
         timeoutMs,
     );
-    return { event: signed, accepted };
+    const nevent = accepted.length
+        ? encodeNevent(signed.id, signed.pubkey, KIND_LONG_FORM, accepted)
+        : "";
+    return { event: signed, accepted, nevent };
+}
+
+export function encodeNevent(idHex, pubkeyHex, kind, relays) {
+    const id = hexToBytes(idHex);
+    const pubkey = hexToBytes(pubkeyHex);
+    if (id.length !== 32 || pubkey.length !== 32) {
+        return "";
+    }
+    const data = [];
+    pushTlv(data, 0, id);
+    for (const relay of relaysForPublicPublish(relays)) {
+        const bytes = new TextEncoder().encode(relay);
+        if (bytes.length > 255) {
+            continue;
+        }
+        pushTlv(data, 1, bytes);
+    }
+    pushTlv(data, 2, pubkey);
+    const kindBytes = new Uint8Array(4);
+    const value = Number(kind) >>> 0;
+    kindBytes[0] = (value >>> 24) & 0xff;
+    kindBytes[1] = (value >>> 16) & 0xff;
+    kindBytes[2] = (value >>> 8) & 0xff;
+    kindBytes[3] = value & 0xff;
+    pushTlv(data, 3, kindBytes);
+    return encodeBech32("nevent", data);
+}
+
+function pushTlv(out, tag, value) {
+    out.push(tag, value.length);
+    for (const byte of value) {
+        out.push(byte);
+    }
+}
+
+function encodeBech32(hrp, data) {
+    const values = convertBits(data, 8, 5, true);
+    const checksum = bech32Checksum(hrp, values);
+    let out = hrp + "1";
+    const charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    for (const value of values.concat(checksum)) {
+        out += charset[value];
+    }
+    return out;
+}
+
+function convertBits(data, from, to, pad) {
+    let acc = 0;
+    let bits = 0;
+    const maxv = (1 << to) - 1;
+    const out = [];
+    for (const value of data) {
+        acc = (acc << from) | value;
+        bits += from;
+        while (bits >= to) {
+            bits -= to;
+            out.push((acc >> bits) & maxv);
+        }
+    }
+    if (pad && bits > 0) {
+        out.push((acc << (to - bits)) & maxv);
+    }
+    return out;
+}
+
+function bech32Checksum(hrp, data) {
+    const values = hrpExpand(hrp).concat(data, [0, 0, 0, 0, 0, 0]);
+    const mod = bech32Polymod(values) ^ 1;
+    const ret = [];
+    for (let i = 0; i < 6; i++) {
+        ret.push((mod >>> (5 * (5 - i))) & 31);
+    }
+    return ret;
+}
+
+function hrpExpand(hrp) {
+    const ret = [];
+    for (let i = 0; i < hrp.length; i++) {
+        ret.push(hrp.charCodeAt(i) >>> 5);
+    }
+    ret.push(0);
+    for (let i = 0; i < hrp.length; i++) {
+        ret.push(hrp.charCodeAt(i) & 31);
+    }
+    return ret;
+}
+
+function bech32Polymod(values) {
+    const gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const value of values) {
+        const top = chk >>> 25;
+        chk = ((chk & 0x1ffffff) << 5) ^ value;
+        for (let i = 0; i < 5; i++) {
+            if ((top >>> i) & 1) {
+                chk ^= gen[i];
+            }
+        }
+    }
+    return chk;
 }
 
 export async function signLongForm({

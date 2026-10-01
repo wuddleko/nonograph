@@ -68,10 +68,97 @@
             }
 
             const contentLimit = Number(editor.getAttribute("maxlength")) || 0;
+            const publishButtons = document.querySelectorAll(
+                'button[type="submit"], .nostr-publish',
+            );
+            const errorEl = form.querySelector(".form-error");
+            let publicRelays = [];
+            try {
+                publicRelays = JSON.parse(form.dataset.relays || "[]");
+            } catch (error) {
+                publicRelays = [];
+            }
+            if (!publicRelays.length) {
+                document.querySelectorAll(".nostr-publish").forEach((button) => {
+                    button.hidden = true;
+                });
+            }
+
+            let publishing = false;
+
+            function syncPublishButtons() {
+                const overLimit = editor.value.length > contentLimit;
+                publishButtons.forEach((button) => {
+                    button.disabled = publishing || overLimit;
+                });
+            }
+
+            function setPublishBusy(busy) {
+                publishing = busy;
+                syncPublishButtons();
+            }
+
+            function showPublishError(message) {
+                if (errorEl) {
+                    errorEl.textContent = message;
+                }
+            }
+
+            async function publishOnNostr() {
+                if (publishing) {
+                    return;
+                }
+                if (editor.value.length > contentLimit) {
+                    alert(
+                        "Content exceeds " +
+                            contentLimit.toLocaleString() +
+                            " character limit.",
+                    );
+                    return;
+                }
+                if (!form.reportValidity()) {
+                    return;
+                }
+                const title = form.title.value.trim();
+                if (!title) {
+                    showPublishError("A title is required.");
+                    return;
+                }
+                const content = editor.value;
+                if (!content.trim()) {
+                    showPublishError("Write something before publishing.");
+                    return;
+                }
+                showPublishError("");
+                setPublishBusy(true);
+                let leaveBusy = false;
+                try {
+                    const result = await nonographPublishPublicNote({
+                        title,
+                        author: form.alias.value.trim(),
+                        content,
+                    });
+                    if (!result.nevent) {
+                        showPublishError("Publishing failed. Try again.");
+                        return;
+                    }
+                    leaveBusy = true;
+                    location.assign("/" + result.nevent);
+                } catch (error) {
+                    showPublishError("Publishing failed. Try again.");
+                } finally {
+                    if (!leaveBusy) {
+                        setPublishBusy(false);
+                    }
+                }
+            }
+
+            document.querySelectorAll(".nostr-publish").forEach((button) => {
+                button.addEventListener("click", publishOnNostr);
+            });
 
             function updateCharCount() {
                 const count = editor.value.length;
-                const button = document.querySelector('button[type="submit"]');
                 const countText =
                     count.toLocaleString() +
                     " / " +
@@ -97,13 +184,12 @@
                     if (charCount) charCount.classList.add("over-limit");
                     if (mobileCharCount)
                         mobileCharCount.classList.add("over-limit");
-                    if (button) button.disabled = true;
                 } else {
                     if (charCount) charCount.classList.remove("over-limit");
                     if (mobileCharCount)
                         mobileCharCount.classList.remove("over-limit");
-                    if (button) button.disabled = false;
                 }
+                syncPublishButtons();
             }
 
             // The writemark editor emits input events as the document changes.
@@ -112,6 +198,10 @@
             editor.addEventListener("md-change", updateCharCount);
 
             form.addEventListener("submit", function (e) {
+                if (publishing) {
+                    e.preventDefault();
+                    return false;
+                }
                 if (editor.value.length > contentLimit) {
                     e.preventDefault();
                     alert(
@@ -121,6 +211,7 @@
                     );
                     return false;
                 }
+                setPublishBusy(true);
             });
 
             updateCharCount();
