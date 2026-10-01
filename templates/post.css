@@ -791,6 +791,13 @@
                 color: #666;
                 text-decoration: underline;
             }
+            .footer a.nostr-id {
+                overflow-wrap: anywhere;
+                word-break: break-all;
+            }
+            .footer a.nostr-id:empty {
+                display: none;
+            }
             @media (max-width: 768px) {
                 .footer {
                     margin-top: 40px;

@@ -14,8 +14,8 @@ use crate::csrf::{self, CsrfProtected};
 use crate::publish;
 use crate::template;
 use crate::{
-    is_valid_post_id, parse_legacy_frontmatter, parse_yaml_frontmatter, render_options, Post,
-    PostStorage,
+    is_nostr_identifier, is_valid_post_id, parse_frontmatter, render_options,
+    yaml_frontmatter_field, Post, PostStorage,
 };
 
 pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
@@ -31,8 +31,6 @@ const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"
 const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
 
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
-// Stable renderer URLs have no content hash. Revalidate with an ETag so a new
-// build is picked up, and a matching tag answers 304 instead of resending the wasm.
 const REVALIDATE: &str = "public, no-cache";
 
 const STATIC_PAGES: &[&str] = &["about", "legal", "markup", "api"];
@@ -40,7 +38,6 @@ const STATIC_PAGES: &[&str] = &["about", "legal", "markup", "api"];
 pub fn cache_control_for_path(path: &str) -> &'static str {
     match path {
         PAGE_JS_PATH | PAGE_WASM_PATH => REVALIDATE,
-        // CSS and site scripts are content-hashed in the URL, so those can be immutable.
         HOME_CSS_PATH
         | HOME_JS_PATH
         | POST_CSS_PATH
@@ -255,6 +252,7 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
         String::new()
     };
     context.insert("csrf_token".to_string(), csrf_token);
+    // Update form action to point to /nojs/create
     context.insert(
         "form_action".to_string(),
         if nojs { "/nojs/create" } else { "/create" }.to_string(),
@@ -298,8 +296,6 @@ pub(crate) struct NewPost {
     csrf_token: String,
 }
 
-/// Save the form as a local file and return `/{id}` (or `/nojs/{id}`).
-/// Relays are not asked. The location never contains `nsec`.
 pub(crate) fn create_location_in_dir(
     nojs: bool,
     form: &NewPost,
@@ -459,11 +455,7 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
     let Ok(file_content) = std::fs::read_to_string(format!("content/{page_name}.md")) else {
         return BuiltPage::Missing;
     };
-    let parsed = if file_content.starts_with("---\n") {
-        parse_yaml_frontmatter(&file_content)
-    } else {
-        parse_legacy_frontmatter(&file_content)
-    };
+    let parsed = parse_frontmatter(&file_content);
     let Some((title, author, created_at, raw_content)) = parsed else {
         return BuiltPage::Invalid(format!(
             "<h1>Error</h1><p>Invalid file format for {page_name}</p>"
@@ -494,7 +486,6 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
 }
 
 pub(crate) fn post_description(raw: &str) -> String {
-    // Stop at the 161st character. A longer post must not be walked to the end.
     let Some((end, _)) = raw.char_indices().nth(160) else {
         return raw.to_string();
     };
@@ -520,6 +511,7 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
         "fallback_css".to_string(),
         post_fallback_css(nojs, &version),
     );
+    context.insert("nostr_link".to_string(), String::new());
 }
 
 #[get("/<post_id>")]
@@ -552,13 +544,10 @@ pub async fn nojs_view_post(
     render_post(post_id, storage, config, true).await
 }
 
-/// Old wrap links (`nevent1…`) still name the markdown file by event id.
 pub(crate) fn leftover_wrap_file_id(post_id: &str) -> Option<String> {
     crate::nostr::decode_nevent(post_id).map(|nevent| nevent.event_id_hex)
 }
 
-/// Open a leftover wrap path only if that file is already on disk.
-/// Never decrypts, never talks to relays, ignores any `nsec`.
 pub(crate) fn leftover_wrap_post_in_dir(
     post_id: &str,
     storage: &PostStorage,
@@ -569,7 +558,7 @@ pub(crate) fn leftover_wrap_post_in_dir(
     if !is_valid_post_id(&file_id) {
         return None;
     }
-    load_post_from_disk_if_present(&file_id, storage, config, base_dir)
+    load_post_from_disk(&file_id, storage, config, base_dir)
 }
 
 fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
@@ -615,7 +604,6 @@ pub(crate) fn is_gift_wrap(kind: Option<u32>) -> bool {
     kind == Some(crate::nostr::KIND_GIFT_WRAP)
 }
 
-/// Leftover wrap files still open. A wrap with no file is not fetched.
 pub(crate) fn refuse_unopened_wrap(
     kind: Option<u32>,
     has_local_file: bool,
@@ -632,12 +620,23 @@ pub(crate) fn post_from_public_note(
     storage: &PostStorage,
     config: &Config,
     cache_id: &str,
+    nostr_id: &str,
+    base_dir: &str,
 ) -> Option<Arc<Post>> {
     if fetched.content.len() > config.limits.content_max_length {
         return None;
     }
     if !is_valid_post_id(cache_id) || !is_valid_post_id(&fetched.id_hex) {
         return None;
+    }
+    let keys = public_lookup_ids(cache_id, &fetched);
+    if keys.is_empty() {
+        return None;
+    }
+    if let Some(existing) = load_any_post(&keys, storage, config, base_dir) {
+        return Some(ensure_short_link(
+            existing, &keys, nostr_id, storage, config, base_dir,
+        ));
     }
     let title = nonograph_parser::sanitize_text(&fetched.title);
     let title = if title.is_empty() {
@@ -653,22 +652,201 @@ pub(crate) fn post_from_public_note(
         return None;
     }
     let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
+    let rendered_content =
+        nonograph_parser::render_markdown_with_config(&fetched.content, &render_options(config));
+    let stored_nostr_id = is_nostr_identifier(nostr_id).then(|| nostr_id.to_string());
+
+    let _persist = public_note_files().lock().unwrap();
+    if let Some(existing) = load_any_post(&keys, storage, config, base_dir) {
+        return Some(shorten_and_store(
+            with_nostr_id(existing, nostr_id),
+            &keys,
+            storage,
+            base_dir,
+        ));
+    }
     let post = Arc::new(Post {
-        id: fetched.id_hex,
+        id: next_short_id(&title, &keys, storage, base_dir)
+            .unwrap_or_else(|| fetched.id_hex.clone()),
         title,
         author,
-        content: nonograph_parser::render_markdown_with_config(
-            &fetched.content,
-            &render_options(config),
-        ),
+        content: rendered_content,
         raw_content: fetched.content,
         created_at,
+        nostr_id: stored_nostr_id,
     });
-    storage
-        .write()
-        .unwrap()
-        .insert(cache_id.to_string(), Arc::clone(&post));
+    store_public_note(post, &keys, storage, base_dir)
+        .or_else(|| load_any_post(&keys, storage, config, base_dir))
+}
+
+fn public_note_files() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn public_lookup_ids(cache_id: &str, fetched: &crate::nostr::FetchedNote) -> Vec<String> {
+    let mut ids = Vec::new();
+    push_lookup_id(&mut ids, cache_id);
+    push_lookup_id(&mut ids, &fetched.id_hex);
+    if !fetched.identifier.is_empty() {
+        push_lookup_id(
+            &mut ids,
+            &crate::nostr::naddr_cache_id(&crate::nostr::Naddr {
+                identifier: fetched.identifier.clone(),
+                pubkey: fetched.pubkey,
+                kind: crate::nostr::KIND_LONG_FORM,
+                relays: Vec::new(),
+            }),
+        );
+    }
+    ids
+}
+
+fn push_lookup_id(ids: &mut Vec<String>, id: &str) {
+    if is_valid_post_id(id) && ids.iter().all(|have| have != id) {
+        ids.push(id.to_string());
+    }
+}
+
+fn load_any_post(
+    ids: &[String],
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
+) -> Option<Arc<Post>> {
+    ids.iter()
+        .find_map(|id| load_post_from_disk(id, storage, config, base_dir))
+}
+
+fn next_short_id(
+    title: &str,
+    keys: &[String],
+    storage: &PostStorage,
+    base_dir: &str,
+) -> Option<String> {
+    for key in keys {
+        if let Some(old) = crate::save::alias_target_in_dir(key, base_dir) {
+            return Some(old);
+        }
+    }
+    crate::generate_post_id_in_dir(
+        title,
+        storage,
+        base_dir,
+        &crate::generate_unguessable_segment(),
+    )
+    .ok()
+}
+
+fn persist_pointer(key: &str, short_id: &str, base_dir: &str) -> Result<(), ()> {
+    if key == short_id {
+        return Ok(());
+    }
+    match crate::save::alias_target_in_dir(key, base_dir) {
+        Some(target) if target == short_id => Ok(()),
+        Some(target) if crate::save::post_file_exists_in_dir(&target, base_dir) => Err(()),
+        _ => {
+            let replace = crate::save::post_file_exists_in_dir(key, base_dir);
+            crate::save::write_alias_pointer(key, short_id, base_dir, replace).map_err(|_| ())
+        }
+    }
+}
+
+fn persist_public_note_files(post: &Post, keys: &[String], base_dir: &str) -> Result<(), ()> {
+    let created = match crate::save::save_post_to_file_in_dir(post, base_dir) {
+        Ok(()) => true,
+        Err(crate::save::SaveError::AlreadyExists) => false,
+        Err(_) => return Err(()),
+    };
+    for key in keys {
+        if persist_pointer(key, &post.id, base_dir).is_err() {
+            if created {
+                crate::save::remove_post_file_in_dir(&post.id, base_dir);
+            }
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn with_nostr_id(post: Arc<Post>, nostr_id: &str) -> Arc<Post> {
+    if post.nostr_id.as_deref().is_some_and(is_nostr_identifier) {
+        return post;
+    }
+    if !is_nostr_identifier(nostr_id) {
+        return post;
+    }
+    let mut copy = (*post).clone();
+    copy.nostr_id = Some(nostr_id.to_string());
+    Arc::new(copy)
+}
+
+fn needs_persist(post: &Post, keys: &[String], base_dir: &str) -> bool {
+    keys.iter().any(|key| {
+        crate::save::alias_target_in_dir(key, base_dir).as_deref() != Some(post.id.as_str())
+    })
+}
+
+fn ensure_short_link(
+    post: Arc<Post>,
+    keys: &[String],
+    nostr_id: &str,
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
+) -> Arc<Post> {
+    let post = with_nostr_id(post, nostr_id);
+    if !needs_persist(&post, keys, base_dir) {
+        return post;
+    }
+    let _persist = public_note_files().lock().unwrap();
+    let post = match load_any_post(keys, storage, config, base_dir) {
+        Some(existing) => with_nostr_id(existing, nostr_id),
+        None => post,
+    };
+    shorten_and_store(post, keys, storage, base_dir)
+}
+
+fn shorten_and_store(
+    post: Arc<Post>,
+    keys: &[String],
+    storage: &PostStorage,
+    base_dir: &str,
+) -> Arc<Post> {
+    let post = if keys.iter().any(|key| key == &post.id) {
+        match next_short_id(&post.title, keys, storage, base_dir).filter(|id| !keys.contains(id)) {
+            Some(short_id) => {
+                let mut upgraded = (*post).clone();
+                upgraded.id = short_id;
+                Arc::new(upgraded)
+            }
+            None => post,
+        }
+    } else {
+        post
+    };
+    store_public_note(Arc::clone(&post), keys, storage, base_dir).unwrap_or(post)
+}
+
+fn store_public_note(
+    post: Arc<Post>,
+    keys: &[String],
+    storage: &PostStorage,
+    base_dir: &str,
+) -> Option<Arc<Post>> {
+    persist_public_note_files(&post, keys, base_dir).ok()?;
+    remember_post(storage, Arc::clone(&post), keys);
     Some(post)
+}
+
+fn remember_post(storage: &PostStorage, post: Arc<Post>, keys: &[String]) {
+    let mut cache = storage.write().unwrap();
+    cache.insert(post.id.clone(), Arc::clone(&post));
+    for key in keys {
+        if key != &post.id {
+            cache.insert(key.clone(), Arc::clone(&post));
+        }
+    }
 }
 
 const MAX_PUBLIC_FETCHES: usize = 8;
@@ -717,6 +895,7 @@ async fn fetch_public(
     hints: &[String],
     kind: Option<u32>,
     cache_id: Option<String>,
+    nostr_id: &str,
     storage: &PostStorage,
     config: &Config,
     fetch: impl FnOnce(Vec<String>, Duration) -> Option<crate::nostr::FetchedNote> + Send + 'static,
@@ -738,7 +917,7 @@ async fn fetch_public(
     };
     Ok(fetched.and_then(|note| {
         let cache_id = cache_id.unwrap_or_else(|| note.id_hex.clone());
-        post_from_public_note(note, storage, config, &cache_id)
+        post_from_public_note(note, storage, config, &cache_id, nostr_id, ".")
     }))
 }
 
@@ -769,6 +948,8 @@ async fn render_post(
         .or(naddr_id.as_deref())
         .unwrap_or_else(|| post_id.strip_suffix(".md").unwrap_or(post_id));
 
+    // Reject identifiers that could escape the content directory before any
+    // filesystem access takes place. See `is_valid_post_id`.
     if !is_valid_post_id(file_id) {
         return Err((
             Status::NotFound,
@@ -777,10 +958,9 @@ async fn render_post(
     }
 
     if is_raw_request {
-        let file_path = format!("content/{file_id}.md");
-        return match std::fs::read_to_string(&file_path) {
-            Ok(raw_bytes) => Ok(rocket::Either::Right(content::RawText(raw_bytes))),
-            Err(_) => Err((
+        return match crate::save::read_post_file_in_dir(file_id, ".") {
+            Some(raw_bytes) => Ok(rocket::Either::Right(content::RawText(raw_bytes))),
+            None => Err((
                 Status::NotFound,
                 rocket::Either::Left(content::RawText("Page not found".to_string())),
             )),
@@ -795,37 +975,55 @@ async fn render_post(
     }
 
     let public_id = if is_nostr_path { post_id } else { file_id };
+    // Try to load from memory first with minimal lock time
     let cached = {
         let posts = storage.read().unwrap();
         posts.lookup(file_id, nojs, public_id)
     };
     if let Some(hit) = cached {
-        hit.note_access();
-        if let Some(html) = hit.html {
-            return Ok(rocket::Either::Left(content::RawHtml(html.to_string())));
+        let live = crate::save::post_file_exists_in_dir(&hit.post.id, ".");
+        let leftover = is_nostr_path && hit.post.id == file_id;
+        if live && !leftover {
+            hit.note_access();
+            let post = if is_nostr_path {
+                with_nostr_id(Arc::clone(&hit.post), post_id)
+            } else {
+                Arc::clone(&hit.post)
+            };
+            if post.nostr_id != hit.post.nostr_id {
+                remember_post(storage, Arc::clone(&post), &[]);
+            } else if let Some(html) = hit.html {
+                return Ok(rocket::Either::Left(content::RawHtml(html.to_string())));
+            }
+            return serve_article(storage, file_id, &post, nojs, public_id);
         }
-        return serve_article(storage, file_id, &hit.post, nojs, public_id);
     }
 
-    let local = load_post_from_disk_if_present(file_id, storage, config, ".");
     let kind = decoded
         .as_ref()
         .and_then(|nevent| nevent.kind)
         .or_else(|| naddr.as_ref().map(|naddr| naddr.kind));
+    let local = load_post_from_disk(file_id, storage, config, ".");
     if let Some(html) = refuse_unopened_wrap(kind, local.is_some()) {
         return Err((
             Status::NotFound,
             rocket::Either::Right(content::RawHtml(html.to_string())),
         ));
     }
-    let fetched = if local.is_some() {
-        Ok(local)
+    let fetched = if let Some(post) = local {
+        let post = if is_nostr_path && may_fetch_public_kind(kind) {
+            ensure_short_link(post, &[file_id.to_string()], post_id, storage, config, ".")
+        } else {
+            post
+        };
+        Ok(Some(post))
     } else if let Some(nevent) = &decoded {
         let event_id = nevent.event_id_hex.clone();
         fetch_public(
             &nevent.relays,
             nevent.kind,
             None,
+            post_id,
             storage,
             config,
             move |relays, timeout| crate::nostr::fetch_public_note(&relays, &event_id, timeout),
@@ -840,6 +1038,7 @@ async fn render_post(
             &hints,
             kind,
             Some(cache_id),
+            post_id,
             storage,
             config,
             move |relays, timeout| crate::nostr::fetch_public_addr(&relays, &naddr, timeout),
@@ -867,34 +1066,33 @@ async fn render_post(
     }
 }
 
-fn load_post_from_disk_if_present(
-    file_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    if !crate::save::post_file_exists_in_dir(file_id, base_dir) {
-        return None;
-    }
-    load_post_from_disk(file_id, storage, config, base_dir)
-}
-
 fn load_post_from_disk(
     file_id: &str,
     storage: &PostStorage,
     config: &Config,
     base_dir: &str,
 ) -> Option<Arc<Post>> {
-    let path = std::path::Path::new(base_dir)
-        .join("content")
-        .join(format!("{file_id}.md"));
-    let file_content = std::fs::read_to_string(path).ok()?;
-    let parsed = if file_content.starts_with("---\n") {
-        parse_yaml_frontmatter(&file_content)
-    } else {
-        parse_legacy_frontmatter(&file_content)
-    };
-    let (title, author, created_at, raw_content) = parsed?;
+    load_post_from_disk_at(file_id, storage, config, base_dir, 0)
+}
+
+fn load_post_from_disk_at(
+    file_id: &str,
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
+    depth: u8,
+) -> Option<Arc<Post>> {
+    let file_content = std::fs::read_to_string(crate::save::post_path(file_id, base_dir)).ok()?;
+    if depth == 0 {
+        if let Some(alias) = crate::save::alias_target(&file_content, file_id) {
+            let post = load_post_from_disk_at(&alias, storage, config, base_dir, 1)?;
+            remember_post(storage, Arc::clone(&post), &[file_id.to_string()]);
+            return Some(post);
+        }
+    }
+    let (title, author, created_at, raw_content) = parse_frontmatter(&file_content)?;
+    let nostr_id =
+        yaml_frontmatter_field(&file_content, "nostr:").filter(|id| is_nostr_identifier(id));
     let post = Arc::new(Post {
         id: file_id.to_string(),
         title,
@@ -905,11 +1103,9 @@ fn load_post_from_disk(
         ),
         raw_content,
         created_at,
+        nostr_id,
     });
-    storage
-        .write()
-        .unwrap()
-        .insert(file_id.to_string(), Arc::clone(&post));
+    remember_post(storage, Arc::clone(&post), &[file_id.to_string()]);
     Some(post)
 }
 
@@ -968,12 +1164,30 @@ fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, Stri
             .format("%Y-%m-%dT00:00:00+00:00")
             .to_string(),
     );
-    context.insert("url".to_string(), format!("/{public_id}"));
+    // OpenGraph variables
+    let nostr_id = post
+        .nostr_id
+        .as_deref()
+        .filter(|id| is_nostr_identifier(id))
+        .unwrap_or("");
+    let url_id = if nostr_id.is_empty() {
+        public_id
+    } else {
+        nostr_id
+    };
+    context.insert("url".to_string(), format!("/{url_id}"));
     context.insert(
         "description".to_string(),
         post_description(&post.raw_content),
     );
     fill_page_chrome(&mut context, nojs, public_id);
+    let nostr_link = if nostr_id.is_empty() {
+        String::new()
+    } else {
+        let id = nonograph_parser::html_attr_escape(nostr_id);
+        format!("<a href=\"/{id}\" class=\"nostr-id\">{id}</a>")
+    };
+    context.insert("nostr_link".to_string(), nostr_link);
     template::shared().render("post", &context)
 }
 

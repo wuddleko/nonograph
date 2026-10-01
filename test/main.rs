@@ -75,6 +75,17 @@ fn test_is_valid_post_id_rejects_traversal() {
 }
 
 #[test]
+fn nostr_identifier_is_nevent_or_naddr() {
+    assert!(is_nostr_identifier("nevent1abc"));
+    assert!(is_nostr_identifier("naddr1xyz"));
+    assert!(!is_nostr_identifier("nsec1abc"));
+    assert!(!is_nostr_identifier("hello-world"));
+    assert!(!is_nostr_identifier("nevent1"));
+    assert!(!is_nostr_identifier("nevent1abc/../x"));
+    assert!(!is_nostr_identifier(""));
+}
+
+#[test]
 fn test_is_valid_post_id_length_bound() {
     let at_limit = "a".repeat(MAX_POST_ID_LEN);
     let over_limit = "a".repeat(MAX_POST_ID_LEN + 1);
@@ -376,6 +387,7 @@ fn test_post_creation_sanitization_integration() {
         content: rendered_content,
         raw_content: clean_content.to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     assert_eq!(post.title, "Clean Title");
@@ -397,6 +409,7 @@ fn test_post_id_collision_handling() {
         content: "Content".to_string(),
         raw_content: "first body".to_string(),
         created_at: now,
+        nostr_id: None,
     };
     save::save_post_to_file_in_dir(&first, base).unwrap();
     let path = dir.path().join("content").join(format!("{id}.md"));
@@ -418,6 +431,7 @@ fn insert_cached_post(storage: &PostStorage, id: &str) {
         content: "Content".to_string(),
         raw_content: "Content".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
     storage
         .write()
@@ -525,6 +539,7 @@ fn test_different_ids_save_side_by_side() {
         content: body.to_string(),
         raw_content: body.to_string(),
         created_at: now,
+        nostr_id: None,
     };
 
     let first_id = "alpha-0123456789abcdef0123456789abcdef-09-28-2026";
@@ -610,6 +625,7 @@ fn test_emoji_handling() {
         content: parser::render_markdown(&emoji_content),
         raw_content: emoji_content.clone(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let description = pages::post_description(&post.raw_content);
@@ -1144,6 +1160,7 @@ fn test_yaml_round_trip_unicode_symbols() {
             content: String::new(),
             raw_content: "Content".to_string(),
             created_at: Utc::now(),
+            nostr_id: None,
         };
 
         save::save_post_to_file_in_dir(&post, temp_path).unwrap();
@@ -1192,6 +1209,7 @@ fn test_opengraph_description_integration() {
         content: parser::render_markdown(&long_emoji_content),
         raw_content: long_emoji_content.clone(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let description = pages::post_description(&post.raw_content);
@@ -1212,6 +1230,7 @@ fn test_opengraph_description_integration() {
         content: parser::render_markdown(&long_ascii_content),
         raw_content: long_ascii_content.clone(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let description2 = pages::post_description(&post2.raw_content);
@@ -1328,6 +1347,7 @@ fn test_alias_display_formatting() {
         content: "<p>Content</p>".to_string(),
         raw_content: "Content".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let alias_display = if post_with_alias.author.is_empty() {
@@ -1345,6 +1365,7 @@ fn test_alias_display_formatting() {
         content: "<p>Content</p>".to_string(),
         raw_content: "Content".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let alias_display_empty = if post_without_alias.author.is_empty() {

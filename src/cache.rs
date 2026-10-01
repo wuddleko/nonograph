@@ -5,8 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Public posts only. Old wrap links may still name a file by event id; we
-// never decrypt here. Private notes will not use this cache.
 const MAX_CACHED_PAGES: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +15,8 @@ pub struct Post {
     pub content: String,
     pub raw_content: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub nostr_id: Option<String>,
 }
 
 impl Post {
@@ -26,6 +26,7 @@ impl Post {
             + self.author.len()
             + self.content.len()
             + self.raw_content.len()
+            + self.nostr_id.as_ref().map(String::len).unwrap_or(0)
             + 64
     }
 }
@@ -98,8 +99,7 @@ impl PostCache {
         self.entries.contains_key(post_id)
     }
 
-    /// Copy the post (and finished HTML, when this view was built before).
-    /// The caller records the access after dropping the lock.
+    // Add a non-cloning get for read-only access
     pub fn lookup(&self, post_id: &str, nojs: bool, public_id: &str) -> Option<CacheHit> {
         let entry = self.entries.get(post_id)?;
         let html = entry
@@ -115,13 +115,17 @@ impl PostCache {
     }
 
     pub fn insert(&mut self, post_id: String, post: Arc<Post>) {
+        // Remove existing entry if it exists
         if let Some(old_entry) = self.entries.remove(&post_id) {
             self.total_size -= old_entry.stored_size();
         }
 
+        // Add new entry size
         self.total_size += post.memory_size();
+        // Evict oldest entries if over limit
         self.evict_until_within_limit(None);
 
+        // Insert new entry
         self.entries.insert(
             post_id,
             CacheEntry {
@@ -199,8 +203,12 @@ impl PostCache {
 }
 
 pub fn purge_missing(storage: &PostStorage) {
+    purge_missing_in_dir(storage, ".");
+}
+
+pub fn purge_missing_in_dir(storage: &PostStorage, base_dir: &str) {
     purge_if(storage, |id| {
-        !std::path::Path::new(&format!("content/{id}.md")).exists()
+        !crate::save::post_file_is_live_in_dir(id, base_dir)
     });
 }
 

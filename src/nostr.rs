@@ -39,12 +39,15 @@ pub struct Naddr {
     pub relays: Vec<String>,
 }
 
+#[derive(Default)]
 pub struct FetchedNote {
     pub id_hex: String,
     pub title: String,
     pub author: String,
     pub content: String,
     pub created_at: i64,
+    pub pubkey: [u8; 32],
+    pub identifier: String,
 }
 
 impl SignedNote {
@@ -217,12 +220,7 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
     })
 }
 
-pub fn encode_naddr(
-    identifier: &str,
-    relays: &[String],
-    pubkey: &[u8; 32],
-    kind: u32,
-) -> String {
+pub fn encode_naddr(identifier: &str, relays: &[String], pubkey: &[u8; 32], kind: u32) -> String {
     let ident = identifier.as_bytes();
     let mut data = Vec::new();
     if ident.len() <= 255 {
@@ -258,7 +256,6 @@ pub fn decode_naddr(value: &str) -> Option<Naddr> {
     })
 }
 
-/// Cache key for an naddr. Stable for the same author, kind, and `d` tag.
 pub fn naddr_cache_id(naddr: &Naddr) -> String {
     let mut hasher = Sha256::new();
     hasher.update(naddr.pubkey);
@@ -292,7 +289,6 @@ pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration
         return Vec::new();
     }
 
-    // Every relay named in the nevent has to answer, or hit this same deadline.
     let deadline = Instant::now() + timeout;
     let event_id = note.id_hex();
     std::thread::scope(|scope| {
@@ -338,7 +334,6 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
 type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
 
 const RELAY_TIMEOUT: &str = "timed out waiting for the relay";
-/// A relay thread blocks for at most this long, then checks the deadline and cancel flag.
 const FETCH_POLL: Duration = Duration::from_millis(100);
 
 fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
@@ -499,8 +494,6 @@ extern "system" {
     fn WSAPoll(fds: *mut WsaPollFd, nfds: u32, timeout: i32) -> i32;
 }
 
-/// Wait until a handshake can move, without spinning on a socket that is only writable.
-/// After one immediate write-ready poll, the next wait listens for the peer.
 fn wait_for_handshake(
     socket: &impl PollReady,
     deadline: Instant,
@@ -835,7 +828,6 @@ pub fn fetch_public_note(
     )
 }
 
-/// Public long-form only, by replaceable address (`kind:30023` + author + `d`).
 pub fn fetch_public_addr(
     relays: &[String],
     naddr: &Naddr,
@@ -915,8 +907,6 @@ fn fetch_from_relays(
     }
     drop(tx);
     let note = take_first_note(rx, deadline);
-    // A note can arrive before the deadline. Stop every other relay thread,
-    // including one still in lookup or a handshake, and join it before returning.
     cancel.store(true, Ordering::Relaxed);
     for handle in handles {
         let _ = handle.join();
@@ -1028,7 +1018,11 @@ fn note_from_relay_message(
     event_id_hex: &str,
     recipient_secret: Option<&[u8; 32]>,
 ) -> Option<FetchedNote> {
-    fetched_from_event(&event_from_relay_message(message)?, event_id_hex, recipient_secret)
+    fetched_from_event(
+        &event_from_relay_message(message)?,
+        event_id_hex,
+        recipient_secret,
+    )
 }
 
 fn event_from_relay_message(message: &str) -> Option<serde_json::Value> {
@@ -1064,6 +1058,7 @@ fn fetched_from_event(
         author: opened.author,
         content: opened.content,
         created_at: opened.created_at,
+        ..FetchedNote::default()
     })
 }
 
@@ -1126,6 +1121,8 @@ fn fetched_from_parsed(parsed: ParsedEvent) -> FetchedNote {
         author,
         content: parsed.content,
         created_at,
+        pubkey: parsed.pubkey,
+        identifier: tag_value(&parsed.tags, "d").unwrap_or_default(),
     }
 }
 

@@ -33,7 +33,6 @@ pub(crate) fn publish_failure_redirect(
     rocket::response::Redirect::to(publish_failure_href(nojs, failure))
 }
 
-/// Path for a post we just saved. Never a query string, never `nsec`.
 pub(crate) fn published_href(nojs: bool, post_id: &str) -> String {
     let id = post_id
         .split(['?', '&', '#'])
@@ -84,6 +83,7 @@ pub(crate) fn publish_note_in_dir(
         content: rendered_content.to_string(),
         raw_content: raw_content.to_string(),
         created_at,
+        nostr_id: None,
     });
     if let Err(error) = save::save_post_to_file_in_dir(&post, base_dir) {
         return Err(PublishFailure::Save(error.to_string()));

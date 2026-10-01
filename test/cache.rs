@@ -8,6 +8,7 @@ fn sample_post(id: &str) -> Arc<Post> {
         content: "<p>Test content</p>".to_string(),
         raw_content: "Test content".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     })
 }
 
@@ -116,11 +117,43 @@ fn purge_checks_files_after_releasing_the_lock() {
 
 #[test]
 fn purge_keeps_a_post_whose_file_is_still_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    std::fs::create_dir_all(dir.path().join("content")).unwrap();
+    let post = sample_post("hello-short-01-01-2024");
+    crate::save::save_post_to_file_in_dir(&post, base).unwrap();
     let storage = PostCache::shared(128);
     storage
         .write()
         .unwrap()
-        .insert("kept".to_string(), sample_post("kept"));
-    purge_if(&storage, |_| false);
-    assert!(storage.read().unwrap().contains_key("kept"));
+        .insert("hello-short-01-01-2024".to_string(), Arc::clone(&post));
+    purge_missing_in_dir(&storage, base);
+    assert!(storage
+        .read()
+        .unwrap()
+        .contains_key("hello-short-01-01-2024"));
+}
+
+#[test]
+fn purge_drops_a_dangling_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    std::fs::create_dir_all(dir.path().join("content")).unwrap();
+    let cache_id = "ab".repeat(32);
+    crate::save::save_alias_pointer_in_dir(&cache_id, "hello-short-01-01-2024", base).unwrap();
+    let storage = PostCache::shared(128);
+    storage
+        .write()
+        .unwrap()
+        .insert(cache_id.clone(), sample_post("hello-short-01-01-2024"));
+    storage.write().unwrap().insert(
+        "hello-short-01-01-2024".to_string(),
+        sample_post("hello-short-01-01-2024"),
+    );
+    purge_missing_in_dir(&storage, base);
+    assert!(!storage.read().unwrap().contains_key(&cache_id));
+    assert!(!storage
+        .read()
+        .unwrap()
+        .contains_key("hello-short-01-01-2024"));
 }

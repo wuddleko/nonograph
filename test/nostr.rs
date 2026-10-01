@@ -174,7 +174,13 @@ fn test_naddr_round_trip_carries_identifier_and_relays() {
     assert_eq!(decoded.relays, relays);
     assert!(decode_naddr("about").is_none());
     assert!(decode_naddr("naddr1qqqq").is_none());
-    assert!(decode_naddr(&encode_nevent(&note.id, &relays, &note.pubkey, KIND_LONG_FORM)).is_none());
+    assert!(decode_naddr(&encode_nevent(
+        &note.id,
+        &relays,
+        &note.pubkey,
+        KIND_LONG_FORM
+    ))
+    .is_none());
     assert!(decode_nevent(&encoded).is_none());
 }
 
@@ -368,6 +374,7 @@ fn test_first_note_returns_when_the_first_relay_answers() {
             author: String::new(),
             content: "body".to_string(),
             created_at: 1_700_000_000,
+            ..FetchedNote::default()
         }));
     });
     let started = Instant::now();

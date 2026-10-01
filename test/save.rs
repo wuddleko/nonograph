@@ -32,6 +32,7 @@ fn test_save_and_load_post() {
         content: "<p>Rendered content</p>".to_string(),
         raw_content: "Raw content here".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     let temp_path = temp_dir.path().to_str().unwrap();
@@ -68,6 +69,7 @@ fn test_delete_post_file() {
         content: "<p>Content</p>".to_string(),
         raw_content: "Content".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     // Save and verify exists
@@ -100,6 +102,7 @@ fn test_file_format() {
         content: "<p>Rendered</p>".to_string(),
         raw_content: "This is the user content\nWith multiple lines".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     assert!(save_post_to_file_in_dir(&post, temp_path).is_ok());
@@ -147,6 +150,7 @@ fn test_file_format_no_author() {
         content: "<p>Rendered</p>".to_string(),
         raw_content: "Content without author".to_string(),
         created_at: Utc::now(),
+        nostr_id: None,
     };
 
     assert!(save_post_to_file_in_dir(&post, temp_path).is_ok());
@@ -175,4 +179,104 @@ fn test_file_format_no_author() {
     assert_eq!(lines[4], "---");
     assert_eq!(lines[5], "");
     assert_eq!(lines[6], "Content without author");
+}
+
+#[test]
+#[serial]
+fn test_file_format_with_nostr_id() {
+    let (temp_dir, _content_dir) = setup_test_env();
+    let temp_path = temp_dir.path().to_str().unwrap();
+    let nostr = "nevent1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+    let post = Post {
+        id: "nostr-test-01-01-2024".to_string(),
+        title: "Nostr Test".to_string(),
+        author: "Ada".to_string(),
+        content: "<p>hi</p>".to_string(),
+        raw_content: "hi".to_string(),
+        created_at: Utc::now(),
+        nostr_id: Some(nostr.to_string()),
+    };
+    save_post_to_file_in_dir(&post, temp_path).unwrap();
+    let raw_file = fs::read_to_string(
+        temp_dir
+            .path()
+            .join("content")
+            .join("nostr-test-01-01-2024.md"),
+    )
+    .unwrap();
+    assert!(raw_file.contains(&format!("nostr: {nostr}")));
+}
+
+#[test]
+#[serial]
+fn test_alias_pointer_file() {
+    let (temp_dir, _content_dir) = setup_test_env();
+    let temp_path = temp_dir.path().to_str().unwrap();
+    let cache_id = "ab".repeat(32);
+    save_alias_pointer_in_dir(&cache_id, "hello-short-01-01-2024", temp_path).unwrap();
+    let raw_file = fs::read_to_string(
+        temp_dir
+            .path()
+            .join("content")
+            .join(format!("{cache_id}.md")),
+    )
+    .unwrap();
+    assert_eq!(raw_file, "---\nalias: hello-short-01-01-2024\n---\n");
+    assert!(save_alias_pointer_in_dir(&cache_id, "other-short-01-01-2024", temp_path).is_err());
+}
+
+#[test]
+#[serial]
+fn test_read_post_file_follows_alias() {
+    let (temp_dir, _content_dir) = setup_test_env();
+    let temp_path = temp_dir.path().to_str().unwrap();
+    let post = Post {
+        id: "hello-short-01-01-2024".to_string(),
+        title: "Hello".to_string(),
+        author: "Ada".to_string(),
+        content: "<p>hi</p>".to_string(),
+        raw_content: "the article".to_string(),
+        created_at: Utc::now(),
+        nostr_id: None,
+    };
+    save_post_to_file_in_dir(&post, temp_path).unwrap();
+    let cache_id = "ab".repeat(32);
+    save_alias_pointer_in_dir(&cache_id, &post.id, temp_path).unwrap();
+    let by_short = read_post_file_in_dir(&post.id, temp_path).unwrap();
+    let by_alias = read_post_file_in_dir(&cache_id, temp_path).unwrap();
+    assert_eq!(by_short, by_alias);
+    assert!(by_alias.contains("the article"));
+    assert!(!by_alias.contains("alias:"));
+    assert!(remove_post_file_in_dir(&post.id, temp_path));
+    assert!(read_post_file_in_dir(&cache_id, temp_path).is_none());
+    assert!(!post_file_is_live_in_dir(&cache_id, temp_path));
+}
+
+#[test]
+#[serial]
+fn test_replace_alias_pointer_file() {
+    let (temp_dir, _content_dir) = setup_test_env();
+    let temp_path = temp_dir.path().to_str().unwrap();
+    let cache_id = "ab".repeat(32);
+    save_alias_pointer_in_dir(&cache_id, "hello-short-01-01-2024", temp_path).unwrap();
+    write_alias_pointer(&cache_id, "other-short-01-01-2024", temp_path, true).unwrap();
+    let raw_file = fs::read_to_string(
+        temp_dir
+            .path()
+            .join("content")
+            .join(format!("{cache_id}.md")),
+    )
+    .unwrap();
+    assert_eq!(raw_file, "---\nalias: other-short-01-01-2024\n---\n");
+}
+
+#[test]
+#[serial]
+fn test_dangling_alias_is_not_live() {
+    let (temp_dir, _content_dir) = setup_test_env();
+    let temp_path = temp_dir.path().to_str().unwrap();
+    let cache_id = "ab".repeat(32);
+    save_alias_pointer_in_dir(&cache_id, "hello-short-01-01-2024", temp_path).unwrap();
+    assert!(post_file_exists_in_dir(&cache_id, temp_path));
+    assert!(!post_file_is_live_in_dir(&cache_id, temp_path));
 }

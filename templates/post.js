@@ -1,6 +1,33 @@
+            // Secret text reveal functionality
             document.querySelectorAll(".secret").forEach(function (secret) {
                 secret.addEventListener("click", function () {
                     this.classList.toggle("revealed");
+                });
+            });
+
+            document.querySelectorAll("a.nostr-id").forEach(function (link) {
+                if (!link.textContent) return;
+                link.addEventListener("click", function (event) {
+                    if (
+                        event.button !== 0 ||
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.shiftKey ||
+                        event.altKey
+                    ) {
+                        return;
+                    }
+                    var label = link.textContent;
+                    if (!label || !navigator.clipboard || !navigator.clipboard.writeText) {
+                        return;
+                    }
+                    event.preventDefault();
+                    navigator.clipboard.writeText(label).then(function () {
+                        link.textContent = "copied";
+                        window.setTimeout(function () {
+                            link.textContent = label;
+                        }, 1200);
+                    }).catch(function () {});
                 });
             });
 
@@ -126,8 +153,10 @@
                 document.addEventListener("DOMContentLoaded", _doHighlight);
             else _doHighlight();
 
+            // Process pre-rendered code blocks to add interactivity
             document.addEventListener("DOMContentLoaded", function () {
                 document.querySelectorAll("pre").forEach(function (pre) {
+                    // Only process pre elements that have our structure
                     const header = pre.querySelector(".code-header");
                     if (!header) return;
 

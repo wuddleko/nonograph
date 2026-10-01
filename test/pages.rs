@@ -1,6 +1,36 @@
 use super::*;
 use std::collections::HashMap;
 
+fn note_identifier(note: &crate::nostr::SignedNote) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    parsed["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tag| tag[0] == "d")
+        .and_then(|tag| tag[1].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn fetched_from(
+    note: &crate::nostr::SignedNote,
+    title: &str,
+    author: &str,
+    content: &str,
+    created_at: i64,
+) -> crate::nostr::FetchedNote {
+    crate::nostr::FetchedNote {
+        id_hex: note.id_hex(),
+        title: title.to_string(),
+        author: author.to_string(),
+        content: content.to_string(),
+        created_at,
+        pubkey: note.pubkey,
+        identifier: note_identifier(note),
+    }
+}
+
 #[test]
 fn static_assets_are_cacheable_and_html_is_not() {
     for path in [
@@ -281,6 +311,7 @@ fn leftover_wrap_with_a_file_is_the_same_post() {
         content: "<p>still here</p>".to_string(),
         raw_content: "still here".to_string(),
         created_at: chrono::Utc::now(),
+        nostr_id: None,
     });
     crate::save::save_post_to_file_in_dir(&post, base).unwrap();
 
@@ -463,22 +494,33 @@ fn public_fetch_slots_run_out() {
 fn public_note_becomes_the_same_kind_of_page_as_a_file() {
     let storage = crate::cache::PostCache::shared(1);
     let config = crate::config::Config::default();
-    let id = "ab".repeat(32);
-    let fetched = crate::nostr::FetchedNote {
-        id_hex: id.clone(),
-        title: "<b>Hello</b>".to_string(),
-        author: "<em>Ada</em>".to_string(),
-        content: "**hi**".to_string(),
-        created_at: 1_700_000_000,
-    };
-    let post = post_from_public_note(fetched, &storage, &config, &id).unwrap();
-    assert_eq!(post.id, id);
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let id = note.id_hex();
+    let nevent =
+        crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    let fetched = fetched_from(
+        &note,
+        "<b>Hello</b>",
+        "<em>Ada</em>",
+        "**hi**",
+        1_700_000_000,
+    );
+    let post = post_from_public_note(fetched, &storage, &config, &id, &nevent, base).unwrap();
+    assert_ne!(post.id, id);
+    assert!(post.id.contains("hello"));
+    assert_eq!(post.nostr_id.as_deref(), Some(nevent.as_str()));
     assert_eq!(post.title, "Hello");
     assert_eq!(post.author, "Ada");
     assert_eq!(post.raw_content, "**hi**");
     assert!(post.content.contains("<strong>hi</strong>"));
     assert!(storage.read().unwrap().contains_key(&id));
+    assert!(storage.read().unwrap().contains_key(&post.id));
+    assert!(crate::save::post_file_exists_in_dir(&post.id, base));
+    assert!(crate::save::post_file_exists_in_dir(&id, base));
     assert!(!post.id.contains("nsec"));
+    assert!(!post.id.contains("nevent"));
 }
 
 #[test]
@@ -486,6 +528,8 @@ fn public_note_that_is_too_long_is_not_a_page() {
     let storage = crate::cache::PostCache::shared(1);
     let mut config = crate::config::Config::default();
     config.limits.content_max_length = 4;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
     let id = "ab".repeat(32);
     let fetched = crate::nostr::FetchedNote {
         id_hex: id.clone(),
@@ -493,8 +537,9 @@ fn public_note_that_is_too_long_is_not_a_page() {
         author: String::new(),
         content: "hello".to_string(),
         created_at: 1_700_000_000,
+        ..crate::nostr::FetchedNote::default()
     };
-    assert!(post_from_public_note(fetched, &storage, &config, &id).is_none());
+    assert!(post_from_public_note(fetched, &storage, &config, &id, "nevent1qq", base).is_none());
 }
 
 #[test]
@@ -503,6 +548,8 @@ fn public_note_with_a_long_title_or_author_is_not_a_page() {
     let mut config = crate::config::Config::default();
     config.limits.title_max_length = 4;
     config.limits.alias_max_length = 3;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
     let id = "ab".repeat(32);
     let long_title = crate::nostr::FetchedNote {
         id_hex: id.clone(),
@@ -510,8 +557,9 @@ fn public_note_with_a_long_title_or_author_is_not_a_page() {
         author: "Ada".to_string(),
         content: "hi".to_string(),
         created_at: 1_700_000_000,
+        ..crate::nostr::FetchedNote::default()
     };
-    assert!(post_from_public_note(long_title, &storage, &config, &id).is_none());
+    assert!(post_from_public_note(long_title, &storage, &config, &id, "nevent1qq", base).is_none());
     config.limits.title_max_length = 128;
     let long_author = crate::nostr::FetchedNote {
         id_hex: id.clone(),
@@ -519,8 +567,11 @@ fn public_note_with_a_long_title_or_author_is_not_a_page() {
         author: "Ada Lovelace".to_string(),
         content: "hi".to_string(),
         created_at: 1_700_000_000,
+        ..crate::nostr::FetchedNote::default()
     };
-    assert!(post_from_public_note(long_author, &storage, &config, &id).is_none());
+    assert!(
+        post_from_public_note(long_author, &storage, &config, &id, "nevent1qq", base).is_none()
+    );
 }
 
 #[test]
@@ -552,6 +603,7 @@ fn view_path_fetches_public_notes_and_does_not_decrypt() {
         content: "<p>still here</p>".to_string(),
         raw_content: "still here".to_string(),
         created_at: chrono::Utc::now(),
+        nostr_id: None,
     });
     crate::save::save_post_to_file_in_dir(&post, base).unwrap();
     let opened = leftover_wrap_post_in_dir(
@@ -597,17 +649,19 @@ fn view_path_fetches_naddr_like_nevent() {
 
     let storage = crate::cache::PostCache::shared(1);
     let config = crate::config::Config::default();
-    let fetched = crate::nostr::FetchedNote {
-        id_hex: note.id_hex(),
-        title: "Hello".to_string(),
-        author: "Ada".to_string(),
-        content: "**hi**".to_string(),
-        created_at: 1_700_000_000,
-    };
-    let post = post_from_public_note(fetched, &storage, &config, &cache_id).unwrap();
-    assert_eq!(post.id, note.id_hex());
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    let fetched = fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000);
+    let post =
+        post_from_public_note(fetched, &storage, &config, &cache_id, &encoded, base).unwrap();
+    assert_ne!(post.id, note.id_hex());
+    assert_ne!(post.id, cache_id);
+    assert_eq!(post.nostr_id.as_deref(), Some(encoded.as_str()));
     assert!(storage.read().unwrap().contains_key(&cache_id));
-    assert!(!storage.read().unwrap().contains_key(&note.id_hex()));
+    assert!(storage.read().unwrap().contains_key(&post.id));
+    assert!(storage.read().unwrap().contains_key(&note.id_hex()));
+    assert!(crate::save::post_file_exists_in_dir(&note.id_hex(), base));
+    assert!(crate::save::post_file_exists_in_dir(&cache_id, base));
 
     let pages = include_str!("../src/pages.rs");
     assert!(pages.contains("fetch_public_addr"));
@@ -652,4 +706,221 @@ fn create_redirects_to_a_local_id_with_no_nsec() {
     assert!(!href.contains("nevent"));
     assert!(!href.contains('?'));
     assert!(href.contains("hello-world"));
+}
+
+#[test]
+fn public_note_keeps_the_same_short_id() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let id = note.id_hex();
+    let nevent =
+        crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    let fetched = || fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000);
+    let first = post_from_public_note(fetched(), &storage, &config, &id, &nevent, base).unwrap();
+    let fresh = crate::cache::PostCache::shared(1);
+    let second = post_from_public_note(fetched(), &fresh, &config, &id, &nevent, base).unwrap();
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.nostr_id, first.nostr_id);
+
+    let by_short = load_post_from_disk(&first.id, &fresh, &config, base).unwrap();
+    assert_eq!(by_short.id, first.id);
+    assert_eq!(by_short.nostr_id.as_deref(), Some(nevent.as_str()));
+}
+
+#[test]
+fn public_note_footer_prints_the_nostr_id() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let id = note.id_hex();
+    let nevent =
+        crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    let fetched = fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000);
+    let post = post_from_public_note(fetched, &storage, &config, &id, &nevent, base).unwrap();
+    let html = article_html(&post, true, &post.id).unwrap();
+    assert!(html.contains(&format!("href=\"/{nevent}\"")));
+    assert!(html.contains(&nevent));
+    assert!(html.contains("class=\"nostr-id\""));
+    assert!(html.contains(&format!("content=\"/{nevent}\"")));
+
+    let local = crate::Post {
+        id: "hello-local".to_string(),
+        title: "Hello".to_string(),
+        author: "Ada".to_string(),
+        content: "<p>hi</p>".to_string(),
+        raw_content: "hi".to_string(),
+        created_at: chrono::Utc::now(),
+        nostr_id: None,
+    };
+    let local_html = article_html(&local, true, &local.id).unwrap();
+    assert!(!local_html.contains("nevent1"));
+    assert!(!local_html.contains("class=\"nostr-id\""));
+    assert!(local_html.contains("content=\"/hello-local\""));
+}
+
+#[test]
+fn nostr_id_is_copied_from_the_footer() {
+    let source = include_str!("../templates/post.js");
+    assert!(source.contains("a.nostr-id"));
+    assert!(source.contains("clipboard.writeText(label)"));
+    assert!(source.contains("link.textContent"));
+    assert!(source.contains(".catch("));
+    assert!(!source.contains("location.assign"));
+    assert!(source.contains("metaKey"));
+    assert!(source.contains("ctrlKey"));
+    assert!(source.contains("copied"));
+    let html = include_str!("../templates/post.html");
+    assert!(html.contains("{{nostr_link}}"));
+}
+
+fn public_note_fixture() -> (tempfile::TempDir, String, String, crate::nostr::FetchedNote) {
+    let dir = tempfile::tempdir().unwrap();
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let id = note.id_hex();
+    let fetched = fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000);
+    let nevent =
+        crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+    (dir, id, nevent, fetched)
+}
+
+#[test]
+fn public_note_raw_markdown_follows_the_alias() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let (dir, id, nevent, fetched) = public_note_fixture();
+    let base = dir.path().to_str().unwrap();
+    let post = post_from_public_note(fetched, &storage, &config, &id, &nevent, base).unwrap();
+    let by_short = crate::save::read_post_file_in_dir(&post.id, base).unwrap();
+    let by_event = crate::save::read_post_file_in_dir(&id, base).unwrap();
+    assert_eq!(by_short, by_event);
+    assert!(by_event.contains("**hi**"));
+    assert!(by_event.contains(&format!("nostr: {nevent}")));
+    assert!(!by_event.contains("alias:"));
+}
+
+#[test]
+fn public_note_replaces_a_dangling_alias() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let (dir, id, nevent, fetched) = public_note_fixture();
+    let base = dir.path().to_str().unwrap();
+    let first = post_from_public_note(fetched, &storage, &config, &id, &nevent, base).unwrap();
+    assert!(crate::save::remove_post_file_in_dir(&first.id, base));
+    assert!(!crate::save::post_file_is_live_in_dir(&id, base));
+
+    let fetched = crate::nostr::FetchedNote {
+        id_hex: id.clone(),
+        title: "Hello".to_string(),
+        author: "Ada".to_string(),
+        content: "**hi**".to_string(),
+        created_at: 1_700_000_000,
+        ..crate::nostr::FetchedNote::default()
+    };
+    let fresh = crate::cache::PostCache::shared(1);
+    let second = post_from_public_note(fetched, &fresh, &config, &id, &nevent, base).unwrap();
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.nostr_id.as_deref(), Some(nevent.as_str()));
+    assert!(crate::save::post_file_is_live_in_dir(&id, base));
+    assert!(crate::save::post_file_exists_in_dir(&second.id, base));
+    let by_event = crate::save::read_post_file_in_dir(&id, base).unwrap();
+    assert!(by_event.contains("**hi**"));
+}
+
+#[test]
+fn public_note_upgrades_a_hex_file_to_a_short_link() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let (dir, id, nevent, fetched) = public_note_fixture();
+    let base = dir.path().to_str().unwrap();
+    let leftover = crate::Post {
+        id: id.clone(),
+        title: "Hello".to_string(),
+        author: "Ada".to_string(),
+        content: "<p>old</p>".to_string(),
+        raw_content: "old body".to_string(),
+        created_at: chrono::Utc::now(),
+        nostr_id: None,
+    };
+    crate::save::save_post_to_file_in_dir(&leftover, base).unwrap();
+
+    let post = post_from_public_note(fetched, &storage, &config, &id, &nevent, base).unwrap();
+    assert_ne!(post.id, id);
+    assert_eq!(post.nostr_id.as_deref(), Some(nevent.as_str()));
+    assert_eq!(post.raw_content, "old body");
+    let pointer =
+        std::fs::read_to_string(dir.path().join("content").join(format!("{id}.md"))).unwrap();
+    assert!(pointer.contains(&format!("alias: {}", post.id)));
+    assert!(!pointer.contains("old body"));
+    let short = crate::save::read_post_file_in_dir(&post.id, base).unwrap();
+    assert!(short.contains("old body"));
+    assert!(short.contains(&format!("nostr: {nevent}")));
+    let html = article_html(&post, true, &post.id).unwrap();
+    assert!(html.contains(&format!("href=\"/{nevent}\"")));
+}
+
+#[test]
+fn public_note_shares_a_short_id_for_nevent_and_naddr() {
+    let storage = crate::cache::PostCache::shared(1);
+    let config = crate::config::Config::default();
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
+    let note = crate::nostr::sign_note("Hello", "Ada", "**hi**", 1_700_000_000);
+    let hex = note.id_hex();
+    let naddr = crate::nostr::encode_naddr(
+        &note_identifier(&note),
+        &[],
+        &note.pubkey,
+        crate::nostr::KIND_LONG_FORM,
+    );
+    let naddr_id = crate::nostr::naddr_cache_id(&crate::nostr::decode_naddr(&naddr).unwrap());
+    let nevent =
+        crate::nostr::encode_nevent(&note.id, &[], &note.pubkey, crate::nostr::KIND_LONG_FORM);
+
+    let via_naddr = post_from_public_note(
+        fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000),
+        &storage,
+        &config,
+        &naddr_id,
+        &naddr,
+        base,
+    )
+    .unwrap();
+    let via_nevent = post_from_public_note(
+        fetched_from(&note, "Hello", "Ada", "**hi**", 1_700_000_000),
+        &crate::cache::PostCache::shared(1),
+        &config,
+        &hex,
+        &nevent,
+        base,
+    )
+    .unwrap();
+    assert_eq!(via_nevent.id, via_naddr.id);
+    assert_eq!(
+        crate::save::alias_target_in_dir(&hex, base).as_deref(),
+        Some(via_naddr.id.as_str())
+    );
+    assert_eq!(
+        crate::save::alias_target_in_dir(&naddr_id, base).as_deref(),
+        Some(via_naddr.id.as_str())
+    );
+    let shorts: Vec<_> = std::fs::read_dir(dir.path().join("content"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".md")?;
+            if stem == hex || stem == naddr_id {
+                None
+            } else {
+                Some(stem.to_string())
+            }
+        })
+        .collect();
+    assert_eq!(shorts.len(), 1);
+    assert_eq!(shorts[0], via_naddr.id);
 }

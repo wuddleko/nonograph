@@ -137,14 +137,16 @@ const MAX_POST_ID_LEN: usize = 255;
 /// Returns `true` if `id` is a well-formed post identifier.
 ///
 /// A valid identifier is a non-empty, length-bounded slug composed only of
-/// ASCII letters, digits, hyphens, and underscores. Event ids, older
-/// slug-date links, static pages, and Telegraph slugs all fit.
+/// ASCII letters, digits, hyphens, and underscores. Every identifier the
+/// application produces satisfies this: [`generate_post_id`] emits
+/// `[a-z0-9-]`, the static pages are lowercase words, and the Telegraph
+/// archiver yields `[A-Za-z0-9_-]` slugs.
 ///
 /// This is the trust boundary for untrusted path input. Because `.`, `/`, and
 /// `\` are all rejected, a value that passes this check cannot express a
 /// path-traversal sequence such as `../`, so it can be safely interpolated
 /// into a `content/{id}.md` path.
-fn is_valid_post_id(id: &str) -> bool {
+pub(crate) fn is_valid_post_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_POST_ID_LEN
         && id
@@ -152,8 +154,16 @@ fn is_valid_post_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// 16 random bytes, hex-encoded. Sits between the slug and the date so the
-/// address cannot be rebuilt from the title.
+pub(crate) fn is_nostr_identifier(id: &str) -> bool {
+    let rest = id
+        .strip_prefix("nevent1")
+        .or_else(|| id.strip_prefix("naddr1"));
+    let Some(rest) = rest else {
+        return false;
+    };
+    !rest.is_empty() && id.len() <= 8192 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 pub(crate) fn generate_unguessable_segment() -> String {
     let mut rng = thread_rng();
     (0..16)
@@ -170,7 +180,8 @@ fn assemble_post_id(slug: &str, random: &str, date: &str, index: usize) -> Strin
 }
 
 fn id_is_taken(storage: &PostStorage, post_id: &str, base_dir: &str) -> bool {
-    storage.read().unwrap().contains_key(post_id) || save::post_file_exists_in_dir(post_id, base_dir)
+    storage.read().unwrap().contains_key(post_id)
+        || save::post_file_exists_in_dir(post_id, base_dir)
 }
 
 pub(crate) fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
@@ -227,9 +238,8 @@ fn generate_post_id_with_segment_in_dir(
         .collect::<Vec<&str>>()
         .join("-");
 
-    // Apply character limit with truncation if needed.
-    // "-{32 hex}" is 33 characters, then "-{date}".
-    let max_slug_length = 250 - date_str.len() - 1 - 33;
+    // Apply character limit with truncation if needed
+    let max_slug_length = 250 - date_str.len() - 1 - 33; // Reserve space for "-{date}"
     let final_slug = if title_slug.len() > max_slug_length {
         let truncate_to = max_slug_length.saturating_sub(4); // Reserve space for "-etc"
         if truncate_to > 0 {
@@ -269,6 +279,7 @@ fn generate_post_id_with_segment_in_dir(
         );
     }
 
+    // Try to find an available slot (0-999)
     for i in 0..1000 {
         let post_id = assemble_post_id(&final_slug, random, &date_str, i);
 
@@ -288,13 +299,29 @@ fn render_options(config: &Config) -> parser::RenderOptions {
     }
 }
 
-fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
-    let after_open = file_content.strip_prefix("---\n")?;
+pub(crate) fn parse_frontmatter(
+    file_content: &str,
+) -> Option<(String, String, DateTime<Utc>, String)> {
+    if file_content.starts_with("---\n") {
+        parse_yaml_frontmatter(file_content)
+    } else {
+        parse_legacy_frontmatter(file_content)
+    }
+}
 
+fn yaml_frontmatter_block(file_content: &str) -> Option<(&str, &str)> {
+    let after_open = file_content.strip_prefix("---\n")?;
     let closing_pos = after_open.find("\n---\n")?;
-    let frontmatter_block = &after_open[..closing_pos];
-    let after_closing = &after_open[(closing_pos + 5)..]; // skip "\n---\n"
-    let raw_content = after_closing.strip_prefix('\n').unwrap_or(after_closing);
+    let block = &after_open[..closing_pos];
+    let after_closing = &after_open[closing_pos + 5..];
+    Some((
+        block,
+        after_closing.strip_prefix('\n').unwrap_or(after_closing),
+    ))
+}
+
+fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
+    let (frontmatter_block, raw_content) = yaml_frontmatter_block(file_content)?;
 
     let mut title = String::from("Untitled");
     let mut author = String::new();
@@ -321,6 +348,19 @@ fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTim
         .unwrap_or_else(|| Utc::now());
 
     Some((title, author, created_at, raw_content.to_string()))
+}
+
+pub(crate) fn yaml_frontmatter_field(file_content: &str, key: &str) -> Option<String> {
+    let (frontmatter_block, _) = yaml_frontmatter_block(file_content)?;
+    for line in frontmatter_block.lines() {
+        if let Some(value) = line.trim().strip_prefix(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {

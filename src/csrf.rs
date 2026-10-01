@@ -34,6 +34,7 @@ pub fn is_valid_csrf_token(token: &str) -> bool {
         return false;
     }
 
+    // Split token into data and hash parts
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 2 {
         return false;
@@ -42,16 +43,19 @@ pub fn is_valid_csrf_token(token: &str) -> bool {
     let data = parts[0];
     let provided_hash = parts[1];
 
+    // Recreate hash from data
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     data.hash(&mut hasher);
     let expected_hash = format!("{:x}", hasher.finish());
 
+    // Verify hash matches
     if provided_hash != expected_hash {
         return false;
     }
 
+    // Check timestamp (token expires after 1 hour)
     let data_parts: Vec<&str> = data.split(':').collect();
     if data_parts.len() != 2 {
         return false;

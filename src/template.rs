@@ -36,9 +36,9 @@ impl TemplateEngine {
     ) -> Result<String, String> {
         let template_content = self.template(template_name)?;
 
-        // One pass, so a value that itself contains `{{key}}` is left literal.
-        // A second pass would rewrite tokens inside post HTML and raw markdown.
+        // Replace all {{variable}} patterns with values from context
         let (result, unreplaced) = substitute_placeholders(&template_content, context);
+        // Check for any remaining unreplaced variables and warn
         if unreplaced {
             eprintln!(
                 "Nonograph: Warning: Template {} contains unreplaced variables",
@@ -92,7 +92,7 @@ fn substitute_placeholders(template: &str, context: &HashMap<String, String>) ->
 fn placeholder_value(key: &str, value: &str) -> String {
     if matches!(
         key,
-        "content" | "scripts" | "content_field" | "fallback_css"
+        "content" | "scripts" | "content_field" | "fallback_css" | "nostr_link"
     ) {
         value.to_string()
     } else {
