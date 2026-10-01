@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -13,9 +13,10 @@ use secp256k1::{Keypair, Message, XOnlyPublicKey, SECP256K1};
 use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
-const KIND_LONG_FORM: u32 = 30023;
+pub const KIND_LONG_FORM: u32 = 30023;
 const KIND_SEAL: u32 = 13;
 pub const KIND_GIFT_WRAP: u32 = 1059;
+pub(crate) const MAX_FETCH_RELAYS: usize = 6;
 const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
@@ -27,6 +28,7 @@ pub struct SignedNote {
 pub struct Nevent {
     pub event_id_hex: String,
     pub relays: Vec<String>,
+    pub kind: Option<u32>,
 }
 
 pub struct FetchedNote {
@@ -203,6 +205,7 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
     let data = parsed.byte_iter().collect::<Vec<u8>>();
     let mut event_id = None;
     let mut relays = Vec::new();
+    let mut kind = None;
     let mut index = 0;
     while index + 2 <= data.len() {
         let tag = data[index];
@@ -216,6 +219,9 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
         match tag {
             0 if bytes.len() == 32 => event_id = Some(hex_encode(bytes)),
             1 => relays.push(String::from_utf8(bytes.to_vec()).ok()?),
+            3 if bytes.len() == 4 => {
+                kind = Some(u32::from_be_bytes(bytes.try_into().ok()?));
+            }
             _ => {}
         }
     }
@@ -225,6 +231,7 @@ pub fn decode_nevent(value: &str) -> Option<Nevent> {
     Some(Nevent {
         event_id_hex: event_id?,
         relays,
+        kind,
     })
 }
 
@@ -661,6 +668,7 @@ fn connect_relay(
     relay: &str,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
+    public_only: bool,
 ) -> Result<RelaySocket, String> {
     let request = relay
         .into_client_request()
@@ -669,6 +677,11 @@ fn connect_relay(
     let host = uri.host().ok_or("relay url has no host")?.to_string();
     let port = uri.port_u16().unwrap_or(443);
     let addresses = resolve_host(&host, port, deadline, cancel)?;
+    let addresses = if public_only {
+        public_relay_addresses(addresses)?
+    } else {
+        addresses
+    };
     let connector = tls_connector()?;
     let mut last_error = "relay address did not resolve".to_string();
     for address in addresses {
@@ -733,7 +746,7 @@ fn send_event(
     event_id_hex: &str,
     deadline: Instant,
 ) -> Result<(), String> {
-    let mut socket = connect_relay(relay, deadline, None)?;
+    let mut socket = connect_relay(relay, deadline, None, false)?;
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(socket.get_ref().get_ref(), wait_budget(deadline, None)?)?;
     socket
@@ -764,12 +777,42 @@ pub fn fetch_note(
     timeout: Duration,
     recipient_secret: Option<[u8; 32]>,
 ) -> Option<FetchedNote> {
+    fetch_from_relays(relays, event_id_hex, timeout, recipient_secret, false)
+}
+
+pub fn fetch_public_note(
+    relays: &[String],
+    event_id_hex: &str,
+    timeout: Duration,
+) -> Option<FetchedNote> {
+    fetch_from_relays(relays, event_id_hex, timeout, None, true)
+}
+
+fn fetch_from_relays(
+    relays: &[String],
+    event_id_hex: &str,
+    timeout: Duration,
+    recipient_secret: Option<[u8; 32]>,
+    public_only: bool,
+) -> Option<FetchedNote> {
     if decode_fixed_hex::<32>(event_id_hex).is_none() {
         return None;
     }
+    let limit = if public_only {
+        MAX_FETCH_RELAYS
+    } else {
+        usize::MAX
+    };
     let relays: Vec<String> = relays
         .iter()
-        .filter(|relay| valid_relay_url(relay))
+        .filter(|relay| {
+            if public_only {
+                public_relay_url(relay)
+            } else {
+                valid_relay_url(relay)
+            }
+        })
+        .take(limit)
         .cloned()
         .collect();
     if relays.is_empty() {
@@ -791,6 +834,7 @@ pub fn fetch_note(
                 deadline,
                 &cancel,
                 recipient_secret,
+                public_only,
             ) {
                 Ok(note) => note,
                 Err(error) => {
@@ -837,8 +881,9 @@ fn fetch_from_relay(
     deadline: Instant,
     cancel: &AtomicBool,
     recipient_secret: Option<[u8; 32]>,
+    public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
-    let mut socket = connect_relay(relay, deadline, Some(cancel))?;
+    let mut socket = connect_relay(relay, deadline, Some(cancel), public_only)?;
     let sub_id = random_hex(8);
     let payload = format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#);
     arm_stream(
@@ -978,6 +1023,94 @@ fn valid_relay_url(relay: &str) -> bool {
         && relay.is_ascii()
         && relay.len() <= 255
         && !relay.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+pub(crate) fn public_relay_url(relay: &str) -> bool {
+    if !valid_relay_url(relay) {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(relay) else {
+        return false;
+    };
+    if url.scheme() != "wss" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    if url.port_or_known_default() != Some(443) {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let host = domain.trim_end_matches('.').to_ascii_lowercase();
+            if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
+                return false;
+            }
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                return !blocked_relay_ip(ip);
+            }
+            true
+        }
+        Some(url::Host::Ipv4(v4)) => !blocked_relay_ip(IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => !blocked_relay_ip(IpAddr::V6(v6)),
+        None => false,
+    }
+}
+
+fn blocked_relay_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => blocked_relay_ipv4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return blocked_relay_ipv4(v4);
+            }
+            if let Some(v4) = v6.to_ipv4() {
+                return blocked_relay_ipv4(v4);
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+                || nat64_prefix(v6)
+        }
+    }
+}
+
+fn blocked_relay_ipv4(v4: Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || v4.octets()[0] == 0
+        || carrier_grade_nat(v4)
+}
+
+fn carrier_grade_nat(v4: Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn nat64_prefix(v6: Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    segments[0] == 0x64
+        && segments[1] == 0xff9b
+        && segments[2] == 0
+        && segments[3] == 0
+        && segments[4] == 0
+        && segments[5] == 0
+}
+
+fn public_relay_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
+    let public: Vec<SocketAddr> = addresses
+        .into_iter()
+        .filter(|address| address.port() == 443 && !blocked_relay_ip(address.ip()))
+        .collect();
+    if public.is_empty() {
+        Err("relay address is not public".to_string())
+    } else {
+        Ok(public)
+    }
 }
 
 fn push_tlv(out: &mut Vec<u8>, tag: u8, value: &[u8]) {

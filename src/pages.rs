@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use rocket::http::{ContentType, Status};
 use rocket::response::content;
 use rocket::State;
@@ -520,7 +523,7 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
 }
 
 #[get("/<post_id>")]
-pub fn view_post(
+pub async fn view_post(
     post_id: &str,
     storage: &State<PostStorage>,
     config: &State<Config>,
@@ -531,11 +534,11 @@ pub fn view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, storage, config, false)
+    render_post(post_id, storage, config, false).await
 }
 
 #[get("/nojs/<post_id>")]
-pub fn nojs_view_post(
+pub async fn nojs_view_post(
     post_id: &str,
     storage: &State<PostStorage>,
     config: &State<Config>,
@@ -546,7 +549,7 @@ pub fn nojs_view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, storage, config, true)
+    render_post(post_id, storage, config, true).await
 }
 
 /// Old wrap links (`nevent1…`) still name the markdown file by event id.
@@ -569,7 +572,165 @@ pub(crate) fn leftover_wrap_post_in_dir(
     load_post_from_disk_if_present(&file_id, storage, config, base_dir)
 }
 
-fn render_post(
+fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
+    if relays.len() == crate::nostr::MAX_FETCH_RELAYS {
+        return;
+    }
+    if !crate::nostr::public_relay_url(relay) {
+        return;
+    }
+    if relays.iter().any(|have| have == relay) {
+        return;
+    }
+    relays.push(relay.to_string());
+}
+
+pub(crate) fn relays_for_public_fetch(
+    nevent: &crate::nostr::Nevent,
+    fallback: &[String],
+) -> Vec<String> {
+    let mut relays = Vec::new();
+    let keep_one_for_instance = fallback
+        .iter()
+        .any(|relay| crate::nostr::public_relay_url(relay));
+    let hint_limit = if keep_one_for_instance {
+        crate::nostr::MAX_FETCH_RELAYS.saturating_sub(1)
+    } else {
+        crate::nostr::MAX_FETCH_RELAYS
+    };
+    for relay in &nevent.relays {
+        if relays.len() == hint_limit {
+            break;
+        }
+        push_public_relay(&mut relays, relay);
+    }
+    for relay in fallback {
+        push_public_relay(&mut relays, relay);
+    }
+    relays
+}
+
+pub(crate) fn may_fetch_public_note(nevent: &crate::nostr::Nevent) -> bool {
+    match nevent.kind {
+        None | Some(crate::nostr::KIND_LONG_FORM) => true,
+        Some(_) => false,
+    }
+}
+
+pub(crate) fn post_from_public_note(
+    fetched: crate::nostr::FetchedNote,
+    storage: &PostStorage,
+    config: &Config,
+) -> Option<Arc<Post>> {
+    if fetched.content.len() > config.limits.content_max_length {
+        return None;
+    }
+    if !is_valid_post_id(&fetched.id_hex) {
+        return None;
+    }
+    let title = nonograph_parser::sanitize_text(&fetched.title);
+    let title = if title.is_empty() {
+        "Untitled".to_string()
+    } else {
+        title
+    };
+    let author = nonograph_parser::sanitize_text(&fetched.author);
+    if title.len() > config.limits.title_max_length {
+        return None;
+    }
+    if author.len() > config.limits.alias_max_length {
+        return None;
+    }
+    let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
+    let post = Arc::new(Post {
+        id: fetched.id_hex,
+        title,
+        author,
+        content: nonograph_parser::render_markdown_with_config(
+            &fetched.content,
+            &render_options(config),
+        ),
+        raw_content: fetched.content,
+        created_at,
+    });
+    storage
+        .write()
+        .unwrap()
+        .insert(post.id.clone(), Arc::clone(&post));
+    Some(post)
+}
+
+const MAX_PUBLIC_FETCHES: usize = 8;
+static PUBLIC_FETCHES: AtomicUsize = AtomicUsize::new(0);
+
+struct PublicFetchSlot;
+
+impl PublicFetchSlot {
+    fn acquire() -> Option<Self> {
+        if try_acquire_public_fetch(&PUBLIC_FETCHES, MAX_PUBLIC_FETCHES) {
+            Some(Self)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for PublicFetchSlot {
+    fn drop(&mut self) {
+        release_public_fetch(&PUBLIC_FETCHES);
+    }
+}
+
+fn try_acquire_public_fetch(counter: &AtomicUsize, max: usize) -> bool {
+    loop {
+        let current = counter.load(Ordering::Relaxed);
+        if current >= max {
+            return false;
+        }
+        if counter
+            .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+fn release_public_fetch(counter: &AtomicUsize) {
+    counter.fetch_sub(1, Ordering::Release);
+}
+
+struct PublicFetchBusy;
+
+async fn fetch_public_article(
+    nevent: &crate::nostr::Nevent,
+    storage: &PostStorage,
+    config: &Config,
+) -> Result<Option<Arc<Post>>, PublicFetchBusy> {
+    if !may_fetch_public_note(nevent) {
+        return Ok(None);
+    }
+    let relays = relays_for_public_fetch(nevent, &config.nostr.relays);
+    if relays.is_empty() {
+        return Ok(None);
+    }
+    let Some(_slot) = PublicFetchSlot::acquire() else {
+        return Err(PublicFetchBusy);
+    };
+    let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+    let event_id = nevent.event_id_hex.clone();
+    let fetched = match rocket::tokio::task::spawn_blocking(move || {
+        crate::nostr::fetch_public_note(&relays, &event_id, timeout)
+    })
+    .await
+    {
+        Ok(note) => note,
+        Err(_) => return Ok(None),
+    };
+    Ok(fetched.and_then(|note| post_from_public_note(note, storage, config)))
+}
+
+async fn render_post(
     post_id: &str,
     storage: &State<PostStorage>,
     config: &State<Config>,
@@ -581,7 +742,8 @@ fn render_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    let leftover_id = leftover_wrap_file_id(post_id);
+    let decoded = crate::nostr::decode_nevent(post_id);
+    let leftover_id = decoded.as_ref().map(|nevent| nevent.event_id_hex.clone());
     let is_raw_request = leftover_id.is_none() && post_id.ends_with(".md");
     let file_id = match &leftover_id {
         Some(id) => id.as_str(),
@@ -630,10 +792,25 @@ fn render_post(
         return serve_article(storage, file_id, &hit.post, nojs, public_id);
     }
 
-    let post = if leftover_id.is_some() {
+    let local = if leftover_id.is_some() {
         leftover_wrap_post_in_dir(post_id, storage, config, ".")
     } else {
         load_post_from_disk_if_present(file_id, storage, config, ".")
+    };
+    let post = match local {
+        Some(post) => Some(post),
+        None => match &decoded {
+            Some(nevent) => match fetch_public_article(nevent, storage, config).await {
+                Ok(post) => post,
+                Err(PublicFetchBusy) => {
+                    return Err((
+                        Status::ServiceUnavailable,
+                        rocket::Either::Left(content::RawText("Service unavailable".to_string())),
+                    ));
+                }
+            },
+            None => None,
+        },
     };
 
     match post {

@@ -1,5 +1,6 @@
 use super::*;
 use secp256k1::{Secp256k1, XOnlyPublicKey};
+use std::net::SocketAddr;
 
 #[test]
 fn test_npub_bech32_matches_nip19() {
@@ -130,6 +131,7 @@ fn test_nevent_round_trip_carries_id_and_relays() {
     let decoded = decode_nevent(&nevent).unwrap();
     assert_eq!(decoded.event_id_hex, hex_encode(&note.id));
     assert_eq!(decoded.relays, relays);
+    assert_eq!(decoded.kind, Some(KIND_LONG_FORM));
     assert!(decode_nevent("about").is_none());
     assert!(decode_nevent("nevent1qqqq").is_none());
 
@@ -137,6 +139,7 @@ fn test_nevent_round_trip_carries_id_and_relays() {
     let wrap_nevent = encode_nevent(&wrapped.id, &relays, &wrapped.pubkey, KIND_GIFT_WRAP);
     let decoded_wrap = decode_nevent(&wrap_nevent).unwrap();
     assert_eq!(decoded_wrap.event_id_hex, wrapped.id_hex());
+    assert_eq!(decoded_wrap.kind, Some(KIND_GIFT_WRAP));
     let nsec = encode_nsec(&wrapped.recipient_secret);
     assert_eq!(decode_nsec(&nsec), Some(wrapped.recipient_secret));
     assert!(decode_nsec("nsec1qqqq").is_none());
@@ -235,6 +238,19 @@ fn test_fetch_note_skips_relays_it_cannot_ask() {
         None
     )
     .is_none());
+    assert!(fetch_public_note(&[], &id, Duration::from_millis(20)).is_none());
+    assert!(fetch_public_note(
+        &["wss://127.0.0.1".to_string(), "wss://localhost".to_string()],
+        &id,
+        Duration::from_millis(20)
+    )
+    .is_none());
+    assert!(fetch_public_note(
+        &["wss://relay.example:22".to_string()],
+        &id,
+        Duration::from_millis(20)
+    )
+    .is_none());
 }
 
 #[test]
@@ -313,7 +329,7 @@ fn wrap_custom_rumor(tags: &[Vec<String>], content: &str, created_at: i64) -> Wr
 #[test]
 fn a_relay_does_not_connect_after_its_deadline() {
     let started = Instant::now();
-    let error = connect_relay("wss://127.0.0.1:9", Instant::now(), None).unwrap_err();
+    let error = connect_relay("wss://127.0.0.1:9", Instant::now(), None, false).unwrap_err();
     assert_eq!(error, RELAY_TIMEOUT);
     assert!(started.elapsed() < Duration::from_millis(50));
 }
@@ -433,6 +449,7 @@ fn cancel_stops_a_relay_before_the_deadline() {
             &format!("wss://127.0.0.1:{port}"),
             Instant::now() + Duration::from_secs(5),
             Some(&flag),
+            false,
         )
     });
     accepted_rx
@@ -487,6 +504,53 @@ fn the_system_resolver_answers_localhost() {
     .unwrap();
     assert!(addresses.iter().any(|address| address.ip().is_loopback()));
     assert!(addresses.iter().all(|address| address.port() == 9));
+}
+
+#[test]
+fn public_relay_urls_reject_loopback_and_private_hosts() {
+    assert!(public_relay_url("wss://relay.damus.io"));
+    assert!(public_relay_url("wss://nos.lol/"));
+    assert!(public_relay_url("wss://relay.damus.io:443"));
+    assert!(!public_relay_url("ws://relay.damus.io"));
+    assert!(!public_relay_url("https://relay.damus.io"));
+    assert!(!public_relay_url("wss://localhost"));
+    assert!(!public_relay_url("wss://127.0.0.1"));
+    assert!(!public_relay_url("wss://10.0.0.1"));
+    assert!(!public_relay_url("wss://192.168.1.1"));
+    assert!(!public_relay_url("wss://169.254.169.254"));
+    assert!(!public_relay_url("wss://100.64.0.1"));
+    assert!(!public_relay_url("wss://224.0.0.1"));
+    assert!(!public_relay_url("wss://[::1]"));
+    assert!(!public_relay_url("wss://[::ffff:127.0.0.1]"));
+    assert!(!public_relay_url("wss://[64:ff9b::a00:1]"));
+    assert!(!public_relay_url("wss://[ff02::1]"));
+    assert!(!public_relay_url("wss://user:pass@relay.damus.io"));
+    assert!(!public_relay_url("wss://relay.damus.io:4444"));
+}
+
+#[test]
+fn loopback_is_not_a_public_relay_address() {
+    let loopback = SocketAddr::from(([127, 0, 0, 1], 443));
+    assert_eq!(
+        public_relay_addresses(vec![loopback]).unwrap_err(),
+        "relay address is not public"
+    );
+    let public = SocketAddr::from(([1, 1, 1, 1], 443));
+    assert_eq!(
+        public_relay_addresses(vec![public, loopback]).unwrap(),
+        vec![public]
+    );
+    let cgnat = SocketAddr::from(([100, 64, 0, 1], 443));
+    let multicast = SocketAddr::from(([224, 0, 0, 1], 443));
+    let wrong_port = SocketAddr::from(([1, 1, 1, 1], 80));
+    let nat64 = SocketAddr::from((
+        std::net::Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0x0a00, 1),
+        443,
+    ));
+    assert_eq!(
+        public_relay_addresses(vec![cgnat, multicast, wrong_port, nat64]).unwrap_err(),
+        "relay address is not public"
+    );
 }
 
 fn assert_signature(note: &SignedNote) {
