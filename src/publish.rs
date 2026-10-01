@@ -30,6 +30,20 @@ pub(crate) fn publish_failure_redirect(
     rocket::response::Redirect::to(url)
 }
 
+/// Path for a post we just saved. Never a query string, never `nsec`.
+pub(crate) fn published_href(nojs: bool, post_id: &str) -> String {
+    let id = post_id
+        .split(['?', '&', '#'])
+        .next()
+        .unwrap_or(post_id)
+        .trim_start_matches('/');
+    if nojs {
+        format!("/nojs/{id}")
+    } else {
+        format!("/{id}")
+    }
+}
+
 pub(crate) fn publish_note(
     storage: &PostStorage,
     title: &str,

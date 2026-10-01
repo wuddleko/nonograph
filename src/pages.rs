@@ -332,10 +332,7 @@ async fn handle_create(
         )),
     };
     match published {
-        Ok(post_id) => {
-            let prefix = if nojs { "/nojs" } else { "" };
-            rocket::response::Redirect::to(format!("{prefix}/{post_id}"))
-        }
+        Ok(post_id) => rocket::response::Redirect::to(publish::published_href(nojs, &post_id)),
         Err(failure) => publish_failure_redirect(nojs, failure),
     }
 }

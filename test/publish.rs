@@ -32,3 +32,31 @@ fn publish_does_not_need_relays() {
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
     assert!(!id.is_empty());
 }
+
+#[test]
+fn published_href_is_the_id_with_no_secret() {
+    let id = "hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026";
+    let href = published_href(false, id);
+    let nojs = published_href(true, id);
+
+    assert_eq!(href, format!("/{id}"));
+    assert_eq!(nojs, format!("/nojs/{id}"));
+    assert!(!href.contains('?'));
+    assert!(!nojs.contains('?'));
+    assert!(!href.contains("nsec"));
+    assert!(!nojs.contains("nsec"));
+}
+
+#[test]
+fn published_href_drops_a_query_including_nsec() {
+    let href = published_href(
+        false,
+        "hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026?nsec=nsec1secret",
+    );
+    assert_eq!(
+        href,
+        "/hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026"
+    );
+    assert!(!href.contains("nsec"));
+    assert!(!href.contains('?'));
+}
