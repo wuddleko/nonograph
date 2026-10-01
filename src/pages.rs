@@ -11,8 +11,8 @@ use crate::csrf::{self, CsrfProtected};
 use crate::publish::{self, publish_failure_redirect, publish_note};
 use crate::template;
 use crate::{
-    fetch_missing_note, is_valid_post_id, parse_legacy_frontmatter, parse_yaml_frontmatter,
-    render_options, Post, PostStorage,
+    is_valid_post_id, parse_legacy_frontmatter, parse_yaml_frontmatter, render_options, Post,
+    PostStorage,
 };
 
 pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
@@ -496,10 +496,9 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
     );
 }
 
-#[get("/<post_id>?<nsec>")]
-pub async fn view_post(
+#[get("/<post_id>")]
+pub fn view_post(
     post_id: &str,
-    nsec: Option<&str>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<
@@ -509,13 +508,12 @@ pub async fn view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, nsec, storage, config, false).await
+    render_post(post_id, storage, config, false)
 }
 
-#[get("/nojs/<post_id>?<nsec>")]
-pub async fn nojs_view_post(
+#[get("/nojs/<post_id>")]
+pub fn nojs_view_post(
     post_id: &str,
-    nsec: Option<&str>,
     storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> Result<
@@ -525,12 +523,16 @@ pub async fn nojs_view_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    render_post(post_id, nsec, storage, config, true).await
+    render_post(post_id, storage, config, true)
 }
 
-async fn render_post(
+/// Old wrap links (`nevent1…`) still name the markdown file by event id.
+pub(crate) fn leftover_wrap_file_id(post_id: &str) -> Option<String> {
+    crate::nostr::decode_nevent(post_id).map(|nevent| nevent.event_id_hex)
+}
+
+fn render_post(
     post_id: &str,
-    nsec: Option<&str>,
     storage: &State<PostStorage>,
     config: &State<Config>,
     nojs: bool,
@@ -541,10 +543,10 @@ async fn render_post(
         rocket::Either<content::RawText<String>, content::RawHtml<String>>,
     ),
 > {
-    let decoded = crate::nostr::decode_nevent(post_id);
-    let is_raw_request = decoded.is_none() && post_id.ends_with(".md");
-    let file_id = match &decoded {
-        Some(nevent) => nevent.event_id_hex.as_str(),
+    let leftover_id = leftover_wrap_file_id(post_id);
+    let is_raw_request = leftover_id.is_none() && post_id.ends_with(".md");
+    let file_id = match &leftover_id {
+        Some(id) => id.as_str(),
         None => post_id.strip_suffix(".md").unwrap_or(post_id),
     };
 
@@ -566,14 +568,18 @@ async fn render_post(
         };
     }
 
-    if decoded.is_none() && is_static_page(file_id) {
+    if leftover_id.is_none() && is_static_page(file_id) {
         return match serve_static_page(file_id, config, nojs) {
             Ok(html) => Ok(rocket::Either::Left(html)),
             Err((status, body)) => Err((status, rocket::Either::Right(body))),
         };
     }
 
-    let public_id = if decoded.is_some() { post_id } else { file_id };
+    let public_id = if leftover_id.is_some() {
+        post_id
+    } else {
+        file_id
+    };
     let cached = {
         let posts = storage.read().unwrap();
         posts.lookup(file_id, nojs, public_id)
@@ -588,8 +594,6 @@ async fn render_post(
 
     let post = if crate::save::post_file_exists(file_id) {
         load_post_from_disk(file_id, storage, config)
-    } else if let Some(nevent) = &decoded {
-        fetch_missing_note(nevent, nsec, storage, config).await
     } else {
         None
     };

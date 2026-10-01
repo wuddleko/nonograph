@@ -246,3 +246,43 @@ fn mode_link_points_at_the_other_view() {
     assert_eq!(mode_href(true, "abc"), "/abc");
     assert_eq!(mode_label(true), "js");
 }
+
+#[test]
+fn leftover_wrap_link_names_the_file_by_event_id() {
+    let wrapped = crate::nostr::wrap_note("Title", "Ada", "body", 1_700_000_000).unwrap();
+    let nevent = crate::nostr::encode_nevent(
+        &wrapped.id,
+        &[],
+        &wrapped.pubkey,
+        crate::nostr::KIND_GIFT_WRAP,
+    );
+    assert_eq!(leftover_wrap_file_id(&nevent), Some(wrapped.id_hex()));
+    assert!(leftover_wrap_file_id("hello-world").is_none());
+    assert!(!crate::save::post_file_exists(&wrapped.id_hex()));
+}
+
+#[test]
+fn leftover_wrap_with_a_file_is_the_same_post() {
+    let wrapped = crate::nostr::wrap_note("Kept", "Ada", "still here", 1_700_000_000).unwrap();
+    let nevent = crate::nostr::encode_nevent(
+        &wrapped.id,
+        &[],
+        &wrapped.pubkey,
+        crate::nostr::KIND_GIFT_WRAP,
+    );
+    let file_id = leftover_wrap_file_id(&nevent).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let post = std::sync::Arc::new(crate::Post {
+        id: file_id.clone(),
+        title: "Kept".to_string(),
+        author: "Ada".to_string(),
+        content: "<p>still here</p>".to_string(),
+        raw_content: "still here".to_string(),
+        created_at: chrono::Utc::now(),
+    });
+    crate::save::save_post_to_file_in_dir(&post, dir.path().to_str().unwrap()).unwrap();
+    assert!(crate::save::post_file_exists_in_dir(
+        &file_id,
+        dir.path().to_str().unwrap()
+    ));
+}

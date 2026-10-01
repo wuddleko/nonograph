@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Public posts only. A link with ?nsec= is still this path: the site decrypts,
-// then the plaintext post is stored here. A private note will not use this cache.
+// Public posts only. Old wrap links may still name a file by event id; we
+// never decrypt here. Private notes will not use this cache.
 const MAX_CACHED_PAGES: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

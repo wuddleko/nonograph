@@ -350,48 +350,6 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
     Some((title, author, created_at, raw_content))
 }
 
-async fn fetch_missing_note(
-    nevent: &nostr::Nevent,
-    nsec: Option<&str>,
-    storage: &PostStorage,
-    config: &Config,
-) -> Option<Arc<Post>> {
-    let timeout = std::time::Duration::from_secs(config.nostr.timeout_secs.max(1));
-    let relays = nevent.relays.clone();
-    let event_id = nevent.event_id_hex.clone();
-    let secret = nsec.and_then(nostr::decode_nsec);
-    let fetched = match rocket::tokio::task::spawn_blocking(move || {
-        nostr::fetch_note(&relays, &event_id, timeout, secret)
-    })
-    .await
-    {
-        Ok(note) => note?,
-        Err(_) => return None,
-    };
-    if fetched.content.len() > config.limits.content_max_length {
-        return None;
-    }
-    let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
-    let post = Arc::new(Post {
-        id: fetched.id_hex,
-        title: parser::sanitize_text(&fetched.title),
-        author: parser::sanitize_text(&fetched.author),
-        content: parser::render_markdown_with_config(&fetched.content, &render_options(config)),
-        raw_content: fetched.content,
-        created_at,
-    });
-    if let Err(error) = save::save_post_to_file_in_dir(&post, ".") {
-        if !matches!(error, save::SaveError::AlreadyExists) {
-            eprintln!("Nonograph: Failed to save fetched post: {error}");
-        }
-    }
-    storage
-        .write()
-        .unwrap()
-        .insert(post.id.clone(), Arc::clone(&post));
-    Some(post)
-}
-
 fn start_cache_purge_worker(storage: PostStorage, interval_mins: u64) {
     thread::spawn(move || loop {
         thread::sleep(std::time::Duration::from_secs(interval_mins * 60));
