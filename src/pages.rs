@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::csrf::{self, CsrfProtected};
-use crate::publish::{self, publish_failure_redirect, publish_note};
+use crate::publish;
 use crate::template;
 use crate::{
     is_valid_post_id, parse_legacy_frontmatter, parse_yaml_frontmatter, render_options, Post,
@@ -295,15 +295,18 @@ pub(crate) struct NewPost {
     csrf_token: String,
 }
 
-async fn handle_create(
+/// Save the form as a local file and return `/{id}` (or `/nojs/{id}`).
+/// Relays are not asked. The location never contains `nsec`.
+pub(crate) fn create_location_in_dir(
     nojs: bool,
     form: &NewPost,
     storage: &PostStorage,
     config: &Config,
-) -> rocket::response::Redirect {
+    base_dir: &str,
+) -> String {
     let home = if nojs { "/nojs" } else { "/" };
     if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&form.csrf_token) {
-        return rocket::response::Redirect::to(format!("{home}?error=csrf_token_invalid"));
+        return format!("{home}?error=csrf_token_invalid");
     }
 
     let alias = if form.alias.trim().is_empty() {
@@ -312,28 +315,48 @@ async fn handle_create(
         Some(form.alias.as_str())
     };
     if let Err(error) = config.validate_post(&form.title, &form.content, alias) {
-        return rocket::response::Redirect::to(format!("{home}?error={error}"));
+        return format!("{home}?error={error}");
     }
 
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&form.content, &render_options(config));
+    match publish::publish_note_in_dir(
+        storage,
+        &form.title,
+        &form.alias,
+        &rendered_content,
+        &form.content,
+        base_dir,
+    ) {
+        Ok(post_id) => publish::published_href(nojs, &post_id),
+        Err(failure) => publish::publish_failure_href(nojs, failure),
+    }
+}
+
+async fn handle_create(
+    nojs: bool,
+    form: &NewPost,
+    storage: &PostStorage,
+    config: &Config,
+) -> rocket::response::Redirect {
     let storage = storage.clone();
-    let title = form.title.clone();
-    let author = form.alias.clone();
-    let raw = form.content.clone();
-    let published = rocket::tokio::task::spawn_blocking(move || {
-        publish_note(&storage, &title, &author, &rendered_content, &raw)
-    })
-    .await;
-    let published = match published {
-        Ok(result) => result,
-        Err(_) => Err(publish::PublishFailure::Save(
-            "publishing was interrupted".to_string(),
-        )),
+    let config = config.clone();
+    let form = NewPost {
+        title: form.title.clone(),
+        content: form.content.clone(),
+        alias: form.alias.clone(),
+        csrf_token: form.csrf_token.clone(),
     };
-    match published {
-        Ok(post_id) => rocket::response::Redirect::to(publish::published_href(nojs, &post_id)),
-        Err(failure) => publish_failure_redirect(nojs, failure),
+    match rocket::tokio::task::spawn_blocking(move || {
+        create_location_in_dir(nojs, &form, &storage, &config, ".")
+    })
+    .await
+    {
+        Ok(location) => rocket::response::Redirect::to(location),
+        Err(_) => publish::publish_failure_redirect(
+            nojs,
+            publish::PublishFailure::Save("publishing was interrupted".to_string()),
+        ),
     }
 }
 
@@ -531,6 +554,21 @@ pub(crate) fn leftover_wrap_file_id(post_id: &str) -> Option<String> {
     crate::nostr::decode_nevent(post_id).map(|nevent| nevent.event_id_hex)
 }
 
+/// Open a leftover wrap path only if that file is already on disk.
+/// Never decrypts, never talks to relays, ignores any `nsec`.
+pub(crate) fn leftover_wrap_post_in_dir(
+    post_id: &str,
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
+) -> Option<Arc<Post>> {
+    let file_id = leftover_wrap_file_id(post_id)?;
+    if !is_valid_post_id(&file_id) {
+        return None;
+    }
+    load_post_from_disk_if_present(&file_id, storage, config, base_dir)
+}
+
 fn render_post(
     post_id: &str,
     storage: &State<PostStorage>,
@@ -592,10 +630,10 @@ fn render_post(
         return serve_article(storage, file_id, &hit.post, nojs, public_id);
     }
 
-    let post = if crate::save::post_file_exists(file_id) {
-        load_post_from_disk(file_id, storage, config)
+    let post = if leftover_id.is_some() {
+        leftover_wrap_post_in_dir(post_id, storage, config, ".")
     } else {
-        None
+        load_post_from_disk_if_present(file_id, storage, config, ".")
     };
 
     match post {
@@ -607,12 +645,28 @@ fn render_post(
     }
 }
 
+fn load_post_from_disk_if_present(
+    file_id: &str,
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
+) -> Option<Arc<Post>> {
+    if !crate::save::post_file_exists_in_dir(file_id, base_dir) {
+        return None;
+    }
+    load_post_from_disk(file_id, storage, config, base_dir)
+}
+
 fn load_post_from_disk(
     file_id: &str,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
+    storage: &PostStorage,
+    config: &Config,
+    base_dir: &str,
 ) -> Option<Arc<Post>> {
-    let file_content = std::fs::read_to_string(format!("content/{file_id}.md")).ok()?;
+    let path = std::path::Path::new(base_dir)
+        .join("content")
+        .join(format!("{file_id}.md"));
+    let file_content = std::fs::read_to_string(path).ok()?;
     let parsed = if file_content.starts_with("---\n") {
         parse_yaml_frontmatter(&file_content)
     } else {

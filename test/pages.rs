@@ -263,7 +263,8 @@ fn leftover_wrap_link_names_the_file_by_event_id() {
 
 #[test]
 fn leftover_wrap_with_a_file_is_the_same_post() {
-    let wrapped = crate::nostr::wrap_note("Kept", "Ada", "still here", 1_700_000_000).unwrap();
+    let wrapped =
+        crate::nostr::wrap_note("Wrapped", "Wrap", "ciphertext body", 1_700_000_000).unwrap();
     let nevent = crate::nostr::encode_nevent(
         &wrapped.id,
         &[],
@@ -272,6 +273,7 @@ fn leftover_wrap_with_a_file_is_the_same_post() {
     );
     let file_id = leftover_wrap_file_id(&nevent).unwrap();
     let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().to_str().unwrap();
     let post = std::sync::Arc::new(crate::Post {
         id: file_id.clone(),
         title: "Kept".to_string(),
@@ -280,9 +282,78 @@ fn leftover_wrap_with_a_file_is_the_same_post() {
         raw_content: "still here".to_string(),
         created_at: chrono::Utc::now(),
     });
-    crate::save::save_post_to_file_in_dir(&post, dir.path().to_str().unwrap()).unwrap();
-    assert!(crate::save::post_file_exists_in_dir(
-        &file_id,
-        dir.path().to_str().unwrap()
-    ));
+    crate::save::save_post_to_file_in_dir(&post, base).unwrap();
+
+    let opened = leftover_wrap_post_in_dir(
+        &nevent,
+        &crate::cache::PostCache::shared(1),
+        &crate::config::Config::default(),
+        base,
+    )
+    .expect("leftover wrap with a file should open");
+    assert_eq!(opened.id, file_id);
+    assert_eq!(opened.title, "Kept");
+    assert_eq!(opened.author, "Ada");
+    assert_eq!(opened.raw_content, "still here");
+    assert_ne!(opened.title, "Wrapped");
+    assert_ne!(opened.raw_content, "ciphertext body");
+}
+
+#[test]
+fn leftover_wrap_without_a_file_cannot_open() {
+    let wrapped = crate::nostr::wrap_note("Gone", "", "body", 1_700_000_000).unwrap();
+    let nevent = crate::nostr::encode_nevent(
+        &wrapped.id,
+        &[],
+        &wrapped.pubkey,
+        crate::nostr::KIND_GIFT_WRAP,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let opened = leftover_wrap_post_in_dir(
+        &nevent,
+        &crate::cache::PostCache::shared(1),
+        &crate::config::Config::default(),
+        dir.path().to_str().unwrap(),
+    );
+    assert!(opened.is_none());
+}
+
+#[test]
+fn create_redirects_to_a_local_id_with_no_nsec() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().to_str().unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays.clear();
+    let storage = crate::cache::PostCache::shared(1);
+    let form = NewPost {
+        title: "Hello World".to_string(),
+        content: "hi".to_string(),
+        alias: "Ada".to_string(),
+        csrf_token: String::new(),
+    };
+
+    let href = create_location_in_dir(false, &form, &storage, &config, base);
+    let names: Vec<_> = std::fs::read_dir(temp.path().join("content"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(names.len(), 1, "href={href} files={names:?}");
+    let id = &names[0];
+    assert_eq!(href, format!("/{id}"));
+    assert_eq!(publish::published_href(true, id), format!("/nojs/{id}"));
+    assert!(!href.contains("nsec"));
+    assert!(!href.contains("nevent"));
+    assert!(!href.contains('?'));
+    assert!(href.contains("hello-world"));
 }

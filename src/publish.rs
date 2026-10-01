@@ -11,10 +11,7 @@ pub(crate) enum PublishFailure {
     NoSlots,
 }
 
-pub(crate) fn publish_failure_redirect(
-    nojs: bool,
-    failure: PublishFailure,
-) -> rocket::response::Redirect {
+pub(crate) fn publish_failure_href(nojs: bool, failure: PublishFailure) -> String {
     let error = match failure {
         PublishFailure::Save(message) => {
             eprintln!("Nonograph: Failed to save post: {message}");
@@ -22,12 +19,18 @@ pub(crate) fn publish_failure_redirect(
         }
         PublishFailure::NoSlots => "no_available_slots",
     };
-    let url = if nojs {
+    if nojs {
         format!("/nojs?error={error}")
     } else {
         format!("/?error={error}")
-    };
-    rocket::response::Redirect::to(url)
+    }
+}
+
+pub(crate) fn publish_failure_redirect(
+    nojs: bool,
+    failure: PublishFailure,
+) -> rocket::response::Redirect {
+    rocket::response::Redirect::to(publish_failure_href(nojs, failure))
 }
 
 /// Path for a post we just saved. Never a query string, never `nsec`.

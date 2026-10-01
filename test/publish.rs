@@ -53,10 +53,7 @@ fn published_href_drops_a_query_including_nsec() {
         false,
         "hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026?nsec=nsec1secret",
     );
-    assert_eq!(
-        href,
-        "/hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026"
-    );
+    assert_eq!(href, "/hello-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-01-01-2026");
     assert!(!href.contains("nsec"));
     assert!(!href.contains('?'));
 }
