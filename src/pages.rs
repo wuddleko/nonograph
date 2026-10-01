@@ -455,10 +455,20 @@ pub fn api_page(
     serve_static_page("api", config, false)
 }
 
+#[derive(Debug)]
 enum BuiltPage {
     Ready(String),
     Invalid(String),
     Missing,
+}
+
+fn read_static_page_markdown(page_name: &str) -> Option<String> {
+    for dir in ["content", "pages"] {
+        if let Ok(file_content) = std::fs::read_to_string(format!("{dir}/{page_name}.md")) {
+            return Some(file_content);
+        }
+    }
+    None
 }
 
 fn serve_static_page(
@@ -491,7 +501,7 @@ fn serve_static_page(
 }
 
 fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage {
-    let Ok(file_content) = std::fs::read_to_string(format!("content/{page_name}.md")) else {
+    let Some(file_content) = read_static_page_markdown(page_name) else {
         return BuiltPage::Missing;
     };
     let parsed = parse_frontmatter(&file_content);

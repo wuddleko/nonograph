@@ -271,15 +271,17 @@ fn selection_hash_keeps_the_query_string() {
 #[test]
 fn nojs_static_page_omits_scripts() {
     let config = crate::config::Config::default();
-    let BuiltPage::Ready(nojs) = build_static_page("about", &config, true) else {
-        panic!("about page did not render");
+    let nojs = match build_static_page("about", &config, true) {
+        BuiltPage::Ready(html) => html,
+        other => panic!("about page did not render: {other:?}"),
     };
     assert!(!nojs.contains("<script"));
     assert!(nojs.contains("href=\"/about\""));
     assert!(nojs.contains(">js<"));
 
-    let BuiltPage::Ready(js) = build_static_page("about", &config, false) else {
-        panic!("about page did not render");
+    let js = match build_static_page("about", &config, false) {
+        BuiltPage::Ready(html) => html,
+        other => panic!("about page did not render: {other:?}"),
     };
     assert!(js.contains("<script src=\"/post.js?v="));
     assert!(js.contains("href=\"/nojs/about\""));
