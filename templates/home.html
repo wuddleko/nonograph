@@ -33,6 +33,16 @@
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://nonograph.com/" />
         <link rel="stylesheet" href="/home.css?v={{asset_version}}" />
+        <noscript>
+            <style>
+                .nostr-publish {
+                    display: none !important;
+                }
+                .nojs-file-note {
+                    display: block !important;
+                }
+            </style>
+        </noscript>
 
     </head>
     <body class="{{body_class}}">
@@ -127,6 +137,9 @@
 
         <div class="container">
             <div class="writingarea">
+                <p class="nojs-file-note">
+                    This page only saves a file on this host. Publishing on Nostr needs JavaScript.
+                </p>
                 <form
                     action="{{form_action}}"
                     method="post"

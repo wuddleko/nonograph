@@ -244,6 +244,16 @@
             body.nojs .char-count .static-count {
                 display: inline;
             }
+            .nojs-file-note {
+                display: none;
+                font-size: 12px;
+                color: #666;
+                line-height: 1.4;
+                margin: 0 0 16px;
+            }
+            body.nojs .nojs-file-note {
+                display: block;
+            }
             label {
                 display: block;
                 font-size: 12px;

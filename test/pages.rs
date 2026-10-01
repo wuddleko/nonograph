@@ -168,6 +168,8 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("type=\"submit\""));
     assert!(nojs.contains("On Nostr"));
     assert!(nojs.contains("class=\"nojs\""));
+    assert!(nojs.contains("This page only saves a file on this host."));
+    assert!(nojs.contains("Publishing on Nostr needs JavaScript."));
 }
 
 #[test]
@@ -988,9 +990,17 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(html.contains("On Nostr"));
     assert_eq!(html.matches("class=\"nostr-publish\"").count(), 2);
     assert_eq!(html.matches("type=\"button\" class=\"nostr-publish\"").count(), 2);
+    assert!(html.contains("class=\"nojs-file-note\""));
+    assert!(html.contains("This page only saves a file on this host."));
+    assert!(html.contains("Publishing on Nostr needs JavaScript."));
+    assert!(html.contains("<noscript>"));
+    let note = html.find("class=\"nojs-file-note\"").unwrap();
+    let sidebar = html.find("class=\"sidebar\"").unwrap();
+    assert!(note < sidebar);
 
     let css = include_str!("../templates/home.css");
     assert!(css.contains("body.nojs .nostr-publish"));
+    assert!(css.contains("body.nojs .nojs-file-note"));
 }
 
 #[test]
