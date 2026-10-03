@@ -457,9 +457,117 @@ fn wrap_custom_rumor(tags: &[Vec<String>], content: &str, created_at: i64) -> Wr
 #[test]
 fn a_relay_does_not_connect_after_its_deadline() {
     let started = Instant::now();
-    let error = connect_relay("wss://127.0.0.1:9", Instant::now(), None, false).unwrap_err();
+    let error = connect_relay(
+        "wss://127.0.0.1:9",
+        Instant::now(),
+        None,
+        false,
+        RelaySocks::Direct,
+    )
+    .unwrap_err();
     assert_eq!(error, RELAY_TIMEOUT);
     assert!(started.elapsed() < Duration::from_millis(50));
+}
+
+#[test]
+fn connect_relay_sends_socks_connect_for_the_host() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = listener.local_addr().unwrap();
+    let (host_tx, host_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut hello = [0u8; 3];
+        if stream.read_exact(&mut hello).is_err() {
+            return;
+        }
+        let _ = stream.write_all(&[0x05, 0x00]);
+        let mut head = [0u8; 4];
+        if stream.read_exact(&mut head).is_err() {
+            return;
+        }
+        if head[3] != 0x03 {
+            return;
+        }
+        let mut len = [0u8; 1];
+        if stream.read_exact(&mut len).is_err() {
+            return;
+        }
+        let mut host = vec![0u8; len[0] as usize];
+        if stream.read_exact(&mut host).is_err() {
+            return;
+        }
+        let mut port = [0u8; 2];
+        if stream.read_exact(&mut port).is_err() {
+            return;
+        }
+        let _ = host_tx.send((
+            String::from_utf8_lossy(&host).into_owned(),
+            u16::from_be_bytes(port),
+        ));
+        let _ = stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    });
+    let _ = connect_relay(
+        "wss://socks-target.example",
+        Instant::now() + Duration::from_secs(2),
+        None,
+        true,
+        RelaySocks::Proxy(proxy),
+    );
+    let (host, port) = host_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("socks handshake");
+    assert_eq!(host, "socks-target.example");
+    assert_eq!(port, 443);
+}
+
+#[test]
+fn publish_does_not_dial_a_private_relay() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let note = sign_note("Title", "Ada", "body", 1_700_000_000);
+    let started = Instant::now();
+    let accepted = publish_to_relays(
+        &[format!("wss://127.0.0.1:{port}")],
+        &note,
+        Duration::from_secs(2),
+    );
+    assert!(accepted.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "private relay was dialed: {:?}",
+        started.elapsed()
+    );
+    assert!(listener.accept().is_err());
+}
+
+#[test]
+fn a_misconfigured_socks_proxy_does_not_dial() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let error = connect_relay(
+        &format!("wss://127.0.0.1:{port}"),
+        Instant::now() + Duration::from_secs(2),
+        None,
+        false,
+        RelaySocks::Disabled,
+    )
+    .unwrap_err();
+    assert_eq!(error, SOCKS_MISCONFIGURED);
+    assert!(listener.accept().is_err());
+}
+
+#[test]
+fn public_note_from_json_accepts_a_signed_long_form() {
+    let note = sign_note("Hello", "Ada", "body", 1_700_000_000);
+    let value: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let parsed = public_note_from_json(&value, 128, 32, 256_000).unwrap();
+    assert_eq!(parsed.id, note.id);
+    assert!(public_note_from_json(&value, 4, 32, 256_000).is_none());
 }
 
 #[test]
@@ -485,13 +593,14 @@ fn publish_waits_for_every_relay_it_will_name() {
 
     let note = sign_note("Title", "Ada", "body", 1_700_000_000);
     let started = Instant::now();
-    let accepted = publish_to_relays(
+    let accepted = publish_to_relays_inner(
         &[
             format!("wss://127.0.0.1:{refused_port}"),
             format!("wss://127.0.0.1:{slow_port}"),
         ],
         &note,
         Duration::from_millis(200),
+        false,
     );
     let elapsed = started.elapsed();
     assert!(accepted.is_empty());
@@ -578,6 +687,7 @@ fn cancel_stops_a_relay_before_the_deadline() {
             Instant::now() + Duration::from_secs(5),
             Some(&flag),
             false,
+            RelaySocks::Direct,
         )
     });
     accepted_rx

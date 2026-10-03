@@ -2,13 +2,24 @@ use super::*;
 
 #[test]
 fn test_default_config() {
-    let config = Config::default();
+    let mut config = Config::default();
     assert_eq!(config.limits.title_max_length, 128);
     assert_eq!(config.limits.alias_max_length, 32);
     assert_eq!(config.limits.content_max_length, 128000);
     assert_eq!(config.server.port, 8000);
     assert_eq!(config.nostr.relays.len(), 3);
     assert_eq!(config.nostr.timeout_secs, 3);
+    assert!(config.nostr.socks.is_empty());
+    assert_eq!(config.socks_addr(), Ok(None));
+    config.nostr.socks = "127.0.0.1:9050".to_string();
+    assert_eq!(
+        config.socks_addr(),
+        Ok(Some("127.0.0.1:9050".parse().unwrap()))
+    );
+    config.nostr.socks = "not-a-socket".to_string();
+    assert_eq!(config.socks_addr(), Err(()));
+    config.nostr.socks = "   ".to_string();
+    assert_eq!(config.socks_addr(), Ok(None));
 }
 
 #[test]

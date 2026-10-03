@@ -1,6 +1,7 @@
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use socket2::{Domain, SockAddr, Socket, Type};
@@ -279,10 +280,72 @@ pub fn decode_nsec(value: &str) -> Option<[u8; 32]> {
     parsed.byte_iter().collect::<Vec<u8>>().try_into().ok()
 }
 
+#[derive(Clone, Copy)]
+pub enum RelaySocks {
+    Direct,
+    Proxy(SocketAddr),
+    Disabled,
+}
+
+static RELAY_SOCKS: Mutex<RelaySocks> = Mutex::new(RelaySocks::Direct);
+
+pub fn set_relay_socks(setting: RelaySocks) {
+    *RELAY_SOCKS.lock().expect("relay socks lock") = setting;
+}
+
+fn relay_socks() -> RelaySocks {
+    *RELAY_SOCKS.lock().expect("relay socks lock")
+}
+
+pub fn public_note_from_json(
+    value: &serde_json::Value,
+    title_max: usize,
+    alias_max: usize,
+    content_max: usize,
+) -> Option<SignedNote> {
+    let parsed = verified_long_form(value)?;
+    if parsed.content.len() > content_max {
+        return None;
+    }
+    let (title, author, _) = note_fields(&parsed.tags, parsed.created_at);
+    if title.len() > title_max || author.len() > alias_max {
+        return None;
+    }
+    let sig = parsed.sig?;
+    Some(SignedNote {
+        id: parsed.id,
+        pubkey: parsed.pubkey,
+        event_json: event_wire(
+            &hex_encode(&parsed.id),
+            &parsed.pubkey_hex,
+            parsed.created_at,
+            parsed.kind,
+            &parsed.tags,
+            &parsed.content,
+            Some(&hex_encode(&sig)),
+        ),
+    })
+}
+
 pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration) -> Vec<String> {
+    publish_to_relays_inner(relays, note, timeout, true)
+}
+
+fn publish_to_relays_inner(
+    relays: &[String],
+    note: &SignedNote,
+    timeout: Duration,
+    public_only: bool,
+) -> Vec<String> {
     let relays: Vec<String> = relays
         .iter()
-        .filter(|relay| valid_relay_url(relay))
+        .filter(|relay| {
+            if public_only {
+                public_relay_url(relay)
+            } else {
+                valid_relay_url(relay)
+            }
+        })
         .cloned()
         .collect();
     if relays.is_empty() {
@@ -298,7 +361,7 @@ pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration
             let event_json = note.event_json.clone();
             let event_id = event_id.clone();
             handles.push(scope.spawn(move || {
-                match send_event(&relay, &event_json, &event_id, deadline) {
+                match send_event(&relay, &event_json, &event_id, deadline, public_only) {
                     Ok(()) => Some(relay),
                     Err(error) => {
                         eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
@@ -334,6 +397,7 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
 type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
 
 const RELAY_TIMEOUT: &str = "timed out waiting for the relay";
+const SOCKS_MISCONFIGURED: &str = "socks proxy is misconfigured";
 const FETCH_POLL: Duration = Duration::from_millis(100);
 
 fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
@@ -693,20 +757,35 @@ fn connect_relay(
     deadline: Instant,
     cancel: Option<&AtomicBool>,
     public_only: bool,
+    socks: RelaySocks,
 ) -> Result<RelaySocket, String> {
+    let proxy = match socks {
+        RelaySocks::Direct => None,
+        RelaySocks::Proxy(addr) => Some(addr),
+        RelaySocks::Disabled => return Err(SOCKS_MISCONFIGURED.to_string()),
+    };
     let request = relay
         .into_client_request()
         .map_err(|error| error.to_string())?;
     let uri = request.uri().clone();
     let host = uri.host().ok_or("relay url has no host")?.to_string();
     let port = uri.port_u16().unwrap_or(443);
+    if public_only && !public_relay_url(relay) {
+        return Err("relay address is not public".to_string());
+    }
+    let connector = tls_connector()?;
+    if let Some(proxy) = proxy {
+        let tcp = connect_tcp(proxy, deadline, cancel)?;
+        socks5_connect(&tcp, &host, port, deadline, cancel)?;
+        let tls = tls_handshake(connector, &host, tcp, deadline, cancel)?;
+        return websocket_handshake(request, tls, deadline, cancel);
+    }
     let addresses = resolve_host(&host, port, deadline, cancel)?;
     let addresses = if public_only {
         public_relay_addresses(addresses)?
     } else {
         addresses
     };
-    let connector = tls_connector()?;
     let mut last_error = "relay address did not resolve".to_string();
     for address in addresses {
         let tcp = match connect_tcp(address, deadline, cancel) {
@@ -732,6 +811,82 @@ fn connect_relay(
         }
     }
     Err(last_error)
+}
+
+fn socks5_connect(
+    stream: &TcpStream,
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
+    let mut stream = stream;
+    arm_stream(stream, wait_budget(deadline, cancel)?)?;
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .map_err(|error| error.to_string())?;
+    let mut method = [0u8; 2];
+    stream
+        .read_exact(&mut method)
+        .map_err(|error| error.to_string())?;
+    if method != [0x05, 0x00] {
+        return Err("socks proxy refused authentication".to_string());
+    }
+
+    let mut request = vec![0x05, 0x01, 0x00];
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(v4) => {
+                request.push(0x01);
+                request.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                request.push(0x04);
+                request.extend_from_slice(&v6.octets());
+            }
+        }
+    } else {
+        let bytes = host.as_bytes();
+        if bytes.is_empty() || bytes.len() > 255 {
+            return Err("socks host is invalid".to_string());
+        }
+        request.push(0x03);
+        request.push(bytes.len() as u8);
+        request.extend_from_slice(bytes);
+    }
+    request.extend_from_slice(&port.to_be_bytes());
+    arm_stream(stream, wait_budget(deadline, cancel)?)?;
+    stream
+        .write_all(&request)
+        .map_err(|error| error.to_string())?;
+
+    let mut head = [0u8; 4];
+    stream
+        .read_exact(&mut head)
+        .map_err(|error| error.to_string())?;
+    if head[0] != 0x05 {
+        return Err("socks proxy protocol error".to_string());
+    }
+    if head[1] != 0x00 {
+        return Err("socks proxy connect failed".to_string());
+    }
+    let skip = match head[3] {
+        0x01 => 6,
+        0x04 => 18,
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream
+                .read_exact(&mut len)
+                .map_err(|error| error.to_string())?;
+            len[0] as usize + 2
+        }
+        _ => return Err("socks proxy protocol error".to_string()),
+    };
+    let mut rest = vec![0u8; skip];
+    stream
+        .read_exact(&mut rest)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 enum Incoming {
@@ -769,8 +924,9 @@ fn send_event(
     event_json: &str,
     event_id_hex: &str,
     deadline: Instant,
+    public_only: bool,
 ) -> Result<(), String> {
-    let mut socket = connect_relay(relay, deadline, None, false)?;
+    let mut socket = connect_relay(relay, deadline, None, public_only, relay_socks())?;
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(socket.get_ref().get_ref(), wait_budget(deadline, None)?)?;
     socket
@@ -956,7 +1112,7 @@ fn fetch_from_relay(
     cancel: &AtomicBool,
     public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
-    let mut socket = connect_relay(relay, deadline, Some(cancel), public_only)?;
+    let mut socket = connect_relay(relay, deadline, Some(cancel), public_only, relay_socks())?;
     let sub_id = random_hex(8);
     let payload = req_payload(&sub_id, query);
     arm_stream(

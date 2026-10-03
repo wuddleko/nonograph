@@ -80,22 +80,13 @@ fn test_is_valid_post_id_rejects_traversal() {
 }
 
 #[test]
-fn csp_lets_the_tab_talk_to_public_relays() {
-    let policy = content_security_policy(&[
-        "wss://relay.damus.io".to_string(),
-        "wss://127.0.0.1".to_string(),
-        "wss://nos.lol".to_string(),
-    ]);
-    assert!(policy.contains("connect-src 'self' wss:;"));
+fn csp_keeps_the_tab_on_this_host() {
+    let policy = content_security_policy();
+    assert!(policy.contains("connect-src 'self';"));
+    assert!(!policy.contains("wss:"));
     assert!(!policy.contains("damus.io"));
     assert!(policy.contains("default-src 'self'"));
     assert!(policy.contains("img-src 'self' https: http: data:"));
-}
-
-#[test]
-fn csp_without_public_relays_stays_on_this_host() {
-    let policy = content_security_policy(&["wss://localhost".to_string()]);
-    assert!(policy.contains("connect-src 'self' wss:;"));
 }
 
 #[test]

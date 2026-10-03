@@ -728,6 +728,26 @@ fn create_redirects_to_a_local_id_with_no_nsec() {
 }
 
 #[test]
+fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
+    let note = crate::nostr::sign_note("Hello", "Ada", "body", 1_700_000_000);
+    let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays = vec!["wss://relay.damus.io".to_string()];
+    let body = NostrPublishBody {
+        event,
+        relays: vec!["wss://127.0.0.1".to_string()],
+        csrf_token: String::new(),
+    };
+    let (parsed, relays) = note_and_relays_for_publish(&body, &config).unwrap();
+    assert_eq!(parsed.id, note.id);
+    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+
+    config.security.csrf_protection_enabled = true;
+    assert!(note_and_relays_for_publish(&body, &config).is_none());
+}
+
+#[test]
 fn public_note_keeps_the_same_short_id() {
     let storage = crate::cache::PostCache::shared(1);
     let config = crate::config::Config::default();
@@ -965,8 +985,8 @@ fn homepage_js_can_send_a_public_long_form_note() {
     let nostr = include_str!("../templates/nostr.js");
     assert!(nostr.contains("KIND_LONG_FORM = 30023"));
     assert!(nostr.contains("publishPublicNote"));
-    assert!(nostr.contains("[\"EVENT\""));
-    assert!(nostr.contains("new WebSocket"));
+    assert!(nostr.contains("fetch(\"/nostr/publish\""));
+    assert!(!nostr.contains("new WebSocket"));
     assert!(nostr.contains("publicRelayUrl"));
     assert!(nostr.contains("relaysForPublicPublish"));
     assert!(nostr.contains("10_000"));
@@ -989,6 +1009,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(helper < imported);
     assert!(home.contains("./nostr.js"));
     assert!(home.contains("publishPublicNote"));
+    assert!(home.contains("csrfToken"));
     assert!(home.contains("location.assign(\"/\" + result.nevent)"));
     assert!(home.contains(".nostr-publish"));
     assert!(home.contains("Publishing failed. Try again."));

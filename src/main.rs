@@ -84,15 +84,10 @@ impl Fairing for SecurityHeadersFairing {
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
-        let relays = request
-            .rocket()
-            .state::<Config>()
-            .map(|config| config.nostr.relays.as_slice())
-            .unwrap_or(&[]);
         // TODO: Refactor HTML and remove unsafe-inline.
         response.set_header(Header::new(
             "Content-Security-Policy",
-            content_security_policy(relays),
+            content_security_policy(),
         ));
         response.set_header(Header::new("Cross-Origin-Opener-Policy", "same-origin"));
         response.set_header(Header::new("Cross-Origin-Resource-Policy", "same-origin"));
@@ -127,22 +122,20 @@ impl Fairing for SecurityHeadersFairing {
     }
 }
 
-fn content_security_policy(_relays: &[String]) -> String {
-    // wss: so visitors can publish to relays they add in the browser.
-    let connect = "'self' wss:";
-    format!(
-        "default-src 'self'; \
-         connect-src {connect}; \
-         base-uri 'self'; \
-         form-action 'self'; \
-         frame-ancestors 'self'; \
-         img-src 'self' https: http: data:; \
-         media-src 'self' https: http:; \
-         object-src 'none'; \
-         script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
-         script-src-attr 'none'; \
-         style-src 'self' https: 'unsafe-inline'"
-    )
+fn content_security_policy() -> String {
+    // Relays are reached by this process over Tor, not by the tab.
+    "default-src 'self'; \
+     connect-src 'self'; \
+     base-uri 'self'; \
+     form-action 'self'; \
+     frame-ancestors 'self'; \
+     img-src 'self' https: http: data:; \
+     media-src 'self' https: http:; \
+     object-src 'none'; \
+     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+     script-src-attr 'none'; \
+     style-src 'self' https: 'unsafe-inline'"
+        .to_string()
 }
 
 /// Maximum length of a post identifier, matching typical filesystem limits on
@@ -515,6 +508,23 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     let storage = PostCache::shared(config.cache.max_cache_size_mb);
     start_cache_purge_worker(Arc::clone(&storage), config.cache.cache_purge_interval_mins);
 
+    match config.socks_addr() {
+        Ok(Some(addr)) => {
+            crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Proxy(addr));
+            println!("Nonograph: Nostr relays via SOCKS {addr}");
+        }
+        Ok(None) => {
+            crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Direct);
+            println!("Nonograph: Nostr relays connect directly (no SOCKS)");
+        }
+        Err(()) => {
+            crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Disabled);
+            eprintln!(
+                "Nonograph: [nostr].socks is not a socket address; relay connections are disabled"
+            );
+        }
+    }
+
     let onion_url = config.resolve_onion_url();
     match &onion_url {
         Some(url) => println!("Nonograph: Onion-Location advertising enabled: {}", url),
@@ -542,6 +552,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
             routes![
                 pages::index,
                 pages::create_post,
+                pages::nostr_publish,
                 pages::view_post,
                 pages::markup_page,
                 pages::legal_page,

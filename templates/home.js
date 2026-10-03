@@ -59,6 +59,7 @@
                     content: fields.content,
                     relays: mergePublishRelays(),
                     timeoutMs,
+                    csrfToken: form.csrf_token ? form.csrf_token.value : "",
                 });
             };
             const progressCircle = document.getElementById("progressCircle");

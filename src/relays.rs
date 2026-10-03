@@ -16,7 +16,7 @@ pub fn render_about_section(relays: &[String]) -> String {
     let mut html = String::from(
         "<div class=\"help-section\" id=\"relays\">\n\
         <h3>Nostr relays</h3>\n\
-        <p><strong>On Nostr</strong> sends your note to these relays. We need more that accept public long-form posts (kind 30023).</p>\n",
+        <p><strong>On Nostr</strong> signs in your browser; this host sends the note to these relays over Tor.</p>\n",
     );
     html.push_str(&render_list(relays));
     html.push_str(render_add_relay_controls());

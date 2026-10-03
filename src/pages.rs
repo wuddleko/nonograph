@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use rocket::http::{ContentType, Status};
 use rocket::response::content;
 use rocket::response::Responder;
+use rocket::serde::json::Json;
 use rocket::State;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
@@ -417,6 +419,76 @@ pub async fn nojs_create_post(
     config: &State<Config>,
 ) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
     Ok(handle_create(true, &form, storage, config).await)
+}
+
+#[derive(Deserialize)]
+pub struct NostrPublishBody {
+    event: serde_json::Value,
+    #[serde(default)]
+    relays: Vec<String>,
+    #[serde(default)]
+    csrf_token: String,
+}
+
+#[derive(Serialize)]
+pub struct NostrPublishResult {
+    nevent: String,
+    accepted: Vec<String>,
+}
+
+pub(crate) fn note_and_relays_for_publish(
+    body: &NostrPublishBody,
+    config: &Config,
+) -> Option<(crate::nostr::SignedNote, Vec<String>)> {
+    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&body.csrf_token) {
+        return None;
+    }
+    let note = crate::nostr::public_note_from_json(
+        &body.event,
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+    )?;
+    let relays = relays_for_public_fetch(&body.relays, &config.nostr.relays);
+    if relays.is_empty() {
+        return None;
+    }
+    Some((note, relays))
+}
+
+#[post("/nostr/publish", data = "<body>")]
+pub async fn nostr_publish(
+    _csrf: CsrfProtected,
+    body: Json<NostrPublishBody>,
+    config: &State<Config>,
+) -> Result<Json<NostrPublishResult>, Status> {
+    let config = config.inner().clone();
+    let body = body.into_inner();
+    let Some(_slot) = PublicFetchSlot::acquire() else {
+        return Err(Status::ServiceUnavailable);
+    };
+    match rocket::tokio::task::spawn_blocking(move || {
+        let (note, relays) = note_and_relays_for_publish(&body, &config)?;
+        let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+        let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
+        let nevent = if accepted.is_empty() {
+            String::new()
+        } else {
+            crate::nostr::encode_nevent(
+                &note.id,
+                &accepted,
+                &note.pubkey,
+                crate::nostr::KIND_LONG_FORM,
+            )
+        };
+        Some(NostrPublishResult { nevent, accepted })
+    })
+    .await
+    {
+        Ok(Some(result)) => Ok(Json(result)),
+        Ok(None) => Err(Status::BadRequest),
+        Err(_) => Err(Status::ServiceUnavailable),
+    }
 }
 
 fn static_page_cache() -> &'static Mutex<HashMap<String, String>> {

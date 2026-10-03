@@ -55,6 +55,7 @@ export async function publishPublicNote({
     relays,
     timeoutMs,
     createdAt,
+    csrfToken,
 } = {}) {
     const signed = await signLongForm({
         title,
@@ -62,15 +63,34 @@ export async function publishPublicNote({
         content,
         createdAt,
     });
-    const accepted = await sendToRelays(
-        relaysForPublicPublish(relays),
-        signed,
-        timeoutMs,
+    const configured = Number(timeoutMs);
+    const wait = Math.max(
+        10_000,
+        Number.isFinite(configured) ? configured : 0,
     );
-    const nevent = accepted.length
-        ? encodeNevent(signed.id, signed.pubkey, KIND_LONG_FORM, accepted)
-        : "";
-    return { event: signed, accepted, nevent };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), wait);
+    try {
+        const response = await fetch("/nostr/publish", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                event: signed,
+                relays: relaysForPublicPublish(relays),
+                csrf_token: csrfToken || "",
+            }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            throw new Error("Publishing failed");
+        }
+        const result = await response.json();
+        const accepted = Array.isArray(result.accepted) ? result.accepted : [];
+        const nevent = typeof result.nevent === "string" ? result.nevent : "";
+        return { event: signed, accepted, nevent };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 export function encodeNevent(idHex, pubkeyHex, kind, relays) {
@@ -200,80 +220,6 @@ export async function signLongForm({
         content: body,
         sig: bytesToHex(sig),
     };
-}
-
-async function sendToRelays(relays, event, timeoutMs) {
-    const configured = Number(timeoutMs);
-    const wait = Math.max(
-        10_000,
-        Number.isFinite(configured) ? configured : 0,
-    );
-    const results = await Promise.all(
-        relays.map((relay) =>
-            sendEvent(relay, event, wait)
-                .then(() => relay)
-                .catch((error) => {
-                    console.warn(relay, error && error.message);
-                    return null;
-                }),
-        ),
-    );
-    return results.filter(Boolean);
-}
-
-function sendEvent(relay, event, timeoutMs) {
-    return new Promise((resolve, reject) => {
-        let done = false;
-        const socket = new WebSocket(relay);
-        const payload = JSON.stringify(["EVENT", event]);
-        const finish = (error, abort) => {
-            if (done) {
-                return;
-            }
-            done = true;
-            clearTimeout(timer);
-            if (
-                abort &&
-                (socket.readyState === WebSocket.CONNECTING ||
-                    socket.readyState === WebSocket.OPEN)
-            ) {
-                socket.close();
-            }
-            if (error) {
-                reject(error);
-            } else {
-                resolve();
-            }
-        };
-        const timer = setTimeout(() => {
-            finish(new Error("timed out waiting for the relay"), true);
-        }, timeoutMs);
-        socket.addEventListener("open", () => {
-            socket.send(payload);
-        });
-        socket.addEventListener("message", (message) => {
-            let data;
-            try {
-                data = JSON.parse(message.data);
-            } catch (error) {
-                return;
-            }
-            if (!Array.isArray(data) || data[0] !== "OK" || data[1] !== event.id) {
-                return;
-            }
-            if (data[2]) {
-                finish(undefined, true);
-            } else {
-                finish(new Error(data[3] || "relay rejected the note"), true);
-            }
-        });
-        socket.addEventListener("error", () => {
-            finish(new Error("relay closed the connection"), false);
-        });
-        socket.addEventListener("close", () => {
-            finish(new Error("relay closed the connection"), false);
-        });
-    });
 }
 
 function longFormTags(title, author, createdAt, identifier) {

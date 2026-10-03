@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +70,12 @@ pub struct Nostr {
     pub relays: Vec<String>,
     #[serde(default = "default_nostr_timeout_secs")]
     pub timeout_secs: u64,
+    /// SOCKS5 proxy for outbound relay connections (Tor in Docker: 127.0.0.1:9050).
+    /// Empty means connect directly. A non-empty value that is not a socket address
+    /// disables relay connections. When a proxy is set, publish and fetch fail
+    /// closed if it is down.
+    #[serde(default)]
+    pub socks: String,
 }
 
 impl Default for Nostr {
@@ -76,6 +83,7 @@ impl Default for Nostr {
         Self {
             relays: default_relays(),
             timeout_secs: default_nostr_timeout_secs(),
+            socks: String::new(),
         }
     }
 }
@@ -230,6 +238,18 @@ impl Config {
 
     pub fn form_data_limit_bytes(&self) -> u32 {
         self.limits.form_data_limit_kb * 1024
+    }
+
+    /// `Ok(None)` connects directly. `Err` means `socks` was set but is not a socket address.
+    pub fn socks_addr(&self) -> Result<Option<SocketAddr>, ()> {
+        let trimmed = self.nostr.socks.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.parse() {
+            Ok(addr) => Ok(Some(addr)),
+            Err(_) => Err(()),
+        }
     }
 
     pub fn resolve_onion_url(&self) -> Option<String> {

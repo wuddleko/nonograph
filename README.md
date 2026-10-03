@@ -29,7 +29,7 @@ https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
 ## Nostr (WE NEED INSTANCES)
 
-**On Nostr** signs your note in the browser and pushes it to the relays in that instance's `Config.toml`. What you share is a Nostr link—not a page stored on the server.
+**On Nostr** signs your note in the browser, then this instance publishes it to the relays in `Config.toml` over Tor. What you share is a Nostr link—not a page stored on the server. Your browser never talks to relays; they see a Tor exit, not you. The instance still sees the normal HTTP request.
 
 We could use more hosts running this setup. Pick relays that actually accept these posts (kind 30023); dead or read-only relays make the button look broken even when everything else is fine. If you're already running Nonograph, wire up `[nostr].relays`, deploy, and open a PR to add yourself to the table (clearnet and/or onion).
 
@@ -56,7 +56,7 @@ These are run by other people, with their own rules. Use one you trust, or host 
 
 ## Deploy
 
-Published pages live in `~/nonograph/content`. Tor keys live in `~/nonograph/onion`. **On Nostr** defaults come from `[nostr].relays` in `Config.toml` on the server (visitors can add more relays in the browser; those stay in their browser only).
+Published pages live in `~/nonograph/content`. Tor keys live in `~/nonograph/onion`. **On Nostr** defaults come from `[nostr].relays` and `[nostr].socks` in `Config.toml` (Docker Tor is `127.0.0.1:9050`). Visitors can add extra relays in the browser; those are stored locally and sent to this host only when publishing.
 
 ### Docker image (quick)
 

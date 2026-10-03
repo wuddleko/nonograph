@@ -30,7 +30,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
-    echo "SocksPort 0" >> /etc/tor/torrc && \
+    echo "SocksPort 127.0.0.1:9050" >> /etc/tor/torrc && \
+    echo "SocksPolicy accept 127.0.0.1" >> /etc/tor/torrc && \
+    echo "SocksPolicy reject *" >> /etc/tor/torrc && \
     echo "ControlSocket 0" >> /etc/tor/torrc && \
     echo "" >> /etc/tor/torrc && \
     echo "HiddenServiceDir /var/lib/tor/hidden_service/" >> /etc/tor/torrc && \
