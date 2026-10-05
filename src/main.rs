@@ -9,6 +9,7 @@ pub(crate) mod csrf;
 mod nip44;
 pub(crate) mod nostr;
 mod pages;
+pub(crate) mod tor_circuits;
 pub(crate) mod publish;
 pub(crate) mod save;
 pub(crate) mod template;
@@ -553,6 +554,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::index,
                 pages::create_post,
                 pages::nostr_publish,
+                pages::tor_circuits,
                 pages::view_post,
                 pages::markup_page,
                 pages::legal_page,

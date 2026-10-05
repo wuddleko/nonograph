@@ -127,6 +127,21 @@
                 return end === -1 ? rest : rest.slice(0, end);
             }
 
+            function relayKey(url) {
+                const match = /^wss:\/\/([^/?#]+)(.*)$/i.exec(url);
+                if (!match) {
+                    return url;
+                }
+                const host = match[1].replace(/\.+$/, "").toLowerCase();
+                let tail = match[2];
+                if (tail === "/") {
+                    tail = "";
+                } else if (tail.endsWith("/")) {
+                    tail = tail.slice(0, -1);
+                }
+                return "wss://" + host + tail;
+            }
+
             function renderExtraRelayLists() {
                 const relays = loadExtraRelays();
                 document.querySelectorAll(".relay-list-user").forEach((list) => {
@@ -137,6 +152,7 @@
                         label.className = "relay-name";
                         label.textContent = relayHost(relay);
                         label.title = relay;
+                        row.dataset.relay = relay;
                         const remove = document.createElement("button");
                         remove.type = "button";
                         remove.className = "relay-remove";
@@ -236,6 +252,38 @@
             });
 
             renderExtraRelayLists();
+
+            const circuitByRelay = new Map();
+            async function refreshRelayCircuits() {
+                let payload;
+                try {
+                    const response = await fetch("/tor-circuits", { cache: "no-store" });
+                    if (!response.ok) {
+                        return;
+                    }
+                    payload = await response.json();
+                } catch (error) {
+                    return;
+                }
+                const relays = payload.relays || {};
+                for (const [relay, path] of Object.entries(relays)) {
+                    if (typeof path === "string" && path) {
+                        circuitByRelay.set(relayKey(relay), path);
+                    }
+                }
+                document.querySelectorAll(".relay-list li[data-relay]").forEach((row) => {
+                    const path = circuitByRelay.get(relayKey(row.dataset.relay));
+                    let line = row.querySelector(".relay-circuit");
+                    if (!line) {
+                        line = document.createElement("div");
+                        line.className = "relay-circuit";
+                        row.append(line);
+                    }
+                    line.textContent = path || "waiting for publish";
+                });
+            }
+            refreshRelayCircuits();
+            setInterval(refreshRelayCircuits, 2000);
 
             let publishing = false;
 

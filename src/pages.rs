@@ -456,6 +456,13 @@ pub(crate) fn note_and_relays_for_publish(
     Some((note, relays))
 }
 
+#[get("/tor-circuits")]
+pub fn tor_circuits() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "relays": crate::tor_circuits::current()
+    }))
+}
+
 #[post("/nostr/publish", data = "<body>")]
 pub async fn nostr_publish(
     _csrf: CsrfProtected,

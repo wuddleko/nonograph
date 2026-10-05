@@ -34,7 +34,9 @@ fn render_list(relays: &[String]) -> String {
             continue;
         }
         let label = relay_label(relay);
-        items.push_str("<li>");
+        items.push_str("<li data-relay=\"");
+        items.push_str(&html_escape(relay));
+        items.push_str("\">");
         items.push_str(&html_escape(&label));
         items.push_str("</li>\n");
     }
