@@ -776,7 +776,7 @@ fn connect_relay(
     let connector = tls_connector()?;
     if let Some(proxy) = proxy {
         let tcp = connect_tcp(proxy, deadline, cancel)?;
-        socks5_connect(&tcp, &host, port, deadline, cancel)?;
+        socks5_connect(&tcp, &host, port, relay, deadline, cancel)?;
         let tls = tls_handshake(connector, &host, tcp, deadline, cancel)?;
         return websocket_handshake(request, tls, deadline, cancel);
     }
@@ -817,19 +817,41 @@ fn socks5_connect(
     stream: &TcpStream,
     host: &str,
     port: u16,
+    username: &str,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let mut stream = stream;
+    let user = username.as_bytes();
+    if user.is_empty() || user.len() > 255 {
+        return Err("socks user is invalid".to_string());
+    }
     arm_stream(stream, wait_budget(deadline, cancel)?)?;
     stream
-        .write_all(&[0x05, 0x01, 0x00])
+        .write_all(&[0x05, 0x01, 0x02])
         .map_err(|error| error.to_string())?;
     let mut method = [0u8; 2];
     stream
         .read_exact(&mut method)
         .map_err(|error| error.to_string())?;
-    if method != [0x05, 0x00] {
+    if method != [0x05, 0x02] {
+        return Err("socks proxy refused authentication".to_string());
+    }
+
+    let mut auth = Vec::with_capacity(3 + user.len());
+    auth.push(0x01);
+    auth.push(user.len() as u8);
+    auth.extend_from_slice(user);
+    auth.push(0);
+    arm_stream(stream, wait_budget(deadline, cancel)?)?;
+    stream
+        .write_all(&auth)
+        .map_err(|error| error.to_string())?;
+    let mut status = [0u8; 2];
+    stream
+        .read_exact(&mut status)
+        .map_err(|error| error.to_string())?;
+    if status != [0x01, 0x00] {
         return Err("socks proxy refused authentication".to_string());
     }
 

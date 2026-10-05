@@ -9,13 +9,24 @@ chown -R debian-tor:debian-tor /var/lib/tor/hidden_service
 chmod 700 /var/lib/tor/hidden_service
 
 # Start Tor as debian-tor user
-sudo -u debian-tor tor -f /etc/tor/torrc &
+TOR_LOG=/var/lib/tor/notices.log
+: > "$TOR_LOG"
+chown debian-tor:debian-tor "$TOR_LOG"
+chmod 600 "$TOR_LOG"
+sudo -u debian-tor tor -f /etc/tor/torrc \
+    --Log "notice file ${TOR_LOG}" \
+    --Log "notice stdout" &
+TOR_PID=$!
 
 # Wait for the .onion hostname file to appear
 echo "Waiting for Tor hidden service to be ready..."
 ONION_FILE="/var/lib/tor/hidden_service/hostname"
 i=0
 while [ ! -f "$ONION_FILE" ]; do
+    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+        echo "Tor exited before the hidden service was ready, check logs above."
+        break
+    fi
     sleep 1
     i=$((i + 1))
     if [ $i -ge 60 ]; then
@@ -45,6 +56,24 @@ EOF
     if [ -z "$ONION_URL" ] && [ -n "$ONION" ]; then
         export ONION_URL="http://$ONION"
     fi
+fi
+
+echo "Waiting for Tor to bootstrap..."
+i=0
+while ! grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; do
+    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+        echo "Tor exited before bootstrapping. Starting anyway; relay connections fail until it does."
+        break
+    fi
+    sleep 1
+    i=$((i + 1))
+    if [ $i -ge 120 ]; then
+        echo "Tor did not bootstrap within 120 seconds. Starting anyway; relay connections fail until it does."
+        break
+    fi
+done
+if grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; then
+    echo "Tor is bootstrapped."
 fi
 
 # Drop to nonograph user and launch the app

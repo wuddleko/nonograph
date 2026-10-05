@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
-    echo "SocksPort 127.0.0.1:9050" >> /etc/tor/torrc && \
+    echo "SocksPort 127.0.0.1:9050 IsolateSOCKSAuth" >> /etc/tor/torrc && \
     echo "SocksPolicy accept 127.0.0.1" >> /etc/tor/torrc && \
     echo "SocksPolicy reject *" >> /etc/tor/torrc && \
     echo "ControlSocket 0" >> /etc/tor/torrc && \
@@ -64,7 +64,7 @@ EXPOSE 8009
 ENV ROCKET_ADDRESS=0.0.0.0
 ENV ROCKET_PORT=8009
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=240s --retries=3 \
     CMD curl -f http://localhost:8009/ || exit 1
 
 CMD ["/app/entrypoint.sh"]

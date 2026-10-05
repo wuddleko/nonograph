@@ -62,7 +62,7 @@ relays = [
 ]
 # How long to wait for a relay, in seconds. The wait is the slowest relay, not the sum.
 # Tor adds latency; keep this higher than a direct connect.
-timeout_secs = 15
+timeout_secs = 30
 # Outbound Nostr (browser publish is signed locally, then this process talks to relays).
 # Docker Tor listens here. Leave empty only for local dev without Tor.
 socks = "127.0.0.1:9050"

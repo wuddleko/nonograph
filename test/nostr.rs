@@ -476,51 +476,77 @@ fn connect_relay_sends_socks_connect_for_the_host() {
     let (host_tx, host_rx) = mpsc::channel();
     std::thread::spawn(move || {
         use std::io::{Read, Write};
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        let mut hello = [0u8; 3];
-        if stream.read_exact(&mut hello).is_err() {
-            return;
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut hello = [0u8; 3];
+            if stream.read_exact(&mut hello).is_err() || hello != [0x05, 0x01, 0x02] {
+                return;
+            }
+            if stream.write_all(&[0x05, 0x02]).is_err() {
+                return;
+            }
+            let mut ulen = [0u8; 2];
+            if stream.read_exact(&mut ulen).is_err() || ulen[0] != 0x01 {
+                return;
+            }
+            let mut user = vec![0u8; ulen[1] as usize];
+            if stream.read_exact(&mut user).is_err() {
+                return;
+            }
+            let mut plen = [0u8; 1];
+            if stream.read_exact(&mut plen).is_err() || plen[0] != 0 {
+                return;
+            }
+            if stream.write_all(&[0x01, 0x00]).is_err() {
+                return;
+            }
+            let mut head = [0u8; 4];
+            if stream.read_exact(&mut head).is_err() {
+                return;
+            }
+            if head[3] != 0x03 {
+                return;
+            }
+            let mut len = [0u8; 1];
+            if stream.read_exact(&mut len).is_err() {
+                return;
+            }
+            let mut host = vec![0u8; len[0] as usize];
+            if stream.read_exact(&mut host).is_err() {
+                return;
+            }
+            let mut port = [0u8; 2];
+            if stream.read_exact(&mut port).is_err() {
+                return;
+            }
+            let _ = host_tx.send((
+                String::from_utf8_lossy(&user).into_owned(),
+                String::from_utf8_lossy(&host).into_owned(),
+                u16::from_be_bytes(port),
+            ));
+            let _ = stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
         }
-        let _ = stream.write_all(&[0x05, 0x00]);
-        let mut head = [0u8; 4];
-        if stream.read_exact(&mut head).is_err() {
-            return;
-        }
-        if head[3] != 0x03 {
-            return;
-        }
-        let mut len = [0u8; 1];
-        if stream.read_exact(&mut len).is_err() {
-            return;
-        }
-        let mut host = vec![0u8; len[0] as usize];
-        if stream.read_exact(&mut host).is_err() {
-            return;
-        }
-        let mut port = [0u8; 2];
-        if stream.read_exact(&mut port).is_err() {
-            return;
-        }
-        let _ = host_tx.send((
-            String::from_utf8_lossy(&host).into_owned(),
-            u16::from_be_bytes(port),
-        ));
-        let _ = stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
     });
-    let _ = connect_relay(
+    for relay in [
         "wss://socks-target.example",
-        Instant::now() + Duration::from_secs(2),
-        None,
-        true,
-        RelaySocks::Proxy(proxy),
-    );
-    let (host, port) = host_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("socks handshake");
-    assert_eq!(host, "socks-target.example");
-    assert_eq!(port, 443);
+        "wss://socks-target.example/path",
+    ] {
+        let _ = connect_relay(
+            relay,
+            Instant::now() + Duration::from_secs(2),
+            None,
+            true,
+            RelaySocks::Proxy(proxy),
+        );
+        let (user, host, port) = host_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("socks handshake");
+        assert_eq!(user, relay);
+        assert_eq!(host, "socks-target.example");
+        assert_eq!(port, 443);
+    }
 }
 
 #[test]
