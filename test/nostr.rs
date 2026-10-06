@@ -574,6 +574,89 @@ fn relay_assignment_follows_the_circuit_and_its_age() {
 }
 
 #[test]
+fn a_missing_circuit_waits_longer_after_each_miss() {
+    assert!(!assignment_due(
+        Some(Duration::from_secs(30)),
+        Some(false),
+        2
+    ));
+    assert!(assignment_due(
+        Some(Duration::from_secs(60)),
+        Some(false),
+        2
+    ));
+    assert!(!assignment_due(
+        Some(Duration::from_secs(3 * 60)),
+        Some(false),
+        4
+    ));
+    assert!(assignment_due(
+        Some(Duration::from_secs(4 * 60)),
+        Some(false),
+        4
+    ));
+    assert!(!assignment_due(
+        Some(Duration::from_secs(7 * 60)),
+        Some(false),
+        5
+    ));
+    assert!(assignment_due(
+        Some(Duration::from_secs(8 * 60)),
+        Some(false),
+        9
+    ));
+    assert_eq!(next_misses(None, Some(false)), 1);
+    assert_eq!(next_misses(Some(2), Some(false)), 3);
+    assert_eq!(next_misses(Some(4), Some(true)), 1);
+    assert_eq!(next_misses(Some(4), None), 4);
+}
+
+#[test]
+fn a_second_miss_is_not_retried_after_thirty_seconds() {
+    let pass = Arc::new(RelayPass::new());
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&opened);
+    let open: OpenRelay = Arc::new(move |relay: &str, _: Duration| {
+        log.lock().expect("opens").push(relay.to_string());
+    });
+    let relay = "wss://dead.example";
+    pass.mark_requested(
+        relay,
+        Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        2,
+    );
+    pass.submit(
+        vec![relay.to_string()],
+        Vec::new(),
+        Duration::from_secs(30),
+        Arc::clone(&open),
+        Arc::new(|| Some(HashMap::new())),
+    );
+    wait_until(|| pass.settled());
+    assert!(opened.lock().expect("opens").is_empty());
+    assert_eq!(pass.misses(relay), Some(2));
+
+    pass.mark_requested(
+        relay,
+        Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+        2,
+    );
+    pass.submit(
+        vec![relay.to_string()],
+        Vec::new(),
+        Duration::from_secs(30),
+        open,
+        Arc::new(|| Some(HashMap::new())),
+    );
+    wait_until(|| pass.settled());
+    assert_eq!(
+        opened.lock().expect("opens").clone(),
+        vec![relay.to_string()]
+    );
+    assert_eq!(pass.misses(relay), Some(3));
+}
+
+#[test]
 fn relays_needing_assignment_keep_a_young_circuit_and_retry_a_missing_one() {
     let relays = vec![
         "wss://Damus.io".to_string(),
@@ -588,10 +671,19 @@ fn relays_needing_assignment_keep_a_young_circuit_and_retry_a_missing_one() {
     );
     paths.insert("wss://old.example".to_string(), "a → b → c".to_string());
     let mut requested = HashMap::new();
-    requested.insert("wss://Damus.io".to_string(), Duration::from_secs(60));
-    requested.insert("wss://damus.io/path".to_string(), Duration::from_secs(60));
-    requested.insert("wss://fresh.example".to_string(), Duration::from_secs(10));
-    requested.insert("wss://old.example".to_string(), Duration::from_secs(8 * 60));
+    requested.insert("wss://Damus.io".to_string(), (Duration::from_secs(60), 1));
+    requested.insert(
+        "wss://damus.io/path".to_string(),
+        (Duration::from_secs(60), 1),
+    );
+    requested.insert(
+        "wss://fresh.example".to_string(),
+        (Duration::from_secs(10), 1),
+    );
+    requested.insert(
+        "wss://old.example".to_string(),
+        (Duration::from_secs(8 * 60), 1),
+    );
     assert_eq!(
         relays_needing_assignment(&relays, Some(&paths), &requested),
         vec![
@@ -648,16 +740,19 @@ fn assignment_pass_opens_relays_the_decision_still_needs() {
     pass.mark_requested(
         "wss://fresh.example",
         Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+        1,
     );
     pass.mark_requested(
         "wss://damus.io",
         Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+        1,
     );
     pass.mark_requested(
         "wss://old.example",
         Instant::now()
             .checked_sub(Duration::from_secs(8 * 60))
             .unwrap(),
+        1,
     );
     let page = vec![
         "wss://Damus.io".to_string(),
@@ -782,7 +877,7 @@ fn held_handshakes_expire_and_keep_only_the_newest() {
 #[test]
 fn assignment_pass_forgets_relays_left_off_the_list() {
     let pass = Arc::new(RelayPass::new());
-    pass.mark_requested("wss://gone.example", Instant::now());
+    pass.mark_requested("wss://gone.example", Instant::now(), 1);
     let open: OpenRelay = Arc::new(|_: &str, _: Duration| {});
     pass.submit(
         vec!["wss://kept.example".to_string()],
@@ -866,7 +961,36 @@ fn assign_relay_does_not_dial_a_private_relay() {
 }
 
 #[test]
+fn the_production_connector_rejects_the_test_certificate() {
+    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = acceptor.accept(stream);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let connector = build_tls_connector().unwrap();
+    let tcp = std::net::TcpStream::connect(address).unwrap();
+    assert!(tls_handshake(&connector, "warm.example", tcp, deadline, None).is_err());
+
+    let loose = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .unwrap();
+    let tcp = std::net::TcpStream::connect(address).unwrap();
+    assert!(tls_handshake(&loose, "warm.example", tcp, deadline, None).is_ok());
+}
+
+#[test]
 fn assign_relay_opens_tls_through_socks_for_the_relay_url() {
+    use_invalid_test_certs();
     let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -952,6 +1076,7 @@ fn read_socks_connect(stream: &mut std::net::TcpStream) -> Option<(String, Strin
 }
 
 fn park_held_relay(relay: &str) {
+    use_invalid_test_certs();
     let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

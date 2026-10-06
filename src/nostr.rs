@@ -497,6 +497,10 @@ const SOCKS_MISCONFIGURED: &str = "socks proxy is misconfigured";
 const FETCH_POLL: Duration = Duration::from_millis(100);
 
 fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
+    #[cfg(test)]
+    if let Some(connector) = test_tls_connector() {
+        return Ok(connector);
+    }
     static CONNECTOR: OnceLock<Result<native_tls::TlsConnector, String>> = OnceLock::new();
     match CONNECTOR.get_or_init(build_tls_connector) {
         Ok(connector) => Ok(connector),
@@ -505,18 +509,28 @@ fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
 }
 
 fn build_tls_connector() -> Result<native_tls::TlsConnector, String> {
-    #[cfg(test)]
-    {
-        native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .danger_accept_invalid_hostnames(true)
-            .build()
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(test))]
-    {
-        native_tls::TlsConnector::new().map_err(|error| error.to_string())
-    }
+    native_tls::TlsConnector::new().map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+fn test_tls_slot() -> &'static OnceLock<native_tls::TlsConnector> {
+    static SLOT: OnceLock<native_tls::TlsConnector> = OnceLock::new();
+    &SLOT
+}
+
+#[cfg(test)]
+fn test_tls_connector() -> Option<&'static native_tls::TlsConnector> {
+    test_tls_slot().get()
+}
+
+#[cfg(test)]
+fn use_invalid_test_certs() {
+    let connector = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .expect("test tls connector");
+    let _ = test_tls_slot().set(connector);
 }
 
 fn relay_wait_is_over(deadline: Instant, cancel: Option<&AtomicBool>) -> bool {
@@ -951,12 +965,31 @@ pub(crate) fn assign_relay(
 const RELAY_CIRCUIT_WARM: Duration = Duration::from_secs(8 * 60);
 const RELAY_CIRCUIT_RETRY: Duration = Duration::from_secs(30);
 
+fn retry_wait(misses: u32) -> Duration {
+    let doubled = misses.saturating_sub(1).min(4);
+    RELAY_CIRCUIT_RETRY
+        .saturating_mul(1_u32 << doubled)
+        .min(RELAY_CIRCUIT_WARM)
+}
+
 fn relay_needs_assignment(age: Option<Duration>, circuit: Option<bool>) -> bool {
+    assignment_due(age, circuit, 1)
+}
+
+fn assignment_due(age: Option<Duration>, circuit: Option<bool>, misses: u32) -> bool {
     match age {
         None => circuit != Some(true),
         Some(age) if age >= RELAY_CIRCUIT_WARM => true,
-        Some(age) if circuit == Some(false) && age >= RELAY_CIRCUIT_RETRY => true,
+        Some(age) if circuit == Some(false) && age >= retry_wait(misses) => true,
         _ => false,
+    }
+}
+
+fn next_misses(previous: Option<u32>, circuit: Option<bool>) -> u32 {
+    match circuit {
+        Some(true) => 1,
+        Some(false) => previous.unwrap_or(0).saturating_add(1),
+        None => previous.unwrap_or(1),
     }
 }
 
@@ -969,15 +1002,17 @@ fn circuit_seen(paths: Option<&HashMap<String, String>>, relay: &str) -> Option<
 pub(crate) fn relays_needing_assignment(
     relays: &[String],
     paths: Option<&HashMap<String, String>>,
-    requested: &HashMap<String, Duration>,
+    requested: &HashMap<String, (Duration, u32)>,
 ) -> Vec<String> {
     relays
         .iter()
         .filter(|relay| {
-            relay_needs_assignment(
-                requested.get(relay.as_str()).copied(),
-                circuit_seen(paths, relay),
-            )
+            let (age, misses) = requested
+                .get(relay.as_str())
+                .copied()
+                .map(|(age, misses)| (Some(age), misses))
+                .unwrap_or((None, 1));
+            assignment_due(age, circuit_seen(paths, relay), misses)
         })
         .cloned()
         .collect()
@@ -998,9 +1033,14 @@ struct PendingAssignment {
 const ASSIGN_LIMIT: usize = 18;
 const ASSIGN_WINDOW: Duration = Duration::from_secs(60);
 
+struct RelayAttempt {
+    at: Instant,
+    misses: u32,
+}
+
 struct RelayPass {
     latest: Mutex<Option<PendingAssignment>>,
-    requested: Mutex<HashMap<String, Instant>>,
+    requested: Mutex<HashMap<String, RelayAttempt>>,
     dialed: Mutex<Vec<Instant>>,
     running: AtomicBool,
 }
@@ -1070,13 +1110,17 @@ impl RelayPass {
         reap_held_relays();
         let chosen = crate::pages::relays_to_assign(&job.page, &job.configured);
         let paths = (job.circuits)();
-        let ages = self.ages(&chosen, Instant::now());
-        for relay in relays_needing_assignment(&chosen, paths.as_ref(), &ages) {
+        let noted = self.noted(&chosen, Instant::now());
+        for relay in relays_needing_assignment(&chosen, paths.as_ref(), &noted) {
             let now = Instant::now();
             if !self.allow_assignment(now) {
                 break;
             }
-            self.mark_requested(&relay, now);
+            let misses = next_misses(
+                noted.get(relay.as_str()).map(|(_, misses)| *misses),
+                circuit_seen(paths.as_ref(), &relay),
+            );
+            self.mark_requested(&relay, now, misses);
             (job.open)(&relay, job.timeout);
         }
         self.retain_requested(&chosen);
@@ -1103,29 +1147,32 @@ impl RelayPass {
             .retain(|key, _| keep.iter().any(|kept| kept == key));
     }
 
-    fn ages(&self, relays: &[String], now: Instant) -> HashMap<String, Duration> {
+    fn noted(&self, relays: &[String], now: Instant) -> HashMap<String, (Duration, u32)> {
         let requested = self.requested.lock().expect("relay circuit pass");
-        let mut ages = HashMap::new();
+        let mut noted = HashMap::new();
         for relay in relays {
             let Some(key) = crate::tor_circuits::relay_key(relay) else {
                 continue;
             };
-            let Some(at) = requested.get(&key) else {
+            let Some(attempt) = requested.get(&key) else {
                 continue;
             };
-            ages.insert(relay.clone(), now.saturating_duration_since(*at));
+            noted.insert(
+                relay.clone(),
+                (now.saturating_duration_since(attempt.at), attempt.misses),
+            );
         }
-        ages
+        noted
     }
 
-    fn mark_requested(&self, relay: &str, at: Instant) {
+    fn mark_requested(&self, relay: &str, at: Instant, misses: u32) {
         let Some(key) = crate::tor_circuits::relay_key(relay) else {
             return;
         };
         self.requested
             .lock()
             .expect("relay circuit pass")
-            .insert(key, at);
+            .insert(key, RelayAttempt { at, misses });
     }
 
     #[cfg(test)]
@@ -1143,6 +1190,16 @@ impl RelayPass {
             .lock()
             .expect("relay circuit pass")
             .contains_key(&key)
+    }
+
+    #[cfg(test)]
+    fn misses(&self, relay: &str) -> Option<u32> {
+        let key = crate::tor_circuits::relay_key(relay)?;
+        self.requested
+            .lock()
+            .expect("relay circuit pass")
+            .get(&key)
+            .map(|attempt| attempt.misses)
     }
 }
 

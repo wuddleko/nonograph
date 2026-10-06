@@ -13,13 +13,16 @@ TOR_LOG=/var/lib/tor/notices.log
 : > "$TOR_LOG"
 chown debian-tor:debian-tor "$TOR_LOG"
 chmod 600 "$TOR_LOG"
-rm -f /tmp/tor-control-cookie
+mkdir -p /run/tor-control
+chown debian-tor:debian-tor /run/tor-control
+chmod 750 /run/tor-control
+rm -f /run/tor-control/cookie
 sudo -u debian-tor tor -f /etc/tor/torrc \
     --Log "notice file ${TOR_LOG}" \
     --Log "notice stdout" &
 TOR_PID=$!
 
-COOKIE=/tmp/tor-control-cookie
+COOKIE=/run/tor-control/cookie
 i=0
 while [ ! -f "$COOKIE" ]; do
     if ! kill -0 "$TOR_PID" 2>/dev/null; then
@@ -33,10 +36,6 @@ while [ ! -f "$COOKIE" ]; do
         break
     fi
 done
-if [ -f "$COOKIE" ]; then
-    chgrp debian-tor "$COOKIE"
-    chmod 640 "$COOKIE"
-fi
 
 # Wait for the .onion hostname file to appear
 echo "Waiting for Tor hidden service to be ready..."

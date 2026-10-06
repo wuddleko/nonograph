@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct CircuitLatch {
     pins: HashMap<String, String>,
@@ -216,7 +216,39 @@ fn info_lines<'a>(reply: &'a str, key: &str) -> Vec<&'a str> {
     Vec::new()
 }
 
+const CONTROL_CACHE: Duration = Duration::from_secs(1);
+
+struct CachedReply {
+    at: Instant,
+    reply: Option<String>,
+}
+
+fn control_cache() -> &'static Mutex<Option<CachedReply>> {
+    static CACHE: Mutex<Option<CachedReply>> = Mutex::new(None);
+    &CACHE
+}
+
+fn reused_control_reply(cached: &CachedReply, now: Instant) -> Option<Option<String>> {
+    (now.saturating_duration_since(cached.at) < CONTROL_CACHE).then(|| cached.reply.clone())
+}
+
 fn control_reply() -> Option<String> {
+    let mut cache = control_cache().lock().expect("tor control cache");
+    let now = Instant::now();
+    if let Some(cached) = cache.as_ref() {
+        if let Some(reply) = reused_control_reply(cached, now) {
+            return reply;
+        }
+    }
+    let reply = fetch_control_reply();
+    *cache = Some(CachedReply {
+        at: Instant::now(),
+        reply: reply.clone(),
+    });
+    reply
+}
+
+fn fetch_control_reply() -> Option<String> {
     let cookie = cookie_hex()?;
     let mut stream =
         TcpStream::connect_timeout(&"127.0.0.1:9051".parse().ok()?, Duration::from_millis(400))
@@ -247,7 +279,7 @@ fn control_reply() -> Option<String> {
 
 fn cookie_hex() -> Option<String> {
     for path in [
-        "/tmp/tor-control-cookie",
+        "/run/tor-control/cookie",
         "/var/lib/tor/control_auth_cookie",
     ] {
         if let Ok(bytes) = std::fs::read(path) {

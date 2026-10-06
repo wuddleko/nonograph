@@ -29,13 +29,16 @@ RUN apt-get update && apt-get install -y \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
+# Cookie auth is full Tor control (SETCONF, SIGNAL SHUTDOWN), not GETINFO
+# circuit-status. debian-tor group membership is the grant that lets
+# nonograph read the cookie. /run/tor-control is not writable by nonograph.
 RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
     echo "SocksPort 127.0.0.1:9050 IsolateSOCKSAuth" >> /etc/tor/torrc && \
     echo "SocksPolicy accept 127.0.0.1" >> /etc/tor/torrc && \
     echo "SocksPolicy reject *" >> /etc/tor/torrc && \
     echo "ControlPort 127.0.0.1:9051" >> /etc/tor/torrc && \
     echo "CookieAuthentication 1" >> /etc/tor/torrc && \
-    echo "CookieAuthFile /tmp/tor-control-cookie" >> /etc/tor/torrc && \
+    echo "CookieAuthFile /run/tor-control/cookie" >> /etc/tor/torrc && \
     echo "CookieAuthFileGroupReadable 1" >> /etc/tor/torrc && \
     echo "ControlSocket 0" >> /etc/tor/torrc && \
     echo "" >> /etc/tor/torrc && \
@@ -44,12 +47,14 @@ RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
 
 RUN useradd -r -s /bin/false -u 1000 nonograph && \
     usermod -aG debian-tor nonograph
-RUN mkdir -p /app/content /app/templates /var/lib/tor && \
+RUN mkdir -p /app/content /app/templates /var/lib/tor /run/tor-control && \
     mkdir -p /var/lib/tor/hidden_service && \
     chmod 700 /var/lib/tor && \
     chmod 700 /var/lib/tor/hidden_service && \
     chown -R nonograph:nonograph /app && \
     chown -R debian-tor:debian-tor /var/lib/tor && \
+    chown debian-tor:debian-tor /run/tor-control && \
+    chmod 750 /run/tor-control && \
     echo "nonograph ALL=(debian-tor) NOPASSWD: /usr/bin/tor" >> /etc/sudoers && \
     echo "root ALL=(nonograph) NOPASSWD: /app/nonograph" >> /etc/sudoers
 

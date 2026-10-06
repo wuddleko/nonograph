@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 static REMEMBER: Mutex<()> = Mutex::new(());
 
@@ -18,6 +19,29 @@ const SAMPLE: &str = "\
 .\r\n\
 250 OK\r\n\
 250 closing connection\r\n";
+
+#[test]
+fn a_control_reply_is_reused_for_a_second() {
+    let now = Instant::now();
+    let cached = CachedReply {
+        at: now,
+        reply: Some("250 OK".to_string()),
+    };
+    assert_eq!(
+        reused_control_reply(&cached, now + Duration::from_millis(999)),
+        Some(Some("250 OK".to_string()))
+    );
+    assert!(reused_control_reply(&cached, now + Duration::from_secs(1)).is_none());
+
+    let missing = CachedReply {
+        at: now,
+        reply: None,
+    };
+    assert_eq!(
+        reused_control_reply(&missing, now + Duration::from_millis(999)),
+        Some(None)
+    );
+}
 
 #[test]
 fn circuit_status_waits_only_while_a_proxy_can_read_circuits() {
