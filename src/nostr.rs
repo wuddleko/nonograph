@@ -882,6 +882,7 @@ fn connect_relay(
     if public_only && !public_relay_url(relay) {
         return Err("relay address is not public".to_string());
     }
+    wait_budget(deadline, cancel)?;
     let connector = tls_connector()?;
     if let Some(proxy) = proxy {
         let tcp = connect_tcp(proxy, deadline, cancel)?;
