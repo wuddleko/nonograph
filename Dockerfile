@@ -12,6 +12,7 @@ WORKDIR /app
 COPY Cargo.toml build.rs robots.txt ./
 COPY parser ./parser
 COPY page ./page
+COPY nip44 ./nip44
 COPY src ./src
 
 RUN cargo build --release

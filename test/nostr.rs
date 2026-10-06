@@ -1418,14 +1418,13 @@ fn assert_signature(note: &SignedNote) {
                 .collect()
         })
         .collect::<Vec<Vec<String>>>();
-    let preimage = canonical_event(
+    let recomputed = nonograph_nip44::event_id(
         parsed["pubkey"].as_str().unwrap(),
         parsed["created_at"].as_i64().unwrap(),
         parsed["kind"].as_u64().unwrap() as u32,
         &tags,
         parsed["content"].as_str().unwrap(),
     );
-    let recomputed: [u8; 32] = Sha256::digest(preimage.as_bytes()).into();
     assert_eq!(recomputed, note.id);
     secp.verify_schnorr(&signature, &Message::from_digest(note.id), &pubkey)
         .unwrap();
@@ -1462,7 +1461,7 @@ fn tab_long_form_signature_verifies() {
     ];
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
-    let id = event_id(&pubkey_hex, created_at, KIND_LONG_FORM, &tags, content);
+    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, KIND_LONG_FORM, &tags, content);
     let sig = SECP256K1.sign_schnorr_with_aux_rand(&Message::from_digest(id), &keypair, &[0u8; 32]);
     let json = event_wire(
         &hex_encode(&id),

@@ -21,6 +21,12 @@ pub enum Error {
     Mac,
     Padding,
     Utf8,
+    Note,
+    Locator,
+    Kind,
+    Stamp,
+    Tag,
+    Id,
 }
 
 impl std::fmt::Display for Error {
@@ -32,6 +38,12 @@ impl std::fmt::Display for Error {
             Error::Mac => write!(f, "invalid MAC"),
             Error::Padding => write!(f, "invalid padding"),
             Error::Utf8 => write!(f, "invalid UTF-8"),
+            Error::Note => write!(f, "invalid note"),
+            Error::Locator => write!(f, "locator mismatch"),
+            Error::Kind => write!(f, "invalid kind"),
+            Error::Stamp => write!(f, "weak stamp"),
+            Error::Tag => write!(f, "invalid tag"),
+            Error::Id => write!(f, "id mismatch"),
         }
     }
 }
@@ -185,7 +197,7 @@ fn calc_padded_len(unpadded_len: usize) -> usize {
     (chunk * ((unpadded_len - 1) / chunk + 1)) as usize
 }
 
-fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
+pub(crate) fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
     let bytes = HmacSha256::new_from_slice(salt)
         .expect("sha256 accepts this salt")
         .chain_update(ikm)
@@ -215,6 +227,14 @@ fn hkdf_expand(prk: &[u8; 32], info: &[u8; 32]) -> [u8; MESSAGE_KEY_LEN] {
     okm
 }
 
+mod seal;
+mod stamp;
+
+pub use seal::{open, seal, Note, SECRET_LEN};
+pub use stamp::{
+    check_stamp, event_id, push_json_string, push_tags, KIND, LOCATOR_LEN, POW_BITS,
+};
+
 #[cfg(test)]
-#[path = "../test/nip44.rs"]
+#[path = "../../test/nip44.rs"]
 mod tests;

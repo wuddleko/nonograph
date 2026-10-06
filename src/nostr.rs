@@ -1909,28 +1909,6 @@ fn nip19_tlv(value: &str, hrp: &str) -> Option<Vec<(u8, Vec<u8>)>> {
     (index == data.len()).then_some(fields)
 }
 
-fn canonical_event(
-    pubkey_hex: &str,
-    created_at: i64,
-    kind: u32,
-    tags: &[Vec<String>],
-    content: &str,
-) -> String {
-    let mut out = String::new();
-    out.push_str("[0,\"");
-    out.push_str(pubkey_hex);
-    out.push_str("\",");
-    out.push_str(&created_at.to_string());
-    out.push(',');
-    out.push_str(&kind.to_string());
-    out.push(',');
-    push_tags(&mut out, tags);
-    out.push(',');
-    push_json_string(&mut out, content);
-    out.push(']');
-    out
-}
-
 fn long_form_tags(title: &str, author: &str, created_at: i64) -> Vec<Vec<String>> {
     let mut tags = vec![
         vec!["d".to_string(), random_hex(16)],
@@ -1952,7 +1930,7 @@ fn signed_event(
 ) -> SignedNote {
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
-    let id = event_id(&pubkey_hex, created_at, kind, tags, content);
+    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, tags, content);
     let sig = SECP256K1.sign_schnorr(&Message::from_digest(id), keypair);
     let event_json = event_wire(
         &hex_encode(&id),
@@ -1978,7 +1956,7 @@ fn rumor_json(
     content: &str,
 ) -> String {
     let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
-    let id = event_id(&pubkey_hex, created_at, kind, tags, content);
+    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, tags, content);
     event_wire(
         &hex_encode(&id),
         &pubkey_hex,
@@ -1988,16 +1966,6 @@ fn rumor_json(
         content,
         None,
     )
-}
-
-fn event_id(
-    pubkey_hex: &str,
-    created_at: i64,
-    kind: u32,
-    tags: &[Vec<String>],
-    content: &str,
-) -> [u8; 32] {
-    Sha256::digest(canonical_event(pubkey_hex, created_at, kind, tags, content).as_bytes()).into()
 }
 
 fn event_wire(
@@ -2010,20 +1978,20 @@ fn event_wire(
     sig_hex: Option<&str>,
 ) -> String {
     let mut out = String::from("{\"id\":");
-    push_json_string(&mut out, id_hex);
+    nonograph_nip44::push_json_string(&mut out, id_hex);
     out.push_str(",\"pubkey\":");
-    push_json_string(&mut out, pubkey_hex);
+    nonograph_nip44::push_json_string(&mut out, pubkey_hex);
     out.push_str(",\"created_at\":");
     out.push_str(&created_at.to_string());
     out.push_str(",\"kind\":");
     out.push_str(&kind.to_string());
     out.push_str(",\"tags\":");
-    push_tags(&mut out, tags);
+    nonograph_nip44::push_tags(&mut out, tags);
     out.push_str(",\"content\":");
-    push_json_string(&mut out, content);
+    nonograph_nip44::push_json_string(&mut out, content);
     if let Some(sig_hex) = sig_hex {
         out.push_str(",\"sig\":");
-        push_json_string(&mut out, sig_hex);
+        nonograph_nip44::push_json_string(&mut out, sig_hex);
     }
     out.push('}');
     out
@@ -2088,7 +2056,7 @@ fn event_tags(value: &serde_json::Value) -> Option<Vec<Vec<String>>> {
 }
 
 fn check_id(parsed: &ParsedEvent) -> bool {
-    event_id(
+    nonograph_nip44::event_id(
         &parsed.pubkey_hex,
         parsed.created_at,
         parsed.kind,
@@ -2147,10 +2115,10 @@ fn nip44_encrypt(
     public_key: &[u8; 32],
 ) -> Result<String, WrapError> {
     let conversation =
-        crate::nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
+        nonograph_nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
     let mut nonce = [0u8; 32];
     thread_rng().fill(&mut nonce);
-    crate::nip44::encrypt(plaintext, &conversation, &nonce).map_err(|_| WrapError)
+    nonograph_nip44::encrypt(plaintext, &conversation, &nonce).map_err(|_| WrapError)
 }
 
 fn nip44_decrypt(
@@ -2159,52 +2127,14 @@ fn nip44_decrypt(
     public_key: &[u8; 32],
 ) -> Result<String, WrapError> {
     let conversation =
-        crate::nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
-    crate::nip44::decrypt(payload, &conversation).map_err(|_| WrapError)
+        nonograph_nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
+    nonograph_nip44::decrypt(payload, &conversation).map_err(|_| WrapError)
 }
 
 fn xonly_pubkey(secret: &[u8; 32]) -> Result<[u8; 32], WrapError> {
     let secret_key = secp256k1::SecretKey::from_slice(secret).map_err(|_| WrapError)?;
     let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
     Ok(keypair.x_only_public_key().0.serialize())
-}
-
-fn push_tags(out: &mut String, tags: &[Vec<String>]) {
-    out.push('[');
-    for (tag_index, tag) in tags.iter().enumerate() {
-        if tag_index > 0 {
-            out.push(',');
-        }
-        out.push('[');
-        for (item_index, item) in tag.iter().enumerate() {
-            if item_index > 0 {
-                out.push(',');
-            }
-            push_json_string(out, item);
-        }
-        out.push(']');
-    }
-    out.push(']');
-}
-
-fn push_json_string(out: &mut String, value: &str) {
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\n' => out.push_str("\\n"),
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{0008}' => out.push_str("\\b"),
-            '\u{000c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 fn random_hex(bytes: usize) -> String {

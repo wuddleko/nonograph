@@ -5,7 +5,6 @@ mod archiver;
 pub(crate) mod cache;
 pub(crate) mod config;
 pub(crate) mod csrf;
-mod nip44;
 pub(crate) mod nostr;
 mod pages;
 pub(crate) mod publish;
