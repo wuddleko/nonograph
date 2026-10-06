@@ -5,6 +5,7 @@
 
             const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
             const MAX_EXTRA_RELAYS = 8;
+            const MAX_FETCH_RELAYS = 6;
 
             function loadExtraRelays() {
                 try {
@@ -43,6 +44,21 @@
 
             function hasAnyPublishRelay() {
                 return mergePublishRelays().length > 0;
+            }
+
+            // Same cap as nostr.js relaysForPublicPublish: extras past six can
+            // keep a spinner, but they must not hold On Nostr.
+            function relaysForPublicPublish(relays) {
+                const out = [];
+                for (const relay of relays) {
+                    if (out.length === MAX_FETCH_RELAYS) {
+                        break;
+                    }
+                    if (!out.includes(relay)) {
+                        out.push(relay);
+                    }
+                }
+                return out;
             }
 
             globalThis.nonographPublishPublicNote = async function (fields) {
@@ -114,10 +130,30 @@
                 'button[type="submit"], .nostr-publish',
             );
             const errorEl = form.querySelector(".form-error");
+            const circuitByRelay = new Map();
+            let circuitsTracked = false;
+
+            function everyRelayHasPath() {
+                if (!circuitsTracked) {
+                    return true;
+                }
+                const relays = relaysForPublicPublish(mergePublishRelays());
+                return (
+                    relays.length > 0 &&
+                    relays.every((relay) => {
+                        const path = circuitByRelay.get(relayKey(relay));
+                        return typeof path === "string" && path.length > 0;
+                    })
+                );
+            }
+
             function syncNostrButtons() {
                 const show = hasAnyPublishRelay();
+                const waiting = show && !everyRelayHasPath();
                 document.querySelectorAll(".nostr-publish").forEach((button) => {
                     button.hidden = !show;
+                    button.classList.toggle("circuits-pending", waiting);
+                    button.setAttribute("aria-disabled", waiting ? "true" : "false");
                 });
             }
 
@@ -164,7 +200,7 @@
                     }
                     list.hidden = relays.length === 0;
                 });
-                syncNostrButtons();
+                paintRelayCircuits();
             }
 
             async function addRelayFromBlock(block) {
@@ -219,6 +255,7 @@
                     errorEl.textContent = "";
                 }
                 renderExtraRelayLists();
+                void sendRelayList();
             }
 
             document.querySelectorAll("[data-relay-add]").forEach((block) => {
@@ -249,12 +286,45 @@
                     loadExtraRelays().filter((entry) => entry !== relay),
                 );
                 renderExtraRelayLists();
+                void sendRelayList();
             });
 
             renderExtraRelayLists();
-
-            const circuitByRelay = new Map();
+            let relayListSending = false;
+            let relayListDirty = false;
+            async function sendRelayList() {
+                relayListDirty = true;
+                if (relayListSending) {
+                    return;
+                }
+                relayListSending = true;
+                try {
+                    while (relayListDirty) {
+                        relayListDirty = false;
+                        try {
+                            await fetch("/tor-circuits", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    relays: mergePublishRelays(),
+                                    csrf_token: form.csrf_token
+                                        ? form.csrf_token.value
+                                        : "",
+                                }),
+                            });
+                        } catch (error) {
+                            break;
+                        }
+                    }
+                } finally {
+                    relayListSending = false;
+                }
+                if (relayListDirty) {
+                    void sendRelayList();
+                }
+            }
             async function refreshRelayCircuits() {
+                await sendRelayList();
                 let payload;
                 try {
                     const response = await fetch("/tor-circuits", { cache: "no-store" });
@@ -265,22 +335,54 @@
                 } catch (error) {
                     return;
                 }
-                const relays = payload.relays || {};
-                for (const [relay, path] of Object.entries(relays)) {
-                    if (typeof path === "string" && path) {
-                        circuitByRelay.set(relayKey(relay), path);
+                circuitsTracked = payload.tracking === true;
+                const live = new Set();
+                if (circuitsTracked) {
+                    for (const [relay, path] of Object.entries(payload.relays || {})) {
+                        if (typeof path !== "string" || !path) {
+                            continue;
+                        }
+                        const key = relayKey(relay);
+                        live.add(key);
+                        circuitByRelay.set(key, path);
                     }
                 }
+                for (const key of [...circuitByRelay.keys()]) {
+                    if (!live.has(key)) {
+                        circuitByRelay.delete(key);
+                    }
+                }
+                paintRelayCircuits();
+            }
+            function paintRelayCircuits() {
                 document.querySelectorAll(".relay-list li[data-relay]").forEach((row) => {
-                    const path = circuitByRelay.get(relayKey(row.dataset.relay));
+                    const path = circuitsTracked
+                        ? circuitByRelay.get(relayKey(row.dataset.relay || ""))
+                        : "";
                     let line = row.querySelector(".relay-circuit");
                     if (!line) {
                         line = document.createElement("div");
                         line.className = "relay-circuit";
                         row.append(line);
                     }
-                    line.textContent = path || "waiting for publish";
+                    line.replaceChildren();
+                    if (!circuitsTracked) {
+                        line.classList.remove("relay-circuit-wait");
+                        return;
+                    }
+                    if (path) {
+                        line.classList.remove("relay-circuit-wait");
+                        line.textContent = path;
+                        return;
+                    }
+                    line.classList.add("relay-circuit-wait");
+                    const spinner = document.createElement("span");
+                    spinner.className = "relay-spinner";
+                    spinner.setAttribute("role", "status");
+                    spinner.setAttribute("aria-label", "Opening a circuit");
+                    line.append(spinner);
                 });
+                syncNostrButtons();
             }
             refreshRelayCircuits();
             setInterval(refreshRelayCircuits, 2000);
@@ -306,7 +408,7 @@
             }
 
             async function publishOnNostr() {
-                if (publishing) {
+                if (publishing || !everyRelayHasPath()) {
                     return;
                 }
                 if (editor.value.length > contentLimit) {

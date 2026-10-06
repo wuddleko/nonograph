@@ -748,6 +748,75 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
 }
 
 #[test]
+fn tor_circuit_post_uses_the_publish_csrf_token() {
+    let mut config = crate::config::Config::default();
+    let relays = vec!["wss://relay.damus.io".to_string()];
+    let missing = TorCircuitsBody {
+        relays: relays.clone(),
+        csrf_token: String::new(),
+    };
+    config.security.csrf_protection_enabled = true;
+    assert!(relays_for_circuit_pass(&missing, &config).is_none());
+
+    let accepted = TorCircuitsBody {
+        relays: relays.clone(),
+        csrf_token: crate::csrf::generate_csrf_token_with_timestamp(),
+    };
+    assert_eq!(
+        relays_for_circuit_pass(&accepted, &config).as_deref(),
+        Some(relays.as_slice())
+    );
+    config.security.csrf_protection_enabled = false;
+    assert_eq!(
+        relays_for_circuit_pass(&missing, &config).as_deref(),
+        Some(relays.as_slice())
+    );
+}
+
+#[test]
+fn relays_to_assign_follow_a_publish() {
+    let configured = vec![
+        "wss://relay.primal.net".to_string(),
+        "wss://relay.snort.social".to_string(),
+        "wss://offchain.pub".to_string(),
+    ];
+    let mut page = configured.clone();
+    page.push("wss://127.0.0.1".to_string());
+    page.push("wss://relay.primal.net".to_string());
+    for n in 1..=8 {
+        page.push(format!("wss://extra{n}.example"));
+    }
+    let chosen = relays_to_assign(&page, &configured);
+    assert!(chosen.len() <= crate::nostr::MAX_FETCH_RELAYS);
+    assert!(chosen.starts_with(&configured));
+    assert!(chosen.iter().all(|relay| !relay.contains("127.0.0.1")));
+    assert_eq!(
+        chosen,
+        vec![
+            "wss://relay.primal.net".to_string(),
+            "wss://relay.snort.social".to_string(),
+            "wss://offchain.pub".to_string(),
+            "wss://extra1.example".to_string(),
+            "wss://extra2.example".to_string(),
+            "wss://extra3.example".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn relays_to_assign_stops_at_six_when_none_are_configured() {
+    let configured = vec!["wss://127.0.0.1".to_string()];
+    let page: Vec<String> = (1..=8).map(|n| format!("wss://extra{n}.example")).collect();
+    let chosen = relays_to_assign(&page, &configured);
+    assert_eq!(
+        chosen,
+        (1..=6)
+            .map(|n| format!("wss://extra{n}.example"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn public_note_keeps_the_same_short_id() {
     let storage = crate::cache::PostCache::shared(1);
     let config = crate::config::Config::default();
@@ -978,6 +1047,48 @@ fn public_note_shares_a_short_id_for_nevent_and_naddr() {
         .collect();
     assert_eq!(shorts.len(), 1);
     assert_eq!(shorts[0], via_naddr.id);
+}
+
+#[test]
+fn compose_page_posts_its_relays_and_still_paints_paths() {
+    let home = include_str!("../templates/home.js");
+    let add = home.find("async function addRelayFromBlock").unwrap();
+    let add_listener = home
+        .find("document.querySelectorAll(\"[data-relay-add]\")")
+        .unwrap();
+    let remove = home.find("closest(\".relay-remove\")").unwrap();
+    let listed = home
+        .find("renderExtraRelayLists();\n            let relayListSending")
+        .unwrap();
+    let send = home.find("async function sendRelayList()").unwrap();
+    let refresh = home.find("async function refreshRelayCircuits()").unwrap();
+    let get = home
+        .find("fetch(\"/tor-circuits\", { cache: \"no-store\" })")
+        .unwrap();
+    let paint = home[get..].find("paintRelayCircuits()").unwrap();
+    let publish = home.find("async function publishOnNostr()").unwrap();
+    assert!(home[add..add_listener].contains("void sendRelayList()"));
+    assert!(home[remove..listed].contains("void sendRelayList()"));
+    assert!(home[send..refresh].contains("method: \"POST\""));
+    assert!(home[send..refresh].contains("relays: mergePublishRelays()"));
+    assert!(home[send..refresh].contains("csrf_token:"));
+    assert!(refresh < get);
+    assert!(home[refresh..get].contains("await sendRelayList()"));
+    assert!(!home[get..get + paint].contains("method: \"POST\""));
+    assert!(home.contains("relay-spinner"));
+    assert!(home.contains("everyRelayHasPath()"));
+    let waiting = home.find("function everyRelayHasPath()").unwrap();
+    let sync = home.find("function syncNostrButtons()").unwrap();
+    assert!(home[waiting..sync].contains("if (!circuitsTracked)"));
+    assert!(home[waiting..sync].contains("relaysForPublicPublish(mergePublishRelays())"));
+    assert!(home.contains("payload.tracking === true"));
+    assert!(home.contains("circuits-pending"));
+    assert!(!home.contains("waiting for publish"));
+    assert!(home[publish..publish + 250].contains("!everyRelayHasPath()"));
+    let css = include_str!("../templates/home.css");
+    assert!(css.contains(".relay-spinner"));
+    assert!(css.contains(".nostr-publish.circuits-pending"));
+    assert!(css.contains("filter: blur(3px)"));
 }
 
 #[test]

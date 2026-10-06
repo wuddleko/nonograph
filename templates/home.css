@@ -308,11 +308,42 @@
             }
 
             .relay-circuit {
-                display: block;
+                display: flex;
+                align-items: center;
+                min-height: 14px;
                 margin-top: 2px;
                 color: #888;
                 font-size: 11px;
                 line-height: 1.35;
+            }
+
+            .relay-spinner {
+                display: inline-block;
+                width: 12px;
+                height: 12px;
+                box-sizing: border-box;
+                border: 1.5px solid #ccc;
+                border-top-color: #333;
+                border-radius: 50%;
+                animation: relay-spin 0.7s linear infinite;
+            }
+
+            @keyframes relay-spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .relay-spinner {
+                    animation: none;
+                }
+            }
+
+            .nostr-publish.circuits-pending {
+                filter: blur(3px);
+                pointer-events: none;
+                user-select: none;
             }
 
             .sidebar-relays .relay-empty {

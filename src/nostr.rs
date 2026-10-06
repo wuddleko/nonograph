@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -297,6 +298,10 @@ fn relay_socks() -> RelaySocks {
     *RELAY_SOCKS.lock().expect("relay socks lock")
 }
 
+pub(crate) fn relays_use_proxy() -> bool {
+    matches!(relay_socks(), RelaySocks::Proxy(_))
+}
+
 pub fn public_note_from_json(
     value: &serde_json::Value,
     title_max: usize,
@@ -395,6 +400,97 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
 }
 
 type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
+type HeldTls = native_tls::TlsStream<TcpStream>;
+
+// A parked handshake is one socket. Relays close an idle one after about a minute,
+// and a visitor can name a new set of relays faster than that.
+const HELD_RELAY_LIMIT: usize = 16;
+const HELD_RELAY_TTL: Duration = Duration::from_secs(45);
+
+struct HeldRelay {
+    at: Instant,
+    tls: HeldTls,
+}
+
+fn held_relays() -> &'static Mutex<HashMap<String, HeldRelay>> {
+    static HELD: OnceLock<Mutex<HashMap<String, HeldRelay>>> = OnceLock::new();
+    HELD.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn take_held(relay: &str) -> Option<HeldTls> {
+    let key = crate::tor_circuits::relay_key(relay)?;
+    let mut held = held_relays().lock().expect("held relay");
+    let entry = held.remove(&key)?;
+    if entry.at.elapsed() >= HELD_RELAY_TTL {
+        drop(held);
+        drop(entry);
+        return None;
+    }
+    drop(held);
+    Some(entry.tls)
+}
+
+fn store_held(relay: &str, tls: HeldTls) {
+    let Some(key) = crate::tor_circuits::relay_key(relay) else {
+        return;
+    };
+    let dropped = {
+        let mut held = held_relays().lock().expect("held relay");
+        let now = Instant::now();
+        let replaced = held.insert(key, HeldRelay { at: now, tls });
+        let mut dropped = reap_held(&mut held, now);
+        if let Some(previous) = replaced {
+            dropped.push(previous);
+        }
+        dropped
+    };
+    drop(dropped);
+}
+
+fn reap_held_relays() {
+    let dropped = {
+        let mut held = held_relays().lock().expect("held relay");
+        reap_held(&mut held, Instant::now())
+    };
+    drop(dropped);
+}
+
+fn reap_held(held: &mut HashMap<String, HeldRelay>, now: Instant) -> Vec<HeldRelay> {
+    let present: Vec<(String, Instant)> = held
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.at))
+        .collect();
+    let mut dropped = Vec::new();
+    for key in held_keys_to_drop(&present, now, HELD_RELAY_TTL, HELD_RELAY_LIMIT) {
+        if let Some(entry) = held.remove(&key) {
+            dropped.push(entry);
+        }
+    }
+    dropped
+}
+
+fn held_keys_to_drop(
+    entries: &[(String, Instant)],
+    now: Instant,
+    ttl: Duration,
+    limit: usize,
+) -> Vec<String> {
+    let mut live = Vec::new();
+    let mut drop_keys = Vec::new();
+    for (key, at) in entries {
+        if now.saturating_duration_since(*at) >= ttl {
+            drop_keys.push(key.clone());
+        } else {
+            live.push((key.clone(), *at));
+        }
+    }
+    if live.len() > limit {
+        live.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+        let extra = live.len() - limit;
+        drop_keys.extend(live.into_iter().take(extra).map(|(key, _)| key));
+    }
+    drop_keys
+}
 
 const RELAY_TIMEOUT: &str = "timed out waiting for the relay";
 const SOCKS_MISCONFIGURED: &str = "socks proxy is misconfigured";
@@ -402,11 +498,24 @@ const FETCH_POLL: Duration = Duration::from_millis(100);
 
 fn tls_connector() -> Result<&'static native_tls::TlsConnector, String> {
     static CONNECTOR: OnceLock<Result<native_tls::TlsConnector, String>> = OnceLock::new();
-    match CONNECTOR
-        .get_or_init(|| native_tls::TlsConnector::new().map_err(|error| error.to_string()))
-    {
+    match CONNECTOR.get_or_init(build_tls_connector) {
         Ok(connector) => Ok(connector),
         Err(error) => Err(error.clone()),
+    }
+}
+
+fn build_tls_connector() -> Result<native_tls::TlsConnector, String> {
+    #[cfg(test)]
+    {
+        native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(test))]
+    {
+        native_tls::TlsConnector::new().map_err(|error| error.to_string())
     }
 }
 
@@ -813,6 +922,261 @@ fn connect_relay(
     Err(last_error)
 }
 
+pub(crate) fn assign_relay(
+    relay: &str,
+    deadline: Instant,
+    socks: RelaySocks,
+) -> Result<(), String> {
+    let RelaySocks::Proxy(proxy) = socks else {
+        return Err(SOCKS_MISCONFIGURED.to_string());
+    };
+    if !public_relay_url(relay) {
+        return Err("relay address is not public".to_string());
+    }
+    let request = relay
+        .into_client_request()
+        .map_err(|error| error.to_string())?;
+    let uri = request.uri().clone();
+    let host = uri.host().ok_or("relay url has no host")?.to_string();
+    let port = uri.port_u16().unwrap_or(443);
+    let connector = tls_connector()?;
+    let tcp = connect_tcp(proxy, deadline, None)?;
+    socks5_connect(&tcp, &host, port, relay, deadline, None)?;
+    let tls = tls_handshake(connector, &host, tcp, deadline, None)?;
+    store_held(relay, tls);
+    Ok(())
+}
+
+const RELAY_CIRCUIT_WARM: Duration = Duration::from_secs(8 * 60);
+const RELAY_CIRCUIT_RETRY: Duration = Duration::from_secs(30);
+
+fn relay_needs_assignment(age: Option<Duration>, circuit: Option<bool>) -> bool {
+    match age {
+        None => circuit != Some(true),
+        Some(age) if age >= RELAY_CIRCUIT_WARM => true,
+        Some(age) if circuit == Some(false) && age >= RELAY_CIRCUIT_RETRY => true,
+        _ => false,
+    }
+}
+
+fn circuit_seen(paths: Option<&HashMap<String, String>>, relay: &str) -> Option<bool> {
+    let paths = paths?;
+    let key = crate::tor_circuits::relay_key(relay)?;
+    Some(paths.contains_key(&key))
+}
+
+pub(crate) fn relays_needing_assignment(
+    relays: &[String],
+    paths: Option<&HashMap<String, String>>,
+    requested: &HashMap<String, Duration>,
+) -> Vec<String> {
+    relays
+        .iter()
+        .filter(|relay| {
+            relay_needs_assignment(
+                requested.get(relay.as_str()).copied(),
+                circuit_seen(paths, relay),
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+type OpenRelay = Arc<dyn Fn(&str, Duration) + Send + Sync>;
+type ReadCircuits = Arc<dyn Fn() -> Option<HashMap<String, String>> + Send + Sync>;
+
+struct PendingAssignment {
+    page: Vec<String>,
+    configured: Vec<String>,
+    timeout: Duration,
+    open: OpenRelay,
+    circuits: ReadCircuits,
+}
+
+// Hidden-service requests share the local address, so dials share one window.
+const ASSIGN_LIMIT: usize = 18;
+const ASSIGN_WINDOW: Duration = Duration::from_secs(60);
+
+struct RelayPass {
+    latest: Mutex<Option<PendingAssignment>>,
+    requested: Mutex<HashMap<String, Instant>>,
+    dialed: Mutex<Vec<Instant>>,
+    running: AtomicBool,
+}
+
+impl RelayPass {
+    fn new() -> Self {
+        Self {
+            latest: Mutex::new(None),
+            requested: Mutex::new(HashMap::new()),
+            dialed: Mutex::new(Vec::new()),
+            running: AtomicBool::new(false),
+        }
+    }
+
+    fn submit(
+        self: &Arc<Self>,
+        page: Vec<String>,
+        configured: Vec<String>,
+        timeout: Duration,
+        open: OpenRelay,
+        circuits: ReadCircuits,
+    ) {
+        {
+            let mut latest = self.latest.lock().expect("relay circuit pass");
+            *latest = Some(PendingAssignment {
+                page,
+                configured,
+                timeout,
+                open,
+                circuits,
+            });
+        }
+        if self.running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let pass = Arc::clone(self);
+        if std::thread::Builder::new()
+            .name("relay-circuits".to_string())
+            .spawn(move || pass.run())
+            .is_err()
+        {
+            self.running.store(false, Ordering::Release);
+            eprintln!("Nonograph: could not start relay circuit assignment");
+        }
+    }
+
+    // A newer list replaces the one waiting. It is used when this pass finishes.
+    fn run(self: Arc<Self>) {
+        loop {
+            let job = {
+                let mut latest = self.latest.lock().expect("relay circuit pass");
+                latest.take()
+            };
+            let Some(job) = job else {
+                self.running.store(false, Ordering::Release);
+                let pending = self.latest.lock().expect("relay circuit pass").is_some();
+                if !pending || self.running.swap(true, Ordering::AcqRel) {
+                    break;
+                }
+                continue;
+            };
+            self.apply(&job);
+        }
+    }
+
+    fn apply(&self, job: &PendingAssignment) {
+        reap_held_relays();
+        let chosen = crate::pages::relays_to_assign(&job.page, &job.configured);
+        let paths = (job.circuits)();
+        let ages = self.ages(&chosen, Instant::now());
+        for relay in relays_needing_assignment(&chosen, paths.as_ref(), &ages) {
+            let now = Instant::now();
+            if !self.allow_assignment(now) {
+                break;
+            }
+            self.mark_requested(&relay, now);
+            (job.open)(&relay, job.timeout);
+        }
+        self.retain_requested(&chosen);
+    }
+
+    fn allow_assignment(&self, now: Instant) -> bool {
+        let mut dialed = self.dialed.lock().expect("relay circuit pass");
+        dialed.retain(|at| now.saturating_duration_since(*at) < ASSIGN_WINDOW);
+        if dialed.len() >= ASSIGN_LIMIT {
+            return false;
+        }
+        dialed.push(now);
+        true
+    }
+
+    fn retain_requested(&self, relays: &[String]) {
+        let keep: Vec<String> = relays
+            .iter()
+            .filter_map(|relay| crate::tor_circuits::relay_key(relay))
+            .collect();
+        self.requested
+            .lock()
+            .expect("relay circuit pass")
+            .retain(|key, _| keep.iter().any(|kept| kept == key));
+    }
+
+    fn ages(&self, relays: &[String], now: Instant) -> HashMap<String, Duration> {
+        let requested = self.requested.lock().expect("relay circuit pass");
+        let mut ages = HashMap::new();
+        for relay in relays {
+            let Some(key) = crate::tor_circuits::relay_key(relay) else {
+                continue;
+            };
+            let Some(at) = requested.get(&key) else {
+                continue;
+            };
+            ages.insert(relay.clone(), now.saturating_duration_since(*at));
+        }
+        ages
+    }
+
+    fn mark_requested(&self, relay: &str, at: Instant) {
+        let Some(key) = crate::tor_circuits::relay_key(relay) else {
+            return;
+        };
+        self.requested
+            .lock()
+            .expect("relay circuit pass")
+            .insert(key, at);
+    }
+
+    #[cfg(test)]
+    fn settled(&self) -> bool {
+        !self.running.load(Ordering::Acquire)
+            && self.latest.lock().expect("relay circuit pass").is_none()
+    }
+
+    #[cfg(test)]
+    fn remembers(&self, relay: &str) -> bool {
+        let Some(key) = crate::tor_circuits::relay_key(relay) else {
+            return false;
+        };
+        self.requested
+            .lock()
+            .expect("relay circuit pass")
+            .contains_key(&key)
+    }
+}
+
+fn shared_relay_pass() -> &'static Arc<RelayPass> {
+    static PASS: OnceLock<Arc<RelayPass>> = OnceLock::new();
+    PASS.get_or_init(|| Arc::new(RelayPass::new()))
+}
+
+pub(crate) fn schedule_relay_assignments(
+    page: Vec<String>,
+    configured: Vec<String>,
+    timeout: Duration,
+) {
+    schedule_relay_assignments_via(page, configured, timeout, relay_socks());
+}
+
+fn schedule_relay_assignments_via(
+    page: Vec<String>,
+    configured: Vec<String>,
+    timeout: Duration,
+    socks: RelaySocks,
+) {
+    if !matches!(socks, RelaySocks::Proxy(_)) {
+        return;
+    }
+    let open: OpenRelay = Arc::new(move |relay: &str, timeout: Duration| {
+        let deadline = Instant::now() + timeout;
+        if let Err(error) = assign_relay(relay, deadline, socks) {
+            eprintln!("Nonograph: relay {relay} was not assigned a circuit: {error}");
+        }
+    });
+    let circuits: ReadCircuits = Arc::new(|| crate::tor_circuits::reported());
+    shared_relay_pass().submit(page, configured, timeout, open, circuits);
+}
+
 fn socks5_connect(
     stream: &TcpStream,
     host: &str,
@@ -844,9 +1208,7 @@ fn socks5_connect(
     auth.extend_from_slice(user);
     auth.push(0);
     arm_stream(stream, wait_budget(deadline, cancel)?)?;
-    stream
-        .write_all(&auth)
-        .map_err(|error| error.to_string())?;
+    stream.write_all(&auth).map_err(|error| error.to_string())?;
     let mut status = [0u8; 2];
     stream
         .read_exact(&mut status)
@@ -941,6 +1303,23 @@ fn read_incoming(
     }
 }
 
+fn open_relay_socket(
+    relay: &str,
+    deadline: Instant,
+    public_only: bool,
+    socks: RelaySocks,
+) -> Result<RelaySocket, String> {
+    if let Some(tls) = take_held(relay) {
+        // A relay can close this parked handshake while Tor still lists its circuit.
+        if let Ok(request) = relay.into_client_request() {
+            if let Ok(socket) = websocket_handshake(request, tls, deadline, None) {
+                return Ok(socket);
+            }
+        }
+    }
+    connect_relay(relay, deadline, None, public_only, socks)
+}
+
 fn send_event(
     relay: &str,
     event_json: &str,
@@ -948,7 +1327,7 @@ fn send_event(
     deadline: Instant,
     public_only: bool,
 ) -> Result<(), String> {
-    let mut socket = connect_relay(relay, deadline, None, public_only, relay_socks())?;
+    let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())?;
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(socket.get_ref().get_ref(), wait_budget(deadline, None)?)?;
     socket

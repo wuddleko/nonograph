@@ -4,15 +4,15 @@ extern crate rocket;
 mod archiver;
 pub(crate) mod cache;
 pub(crate) mod config;
-pub(crate) mod relays;
 pub(crate) mod csrf;
 mod nip44;
 pub(crate) mod nostr;
 mod pages;
-pub(crate) mod tor_circuits;
 pub(crate) mod publish;
+pub(crate) mod relays;
 pub(crate) mod save;
 pub(crate) mod template;
+pub(crate) mod tor_circuits;
 
 pub(crate) use cache::{Post, PostCache, PostStorage};
 
@@ -555,6 +555,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::create_post,
                 pages::nostr_publish,
                 pages::tor_circuits,
+                pages::assign_tor_circuits,
                 pages::view_post,
                 pages::markup_page,
                 pages::legal_page,

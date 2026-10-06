@@ -4,31 +4,64 @@ use std::net::TcpStream;
 use std::sync::Mutex;
 use std::time::Duration;
 
-static LATCH: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
-
-pub fn current() -> HashMap<String, String> {
-    if let Some(reply) = control_reply() {
-        let live = paths_by_relay(&reply);
-        let mut guard = LATCH.lock().expect("tor circuit latch");
-        let latch = guard.get_or_insert_with(HashMap::new);
-        for (relay, path) in live {
-            latch.insert(relay, path);
-        }
-    }
-    LATCH.lock().expect("tor circuit latch").clone().unwrap_or_default()
+struct CircuitLatch {
+    pins: HashMap<String, String>,
 }
 
-pub(crate) fn paths_by_relay(reply: &str) -> HashMap<String, String> {
-    let mut circuits = HashMap::new();
+static LATCH: Mutex<Option<CircuitLatch>> = Mutex::new(None);
+
+pub(crate) fn view(proxied: bool) -> (bool, HashMap<String, String>) {
+    if !proxied {
+        return circuit_status(false, None);
+    }
+    circuit_status(true, reported())
+}
+
+fn circuit_status(
+    proxied: bool,
+    live: Option<HashMap<String, String>>,
+) -> (bool, HashMap<String, String>) {
+    match live {
+        Some(relays) if proxied => (true, relays),
+        _ => (false, HashMap::new()),
+    }
+}
+
+pub(crate) fn reported() -> Option<HashMap<String, String>> {
+    Some(remember(&control_reply()?))
+}
+
+fn remember(reply: &str) -> HashMap<String, String> {
+    let mut latch = LATCH.lock().expect("tor circuit latch");
+    let pins = latch
+        .as_ref()
+        .map(|latch| latch.pins.clone())
+        .unwrap_or_default();
+    let (paths, pins) = stabilize(built_circuits(reply), &pins);
+    *latch = Some(CircuitLatch { pins });
+    paths
+}
+
+struct BuiltCircuit {
+    id: String,
+    relay: String,
+    path: String,
+}
+
+fn built_circuits(reply: &str) -> Vec<BuiltCircuit> {
+    let mut circuits = Vec::new();
     for line in info_lines(reply, "circuit-status") {
         let mut parts = line.split_whitespace();
-        let id = parts.next();
-        let status = parts.next();
-        let hops = parts.next();
-        let (Some(id), Some(status), Some(hops)) = (id, status, hops) else {
+        let Some(id) = parts.next() else {
             continue;
         };
-        if status != "BUILT" && status != "EXTENDED" {
+        let Some(status) = parts.next() else {
+            continue;
+        };
+        let Some(hops) = parts.next() else {
+            continue;
+        };
+        if status != "BUILT" {
             continue;
         }
         let path = hop_names(hops);
@@ -36,34 +69,42 @@ pub(crate) fn paths_by_relay(reply: &str) -> HashMap<String, String> {
             continue;
         };
         if !path.is_empty() {
-            circuits.insert(id.to_string(), (relay, path));
+            circuits.push(BuiltCircuit {
+                id: id.to_string(),
+                relay,
+                path,
+            });
         }
     }
+    circuits
+}
 
-    let mut relays = HashMap::new();
-    for line in info_lines(reply, "stream-status") {
-        let mut parts = line.split_whitespace();
-        let _stream = parts.next();
-        let _status = parts.next();
-        let circuit = parts.next();
-        let target = parts.next();
-        let (Some(circuit), Some(target)) = (circuit, target) else {
-            continue;
-        };
-        if circuit == "0" {
-            continue;
-        }
-        let Some(host) = stream_host(target) else {
-            continue;
-        };
-        let Some((relay, path)) = circuits.get(circuit) else {
-            continue;
-        };
-        if relay_host(relay) == Some(host.as_str()) {
-            relays.insert(relay.clone(), path.clone());
-        }
+pub(crate) fn paths_by_relay(reply: &str) -> HashMap<String, String> {
+    stabilize(built_circuits(reply), &HashMap::new()).0
+}
+
+fn stabilize(
+    circuits: Vec<BuiltCircuit>,
+    pins: &HashMap<String, String>,
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut by_relay: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for circuit in circuits {
+        by_relay
+            .entry(circuit.relay)
+            .or_default()
+            .push((circuit.id, circuit.path));
     }
-    relays
+    let mut paths = HashMap::new();
+    let mut next_pins = HashMap::new();
+    for (relay, list) in by_relay {
+        let chosen = pins
+            .get(&relay)
+            .and_then(|id| list.iter().find(|(circ, _)| circ == id))
+            .unwrap_or(&list[0]);
+        next_pins.insert(relay.clone(), chosen.0.clone());
+        paths.insert(relay, chosen.1.clone());
+    }
+    (paths, next_pins)
 }
 
 fn socks_username(line: &str) -> Option<String> {
@@ -124,8 +165,10 @@ fn unquote(value: &str) -> Option<String> {
     None
 }
 
-fn relay_key(url: &str) -> Option<String> {
-    let rest = url.get(6..).filter(|_| url[..6].eq_ignore_ascii_case("wss://"))?;
+pub(crate) fn relay_key(url: &str) -> Option<String> {
+    let rest = url
+        .get(6..)
+        .filter(|_| url[..6].eq_ignore_ascii_case("wss://"))?;
     let split = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let host = rest[..split].trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
@@ -140,31 +183,12 @@ fn relay_key(url: &str) -> Option<String> {
     Some(format!("wss://{host}{tail}"))
 }
 
-fn relay_host(relay: &str) -> Option<&str> {
-    let rest = relay.strip_prefix("wss://")?;
-    let host = rest.split(['/', '?', '#']).next()?;
-    let host = host.split(':').next()?;
-    (!host.is_empty()).then_some(host)
-}
-
 fn hop_names(hops: &str) -> String {
     hops.split(',')
         .filter_map(|hop| hop.split('~').nth(1))
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>()
         .join(" → ")
-}
-
-fn stream_host(target: &str) -> Option<String> {
-    if target.contains(".exit") {
-        return None;
-    }
-    let host = target.rsplit_once(':').map(|(host, _)| host).unwrap_or(target);
-    let host = host.trim_matches(['[', ']']);
-    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
-        return None;
-    }
-    Some(host.to_ascii_lowercase())
 }
 
 fn info_lines<'a>(reply: &'a str, key: &str) -> Vec<&'a str> {
@@ -194,16 +218,16 @@ fn info_lines<'a>(reply: &'a str, key: &str) -> Vec<&'a str> {
 
 fn control_reply() -> Option<String> {
     let cookie = cookie_hex()?;
-    let mut stream = TcpStream::connect_timeout(
-        &"127.0.0.1:9051".parse().ok()?,
-        Duration::from_millis(400),
-    )
-    .ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(800))).ok()?;
-    let command = format!(
-        "AUTHENTICATE {cookie}\r\nGETINFO circuit-status\r\nGETINFO stream-status\r\nQUIT\r\n"
-    );
+    let mut stream =
+        TcpStream::connect_timeout(&"127.0.0.1:9051".parse().ok()?, Duration::from_millis(400))
+            .ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(800)))
+        .ok()?;
+    let command = format!("AUTHENTICATE {cookie}\r\nGETINFO circuit-status\r\nQUIT\r\n");
     stream.write_all(command.as_bytes()).ok()?;
     let mut reply = String::new();
     let mut buf = [0u8; 4096];
@@ -222,7 +246,10 @@ fn control_reply() -> Option<String> {
 }
 
 fn cookie_hex() -> Option<String> {
-    for path in ["/tmp/tor-control-cookie", "/var/lib/tor/control_auth_cookie"] {
+    for path in [
+        "/tmp/tor-control-cookie",
+        "/var/lib/tor/control_auth_cookie",
+    ] {
         if let Ok(bytes) = std::fs::read(path) {
             if !bytes.is_empty() {
                 return Some(bytes.iter().map(|byte| format!("{byte:02X}")).collect());

@@ -458,9 +458,44 @@ pub(crate) fn note_and_relays_for_publish(
 
 #[get("/tor-circuits")]
 pub fn tor_circuits() -> Json<serde_json::Value> {
+    let (tracking, relays) = crate::tor_circuits::view(crate::nostr::relays_use_proxy());
     Json(serde_json::json!({
-        "relays": crate::tor_circuits::current()
+        "tracking": tracking,
+        "relays": relays,
     }))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct TorCircuitsBody {
+    #[serde(default)]
+    relays: Vec<String>,
+    #[serde(default)]
+    csrf_token: String,
+}
+
+pub(crate) fn relays_for_circuit_pass(
+    body: &TorCircuitsBody,
+    config: &Config,
+) -> Option<Vec<String>> {
+    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&body.csrf_token) {
+        return None;
+    }
+    Some(body.relays.clone())
+}
+
+#[post("/tor-circuits", data = "<body>")]
+pub fn assign_tor_circuits(
+    _csrf: CsrfProtected,
+    body: Json<TorCircuitsBody>,
+    config: &State<Config>,
+) -> Status {
+    let config = config.inner();
+    let Some(relays) = relays_for_circuit_pass(&body, config) else {
+        return Status::BadRequest;
+    };
+    let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+    crate::nostr::schedule_relay_assignments(relays, config.nostr.relays.clone(), timeout);
+    Status::NoContent
 }
 
 #[post("/nostr/publish", data = "<body>")]
@@ -727,6 +762,17 @@ pub(crate) fn relays_for_public_fetch(hints: &[String], fallback: &[String]) -> 
         push_public_relay(&mut relays, relay);
     }
     for relay in fallback {
+        push_public_relay(&mut relays, relay);
+    }
+    relays
+}
+
+pub(crate) fn relays_to_assign(page_relays: &[String], configured: &[String]) -> Vec<String> {
+    let mut relays = Vec::new();
+    for relay in page_relays {
+        push_public_relay(&mut relays, relay);
+    }
+    for relay in configured {
         push_public_relay(&mut relays, relay);
     }
     relays
