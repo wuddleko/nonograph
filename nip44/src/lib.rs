@@ -1,8 +1,10 @@
 use base64::Engine;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use hmac::{Hmac, Mac};
-use secp256k1::{Parity, PublicKey, SecretKey, XOnlyPublicKey};
 use sha2::Sha256;
+
+#[cfg(not(target_arch = "wasm32"))]
+use secp256k1::{Parity, PublicKey, SecretKey, XOnlyPublicKey};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -50,6 +52,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn conversation_key(private_key: &[u8; 32], public_key: &[u8]) -> Result<[u8; 32], Error> {
     if public_key.len() != 32 {
         return Err(Error::Key);

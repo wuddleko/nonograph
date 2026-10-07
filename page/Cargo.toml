@@ -7,5 +7,6 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+nonograph-nip44 = { path = "../nip44" }
 nonograph-parser = { path = "../parser" }
 wasm-bindgen = "=0.2.100"

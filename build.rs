@@ -10,6 +10,9 @@ const WATCHED_SOURCES: &[&str] = &[
     "page/Cargo.toml",
     "parser/src/lib.rs",
     "parser/Cargo.toml",
+    "nip44/src/lib.rs",
+    "nip44/src/seal.rs",
+    "nip44/Cargo.toml",
 ];
 
 fn main() {
