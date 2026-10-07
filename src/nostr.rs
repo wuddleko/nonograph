@@ -70,6 +70,34 @@ pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> S
     )
 }
 
+#[cfg(test)]
+pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> SignedNote {
+    let keypair = Keypair::new(SECP256K1, &mut thread_rng());
+    let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
+    let kind = nonograph_nip44::KIND;
+    for nonce in 0..1_000_000u32 {
+        let tags = sealed_tags(locator, &nonce.to_string());
+        let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
+        if nonograph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content).is_ok()
+        {
+            return signed_event(&keypair, created_at, kind, &tags, content);
+        }
+    }
+    panic!("no stamp in range");
+}
+
+#[cfg(test)]
+fn sealed_tags(locator: &str, nonce: &str) -> Vec<Vec<String>> {
+    vec![
+        vec!["d".to_string(), locator.to_string()],
+        vec![
+            "nonce".to_string(),
+            nonce.to_string(),
+            nonograph_nip44::POW_BITS.to_string(),
+        ],
+    ]
+}
+
 #[derive(Debug)]
 pub struct WrapError;
 
@@ -302,6 +330,7 @@ pub(crate) fn relays_use_proxy() -> bool {
     matches!(relay_socks(), RelaySocks::Proxy(_))
 }
 
+#[cfg(test)]
 pub fn public_note_from_json(
     value: &serde_json::Value,
     title_max: usize,
@@ -329,6 +358,56 @@ pub fn public_note_from_json(
             &parsed.content,
             Some(&hex_encode(&sig)),
         ),
+    })
+}
+
+pub fn sealed_note_from_json(
+    value: &serde_json::Value,
+    content_max: usize,
+) -> Option<(SignedNote, String)> {
+    let parsed = parse_event(value)?;
+    if !verify_sig(&parsed) {
+        return None;
+    }
+    if nonograph_nip44::check_stamp(
+        &parsed.id,
+        &parsed.pubkey_hex,
+        parsed.created_at,
+        parsed.kind,
+        &parsed.tags,
+        &parsed.content,
+    )
+    .is_err()
+    {
+        return None;
+    }
+    if parsed.content.len() > content_max {
+        return None;
+    }
+    let locator = stamp_locator(&parsed.tags)?;
+    let sig = parsed.sig?;
+    Some((
+        SignedNote {
+            id: parsed.id,
+            pubkey: parsed.pubkey,
+            event_json: event_wire(
+                &hex_encode(&parsed.id),
+                &parsed.pubkey_hex,
+                parsed.created_at,
+                parsed.kind,
+                &parsed.tags,
+                &parsed.content,
+                Some(&hex_encode(&sig)),
+            ),
+        },
+        locator,
+    ))
+}
+
+fn stamp_locator(tags: &[Vec<String>]) -> Option<String> {
+    tags.iter().find_map(|tag| match tag.as_slice() {
+        [name, locator] if name == "d" => Some(locator.clone()),
+        _ => None,
     })
 }
 

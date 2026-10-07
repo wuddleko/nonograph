@@ -442,12 +442,17 @@
                         author: form.alias.value.trim(),
                         content,
                     });
-                    if (!result.nevent) {
+                    if (
+                        !result.locator ||
+                        !result.key ||
+                        !result.accepted ||
+                        !result.accepted.length
+                    ) {
                         showPublishError("Publishing failed. Try again.");
                         return;
                     }
                     leaveBusy = true;
-                    location.assign("/" + result.nevent);
+                    location.assign("/s/" + result.locator + "#" + result.key);
                 } catch (error) {
                     console.error(error);
                     showPublishError("Publishing failed. Try again.");

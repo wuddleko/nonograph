@@ -729,6 +729,27 @@ fn create_redirects_to_a_local_id_with_no_nsec() {
 
 #[test]
 fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
+    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays = vec!["wss://relay.damus.io".to_string()];
+    let body = NostrPublishBody {
+        event,
+        relays: vec!["wss://127.0.0.1".to_string()],
+        csrf_token: String::new(),
+    };
+    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config).unwrap();
+    assert_eq!(parsed.id, note.id);
+    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(locator, "0123456789abcdef0123");
+
+    config.security.csrf_protection_enabled = true;
+    assert!(note_and_relays_for_publish(&body, &config).is_none());
+}
+
+#[test]
+fn nostr_publish_refuses_a_clear_long_form_note() {
     let note = crate::nostr::sign_note("Hello", "Ada", "body", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
@@ -739,12 +760,53 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
         relays: vec!["wss://127.0.0.1".to_string()],
         csrf_token: String::new(),
     };
-    let (parsed, relays) = note_and_relays_for_publish(&body, &config).unwrap();
+    assert!(note_and_relays_for_publish(&body, &config).is_none());
+}
+
+#[test]
+fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
+    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays = vec!["wss://relay.damus.io".to_string()];
+    let body = NostrPublishBody {
+        event,
+        relays: vec!["wss://127.0.0.1".to_string()],
+        csrf_token: String::new(),
+    };
+    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config).unwrap();
     assert_eq!(parsed.id, note.id);
     assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(locator, "0123456789abcdef0123");
+    assert!(parsed.event_json.contains("\"kind\":30323"));
+    assert!(!parsed.event_json.contains("\"title\""));
 
-    config.security.csrf_protection_enabled = true;
+    config.limits.content_max_length = 4;
     assert!(note_and_relays_for_publish(&body, &config).is_none());
+}
+
+#[test]
+fn publish_result_names_the_locator_and_accepted_relays() {
+    let accepted = vec!["wss://relay.damus.io".to_string()];
+    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone());
+    assert_eq!(result.locator, "0123456789abcdef0123");
+    assert_eq!(result.accepted, accepted);
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("\"locator\""));
+    assert!(json.contains("\"accepted\""));
+    assert!(!json.contains("/s/"));
+    assert!(!json.contains('#'));
+    assert!(!json.contains("secret"));
+    assert!(!json.contains("\"key\""));
+    assert!(!json.contains("nevent"));
+
+    assert!(publish_result(String::new(), accepted).locator.is_empty());
+    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new());
+    assert!(failed.locator.is_empty());
+    assert!(failed.accepted.is_empty());
+    let failed_json = serde_json::to_string(&failed).unwrap();
+    assert!(!failed_json.contains("0123456789abcdef0123"));
 }
 
 #[test]
@@ -1094,14 +1156,8 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
 #[test]
 fn seal_material_comes_from_get_random_values() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!(
-        "SECRET_LEN = {}",
-        nonograph_nip44::SECRET_LEN
-    )));
-    assert!(nostr.contains(&format!(
-        "LOCATOR_LEN = {}",
-        nonograph_nip44::LOCATOR_LEN
-    )));
+    assert!(nostr.contains(&format!("SECRET_LEN = {}", nonograph_nip44::SECRET_LEN)));
+    assert!(nostr.contains(&format!("LOCATOR_LEN = {}", nonograph_nip44::LOCATOR_LEN)));
     let start = nostr.find("function generateSealMaterial()").unwrap();
     let end = nostr[start..]
         .find("\nlet pageModule")
@@ -1119,8 +1175,7 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
     let locator = "0123456789abcdef0123";
     let secret = [4u8; nonograph_nip44::SECRET_LEN];
     let nonce = [5u8; 32];
-    let payload =
-        nonograph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
+    let payload = nonograph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
     let opened = nonograph_nip44::open(&payload, &secret, locator).unwrap();
     assert_eq!(opened.content, content);
     let limit = content.len();
@@ -1129,9 +1184,9 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
         "NIP-44 padding must exceed a cap the plaintext still fits"
     );
 
-    assert!(PAGE_JS.contains(
-        "export function seal(title, author, content, locator, secret, nonce)"
-    ));
+    assert!(
+        PAGE_JS.contains("export function seal(title, author, content, locator, secret, nonce)")
+    );
     assert!(PAGE_JS.contains("({module_or_path} = module_or_path)"));
 
     let nostr = include_str!("../templates/nostr.js");
@@ -1168,14 +1223,8 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
 #[test]
 fn seal_pow_bits_match_the_crate() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!(
-        "POW_BITS = {}",
-        nonograph_nip44::POW_BITS
-    )));
-    assert!(nostr.contains(&format!(
-        "KIND_SEAL = {}",
-        nonograph_nip44::KIND
-    )));
+    assert!(nostr.contains(&format!("POW_BITS = {}", nonograph_nip44::POW_BITS)));
+    assert!(nostr.contains(&format!("KIND_SEAL = {}", nonograph_nip44::KIND)));
     let start = nostr.find("function mineSeal(").unwrap();
     let end = nostr[start..]
         .find("\nfunction ")
@@ -1183,13 +1232,11 @@ fn seal_pow_bits_match_the_crate() {
         .unwrap();
     let body = &nostr[start..end];
     assert!(body.contains("sha256Sync"));
-    assert!(body.contains(
-        "encode.encode(canonicalEvent(pubkey, created_at, KIND_SEAL, tags, body))"
-    ));
+    assert!(
+        body.contains("encode.encode(canonicalEvent(pubkey, created_at, KIND_SEAL, tags, body))")
+    );
     assert!(!body.contains("JSON.stringify"));
-    assert!(body.contains(
-        "[\"nonce\", String(nonce), String(POW_BITS)]"
-    ));
+    assert!(body.contains("[\"nonce\", String(nonce), String(POW_BITS)]"));
     assert!(body.contains("leadingZeroBits(digest) >= POW_BITS"));
     assert!(body.contains("nonce += 1"));
     assert!(body.contains("KIND_SEAL"));
@@ -1207,8 +1254,7 @@ fn seal_pow_bits_match_the_crate() {
 
     // mineSeal on these inputs finds nonce 5306. The crate must hash the same
     // canonical bytes or check_stamp will reject the event as Id / Stamp.
-    const PUBKEY: &str =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const PUBKEY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const CREATED_AT: i64 = 1_700_000_000;
     const CONTENT: &str = "ciphertext";
     const LOCATOR: &str = "0123456789abcdef0123";
@@ -1240,13 +1286,7 @@ fn seal_pow_bits_match_the_crate() {
     nonograph_nip44::push_json_string(&mut rebuilt, CONTENT);
     rebuilt.push(']');
     assert_eq!(rebuilt, CANONICAL);
-    let id = nonograph_nip44::event_id(
-        PUBKEY,
-        CREATED_AT,
-        nonograph_nip44::KIND,
-        &tags,
-        CONTENT,
-    );
+    let id = nonograph_nip44::event_id(PUBKEY, CREATED_AT, nonograph_nip44::KIND, &tags, CONTENT);
     let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(hex, ID);
     assert!(nonograph_nip44::check_stamp(
@@ -1270,21 +1310,26 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
         .unwrap();
     let body = &nostr[start..end];
     let sealed = body.find("await sealNote(").unwrap();
-    let key = body.find("utils.randomPrivateKey()").unwrap();
+    let signing = body.find("const signingKey = utils.randomPrivateKey()").unwrap();
     let mined = body.find("mineSeal(").unwrap();
-    let signed = body.find("await schnorrSign(key, hexToBytes(mined.id))").unwrap();
+    let signed = body
+        .find("await schnorrSign(signingKey, hexToBytes(mined.id))")
+        .unwrap();
     let posted = body.find("fetch(\"/nostr/publish\"").unwrap();
-    assert!(sealed < key);
-    assert!(key < mined);
+    assert!(sealed < signing);
+    assert!(signing < mined);
     assert!(mined < signed);
     assert!(signed < posted);
     assert_eq!(body.matches("schnorrSign(").count(), 1);
     assert_eq!(body.matches("utils.randomPrivateKey()").count(), 1);
+    assert!(!body.contains("schnorrSign(key,"));
     assert!(!body.contains("signLongForm"));
     assert!(!body.contains("KIND_LONG_FORM"));
     assert!(!body.contains("fetch(\"/nostr/publish?"));
     assert!(body.contains("tags: mined.tags"));
-    assert!(body.contains("locator: sealed.locator"));
+    assert!(body.contains("locator !== sealed.locator"));
+    assert!(body.contains("key: bytesToBase64Url(sealed.secret)"));
+    assert!(!body.contains("nevent"));
     let payload_at = body.find("JSON.stringify({").unwrap();
     let payload_end = body[payload_at..]
         .find("})")
@@ -1301,15 +1346,29 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
 
     let home = include_str!("../templates/home.js");
     assert!(home.contains("contentMax: contentLimit"));
-    assert!(home.contains("location.assign(\"/\" + result.nevent)"));
+    assert!(home.contains("location.assign(\"/s/\" + result.locator + \"#\" + result.key)"));
     assert!(!home.contains("result.secret"));
+    assert!(!home.contains("result.nevent"));
     assert!(!home.contains("location.hash"));
 }
 
 #[test]
 fn homepage_js_can_send_a_public_long_form_note() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains("KIND_LONG_FORM = 30023"));
+    assert!(nostr.contains(&format!(
+        "KIND_SEAL = {}",
+        nonograph_nip44::KIND
+    )));
+    let publish_at = nostr.find("async function publishPublicNote(").unwrap();
+    let publish_end = nostr[publish_at..]
+        .find("\nexport function ")
+        .map(|offset| publish_at + offset)
+        .unwrap();
+    let publish = &nostr[publish_at..publish_end];
+    assert!(publish.contains("mineSeal("));
+    assert!(publish.contains("kind: mined.kind"));
+    assert!(!publish.contains("30023"));
+    assert!(!publish.contains("KIND_LONG_FORM"));
     assert!(nostr.contains("publishPublicNote"));
     assert!(nostr.contains("fetch(\"/nostr/publish\""));
     assert!(!nostr.contains("new WebSocket"));
@@ -1336,7 +1395,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("./nostr.js"));
     assert!(home.contains("publishPublicNote"));
     assert!(home.contains("csrfToken"));
-    assert!(home.contains("location.assign(\"/\" + result.nevent)"));
+    assert!(home.contains("location.assign(\"/s/\" + result.locator + \"#\" + result.key)"));
     assert!(home.contains(".nostr-publish"));
     assert!(home.contains("Publishing failed. Try again."));
     assert!(home.contains("A title is required."));

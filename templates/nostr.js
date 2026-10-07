@@ -60,15 +60,15 @@ export async function publishPublicNote({
 } = {}) {
     const sealed = await sealNote({ title, author, content, contentMax });
     await ensureBip340();
-    const key = utils.randomPrivateKey();
-    const pubkey = xOnlyPubkey(key);
+    const signingKey = utils.randomPrivateKey();
+    const pubkey = xOnlyPubkey(signingKey);
     const mined = mineSeal({
         pubkey,
         createdAt,
         locator: sealed.locator,
         content: sealed.payload,
     });
-    const sig = await schnorrSign(key, hexToBytes(mined.id));
+    const sig = await schnorrSign(signingKey, hexToBytes(mined.id));
     const event = {
         id: mined.id,
         pubkey,
@@ -101,13 +101,15 @@ export async function publishPublicNote({
         }
         const result = await response.json();
         const accepted = Array.isArray(result.accepted) ? result.accepted : [];
-        const nevent = typeof result.nevent === "string" ? result.nevent : "";
+        const locator = typeof result.locator === "string" ? result.locator : "";
+        if (!accepted.length || locator !== sealed.locator) {
+            throw new Error("Publishing failed");
+        }
         return {
             event,
             accepted,
-            nevent,
-            locator: sealed.locator,
-            secret: sealed.secret,
+            locator,
+            key: bytesToBase64Url(sealed.secret),
         };
     } finally {
         clearTimeout(timer);
@@ -630,6 +632,14 @@ function leadingZeroBits(id) {
         return bits + Math.clz32(byte) - 24;
     }
     return bits;
+}
+
+function bytesToBase64Url(bytes) {
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function bytesToHex(bytes) {

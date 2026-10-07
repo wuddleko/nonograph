@@ -432,28 +432,33 @@ pub struct NostrPublishBody {
 
 #[derive(Serialize)]
 pub struct NostrPublishResult {
-    nevent: String,
+    locator: String,
     accepted: Vec<String>,
 }
 
 pub(crate) fn note_and_relays_for_publish(
     body: &NostrPublishBody,
     config: &Config,
-) -> Option<(crate::nostr::SignedNote, Vec<String>)> {
+) -> Option<(crate::nostr::SignedNote, Vec<String>, String)> {
     if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&body.csrf_token) {
         return None;
     }
-    let note = crate::nostr::public_note_from_json(
-        &body.event,
-        config.limits.title_max_length,
-        config.limits.alias_max_length,
-        config.limits.content_max_length,
-    )?;
+    let (note, locator) =
+        crate::nostr::sealed_note_from_json(&body.event, config.limits.content_max_length)?;
     let relays = relays_for_public_fetch(&body.relays, &config.nostr.relays);
     if relays.is_empty() {
         return None;
     }
-    Some((note, relays))
+    Some((note, relays, locator))
+}
+
+fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
+    let locator = if accepted.is_empty() {
+        String::new()
+    } else {
+        locator
+    };
+    NostrPublishResult { locator, accepted }
 }
 
 #[get("/tor-circuits")]
@@ -510,20 +515,10 @@ pub async fn nostr_publish(
         return Err(Status::ServiceUnavailable);
     };
     match rocket::tokio::task::spawn_blocking(move || {
-        let (note, relays) = note_and_relays_for_publish(&body, &config)?;
+        let (note, relays, locator) = note_and_relays_for_publish(&body, &config)?;
         let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
         let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
-        let nevent = if accepted.is_empty() {
-            String::new()
-        } else {
-            crate::nostr::encode_nevent(
-                &note.id,
-                &accepted,
-                &note.pubkey,
-                crate::nostr::KIND_LONG_FORM,
-            )
-        };
-        Some(NostrPublishResult { nevent, accepted })
+        Some(publish_result(locator, accepted))
     })
     .await
     {

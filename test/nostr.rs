@@ -1176,6 +1176,86 @@ fn public_note_from_json_accepts_a_signed_long_form() {
     let parsed = public_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, note.id);
     assert!(public_note_from_json(&value, 4, 32, 256_000).is_none());
+    assert!(sealed_note_from_json(&value, 256_000).is_none());
+}
+
+#[test]
+fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
+    let content = "ciphertext";
+    let locator = "0123456789abcdef0123";
+    let created_at = 1_700_000_000;
+    let note = sign_sealed_note(content, locator, created_at);
+    let value: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let (parsed, parsed_locator) = sealed_note_from_json(&value, 256_000).unwrap();
+    assert_eq!(parsed.id, note.id);
+    assert_eq!(parsed_locator, locator);
+    assert!(sealed_note_from_json(&value, content.len() - 1).is_none());
+    assert!(public_note_from_json(&value, 128, 32, 256_000).is_none());
+
+    let mut bad_sig = value.clone();
+    let sig = bad_sig["sig"].as_str().unwrap().to_string();
+    let flipped = if sig.starts_with('a') {
+        format!("b{}", &sig[1..])
+    } else {
+        format!("a{}", &sig[1..])
+    };
+    bad_sig["sig"] = serde_json::Value::String(flipped);
+    assert!(sealed_note_from_json(&bad_sig, 256_000).is_none());
+
+    let keypair = Keypair::new(SECP256K1, &mut thread_rng());
+    let kind = nonograph_nip44::KIND;
+    let weak = signed_without_enough_zero_bits(&keypair, created_at, kind, locator, content);
+    let weak_value: serde_json::Value = serde_json::from_str(&weak.event_json).unwrap();
+    assert!(sealed_note_from_json(&weak_value, 256_000).is_none());
+
+    let titled = signed_event(
+        &keypair,
+        created_at,
+        kind,
+        &[
+            vec!["d".to_string(), locator.to_string()],
+            vec![
+                "nonce".to_string(),
+                "1".to_string(),
+                nonograph_nip44::POW_BITS.to_string(),
+            ],
+            vec!["title".to_string(), "Visible".to_string()],
+        ],
+        content,
+    );
+    let titled_value: serde_json::Value = serde_json::from_str(&titled.event_json).unwrap();
+    assert!(sealed_note_from_json(&titled_value, 256_000).is_none());
+
+    let uppercase = signed_event(
+        &keypair,
+        created_at,
+        kind,
+        &sealed_tags("0123456789ABCDEF0123", "1"),
+        content,
+    );
+    let uppercase_value: serde_json::Value = serde_json::from_str(&uppercase.event_json).unwrap();
+    assert!(sealed_note_from_json(&uppercase_value, 256_000).is_none());
+}
+
+fn signed_without_enough_zero_bits(
+    keypair: &Keypair,
+    created_at: i64,
+    kind: u32,
+    locator: &str,
+    content: &str,
+) -> SignedNote {
+    let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
+    for nonce in 0..1_000_000u32 {
+        let tags = sealed_tags(locator, &nonce.to_string());
+        let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
+        if matches!(
+            nonograph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content),
+            Err(nonograph_nip44::Error::Stamp)
+        ) {
+            return signed_event(keypair, created_at, kind, &tags, content);
+        }
+    }
+    panic!("no weak stamp in range");
 }
 
 #[test]
