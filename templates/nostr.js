@@ -56,13 +56,28 @@ export async function publishPublicNote({
     timeoutMs,
     createdAt,
     csrfToken,
+    contentMax,
 } = {}) {
-    const signed = await signLongForm({
-        title,
-        author,
-        content,
+    const sealed = await sealNote({ title, author, content, contentMax });
+    await ensureBip340();
+    const key = utils.randomPrivateKey();
+    const pubkey = xOnlyPubkey(key);
+    const mined = mineSeal({
+        pubkey,
         createdAt,
+        locator: sealed.locator,
+        content: sealed.payload,
     });
+    const sig = await schnorrSign(key, hexToBytes(mined.id));
+    const event = {
+        id: mined.id,
+        pubkey,
+        created_at: mined.created_at,
+        kind: mined.kind,
+        tags: mined.tags,
+        content: mined.content,
+        sig: bytesToHex(sig),
+    };
     const configured = Number(timeoutMs);
     const wait = Math.max(
         10_000,
@@ -75,7 +90,7 @@ export async function publishPublicNote({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                event: signed,
+                event,
                 relays: relaysForPublicPublish(relays),
                 csrf_token: csrfToken || "",
             }),
@@ -87,7 +102,13 @@ export async function publishPublicNote({
         const result = await response.json();
         const accepted = Array.isArray(result.accepted) ? result.accepted : [];
         const nevent = typeof result.nevent === "string" ? result.nevent : "";
-        return { event: signed, accepted, nevent };
+        return {
+            event,
+            accepted,
+            nevent,
+            locator: sealed.locator,
+            secret: sealed.secret,
+        };
     } finally {
         clearTimeout(timer);
     }
@@ -504,10 +525,111 @@ function xorBytes(left, right) {
     return out;
 }
 
+export const SECRET_LEN = 32;
+export const LOCATOR_LEN = 20;
+export const POW_BITS = 12;
+export const KIND_SEAL = 30323;
+
+export function generateSealMaterial() {
+    const raw = new Uint8Array(SECRET_LEN + LOCATOR_LEN / 2);
+    crypto.getRandomValues(raw);
+    return {
+        secret: raw.slice(0, SECRET_LEN),
+        locator: bytesToHex(raw.subarray(SECRET_LEN)),
+    };
+}
+
+let pageModule;
+
+async function loadPage() {
+    if (!pageModule) {
+        const js = new URL("./page/nonograph_page.js", import.meta.url);
+        const wasm = new URL("./page/nonograph_page_bg.wasm", import.meta.url);
+        pageModule = import(js.href)
+            .then((module) =>
+                module.default({ module_or_path: wasm }).then(() => module),
+            )
+            .catch((error) => {
+                pageModule = undefined;
+                throw error;
+            });
+    }
+    return pageModule;
+}
+
+export async function sealNote({ title, author, content, contentMax } = {}) {
+    const limit = Number(contentMax);
+    if (!Number.isInteger(limit) || limit < 1) {
+        throw new Error("invalid content limit");
+    }
+    const { secret, locator } = generateSealMaterial();
+    const nonce = new Uint8Array(32);
+    crypto.getRandomValues(nonce);
+    const page = await loadPage();
+    const payload = page.seal(
+        String(title ?? ""),
+        String(author ?? ""),
+        String(content ?? ""),
+        locator,
+        secret,
+        nonce,
+    );
+    if (payload.length > limit) {
+        throw new Error("The sealed note is too long.");
+    }
+    return { secret, locator, payload };
+}
+
 function randomHex(bytes) {
     const raw = new Uint8Array(bytes);
     crypto.getRandomValues(raw);
     return bytesToHex(raw);
+}
+
+export function mineSeal({ pubkey, createdAt, locator, content } = {}) {
+    if (typeof pubkey !== "string" || pubkey.length !== 64) {
+        throw new Error("invalid pubkey");
+    }
+    const created_at = Number.isInteger(createdAt)
+        ? createdAt
+        : Math.floor(Date.now() / 1000);
+    const body = String(content ?? "");
+    const idLocator = String(locator ?? "");
+    const encode = new TextEncoder();
+    let nonce = 0;
+    for (;;) {
+        const tags = [
+            ["d", idLocator],
+            ["nonce", String(nonce), String(POW_BITS)],
+        ];
+        const digest = sha256Sync(
+            encode.encode(canonicalEvent(pubkey, created_at, KIND_SEAL, tags, body)),
+        );
+        if (leadingZeroBits(digest) >= POW_BITS) {
+            return {
+                id: bytesToHex(digest),
+                pubkey,
+                created_at,
+                kind: KIND_SEAL,
+                tags,
+                content: body,
+            };
+        }
+        nonce += 1;
+    }
+}
+
+function leadingZeroBits(id) {
+    let bits = 0;
+    for (let i = 0; i < id.length; i++) {
+        const byte = id[i];
+        if (byte === 0) {
+            bits += 8;
+            continue;
+        }
+        return bits + Math.clz32(byte) - 24;
+    }
+    return bits;
 }
 
 function bytesToHex(bytes) {

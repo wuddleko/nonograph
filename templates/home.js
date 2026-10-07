@@ -73,6 +73,7 @@
                     title: fields.title,
                     author: fields.author,
                     content: fields.content,
+                    contentMax: contentLimit,
                     relays: mergePublishRelays(),
                     timeoutMs,
                     csrfToken: form.csrf_token ? form.csrf_token.value : "",

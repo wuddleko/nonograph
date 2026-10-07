@@ -1092,6 +1092,221 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
 }
 
 #[test]
+fn seal_material_comes_from_get_random_values() {
+    let nostr = include_str!("../templates/nostr.js");
+    assert!(nostr.contains(&format!(
+        "SECRET_LEN = {}",
+        nonograph_nip44::SECRET_LEN
+    )));
+    assert!(nostr.contains(&format!(
+        "LOCATOR_LEN = {}",
+        nonograph_nip44::LOCATOR_LEN
+    )));
+    let start = nostr.find("function generateSealMaterial()").unwrap();
+    let end = nostr[start..]
+        .find("\nlet pageModule")
+        .map(|offset| start + offset)
+        .unwrap();
+    let body = &nostr[start..end];
+    assert!(body.contains("crypto.getRandomValues"));
+    assert!(!body.contains("subtle"));
+    assert!(body.contains("LOCATOR_LEN / 2"));
+}
+
+#[test]
+fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
+    let content = "hello";
+    let locator = "0123456789abcdef0123";
+    let secret = [4u8; nonograph_nip44::SECRET_LEN];
+    let nonce = [5u8; 32];
+    let payload =
+        nonograph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
+    let opened = nonograph_nip44::open(&payload, &secret, locator).unwrap();
+    assert_eq!(opened.content, content);
+    let limit = content.len();
+    assert!(
+        content.len() <= limit && payload.len() > limit,
+        "NIP-44 padding must exceed a cap the plaintext still fits"
+    );
+
+    assert!(PAGE_JS.contains(
+        "export function seal(title, author, content, locator, secret, nonce)"
+    ));
+    assert!(PAGE_JS.contains("({module_or_path} = module_or_path)"));
+
+    let nostr = include_str!("../templates/nostr.js");
+    let load = nostr.find("async function loadPage()").unwrap();
+    let load_end = nostr[load..]
+        .find("\nexport async function sealNote")
+        .map(|offset| load + offset)
+        .unwrap();
+    let loader = &nostr[load..load_end];
+    assert!(loader.contains("./page/nonograph_page.js"));
+    assert!(loader.contains("./page/nonograph_page_bg.wasm"));
+    assert!(loader.contains("module.default({ module_or_path: wasm })"));
+    assert!(!loader.contains("subtle"));
+
+    let start = nostr.find("function sealNote(").unwrap();
+    let end = nostr[start..]
+        .find("\nfunction ")
+        .map(|offset| start + offset)
+        .unwrap();
+    let body = &nostr[start..end];
+    assert!(body.contains("generateSealMaterial"));
+    assert!(body.contains("crypto.getRandomValues"));
+    assert!(body.contains("await loadPage()"));
+    let sealed = body.find("const payload = page.seal(").unwrap();
+    let check = body.find("if (payload.length > limit)").unwrap();
+    assert!(sealed < check);
+    assert!(!body.contains("content.length"));
+    assert!(body.contains("The sealed note is too long."));
+    assert!(!body.contains("subtle"));
+    assert!(!body.contains("sha256"));
+    assert!(!body.contains("schnorrSign"));
+}
+
+#[test]
+fn seal_pow_bits_match_the_crate() {
+    let nostr = include_str!("../templates/nostr.js");
+    assert!(nostr.contains(&format!(
+        "POW_BITS = {}",
+        nonograph_nip44::POW_BITS
+    )));
+    assert!(nostr.contains(&format!(
+        "KIND_SEAL = {}",
+        nonograph_nip44::KIND
+    )));
+    let start = nostr.find("function mineSeal(").unwrap();
+    let end = nostr[start..]
+        .find("\nfunction ")
+        .map(|offset| start + offset)
+        .unwrap();
+    let body = &nostr[start..end];
+    assert!(body.contains("sha256Sync"));
+    assert!(body.contains(
+        "encode.encode(canonicalEvent(pubkey, created_at, KIND_SEAL, tags, body))"
+    ));
+    assert!(!body.contains("JSON.stringify"));
+    assert!(body.contains(
+        "[\"nonce\", String(nonce), String(POW_BITS)]"
+    ));
+    assert!(body.contains("leadingZeroBits(digest) >= POW_BITS"));
+    assert!(body.contains("nonce += 1"));
+    assert!(body.contains("KIND_SEAL"));
+    assert!(!body.contains("subtle"));
+    assert!(!body.contains("schnorrSign"));
+
+    let zeros = nostr.find("function leadingZeroBits(").unwrap();
+    let zeros_end = nostr[zeros..]
+        .find("\nfunction ")
+        .map(|offset| zeros + offset)
+        .unwrap_or(nostr.len());
+    let counter = &nostr[zeros..zeros_end];
+    assert!(counter.contains("bits += 8"));
+    assert!(counter.contains("Math.clz32(byte) - 24"));
+
+    // mineSeal on these inputs finds nonce 5306. The crate must hash the same
+    // canonical bytes or check_stamp will reject the event as Id / Stamp.
+    const PUBKEY: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const CREATED_AT: i64 = 1_700_000_000;
+    const CONTENT: &str = "ciphertext";
+    const LOCATOR: &str = "0123456789abcdef0123";
+    const NONCE: &str = "5306";
+    const CANONICAL: &str = concat!(
+        r#"[0,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","#,
+        r#"1700000000,30323,"#,
+        r#"[["d","0123456789abcdef0123"],["nonce","5306","12"]],"#,
+        r#""ciphertext"]"#,
+    );
+    const ID: &str = "000ba9727f24f4d4fc85a44f54e6caca8577e1e04d898d0e26a81c7faf01dcc8";
+    let tags = vec![
+        vec!["d".to_string(), LOCATOR.to_string()],
+        vec![
+            "nonce".to_string(),
+            NONCE.to_string(),
+            nonograph_nip44::POW_BITS.to_string(),
+        ],
+    ];
+    let mut rebuilt = String::from("[0,");
+    nonograph_nip44::push_json_string(&mut rebuilt, PUBKEY);
+    rebuilt.push(',');
+    rebuilt.push_str(&CREATED_AT.to_string());
+    rebuilt.push(',');
+    rebuilt.push_str(&nonograph_nip44::KIND.to_string());
+    rebuilt.push(',');
+    nonograph_nip44::push_tags(&mut rebuilt, &tags);
+    rebuilt.push(',');
+    nonograph_nip44::push_json_string(&mut rebuilt, CONTENT);
+    rebuilt.push(']');
+    assert_eq!(rebuilt, CANONICAL);
+    let id = nonograph_nip44::event_id(
+        PUBKEY,
+        CREATED_AT,
+        nonograph_nip44::KIND,
+        &tags,
+        CONTENT,
+    );
+    let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(hex, ID);
+    assert!(nonograph_nip44::check_stamp(
+        &id,
+        PUBKEY,
+        CREATED_AT,
+        nonograph_nip44::KIND,
+        &tags,
+        CONTENT,
+    )
+    .is_ok());
+}
+
+#[test]
+fn publish_signs_once_and_posts_the_event_without_the_key() {
+    let nostr = include_str!("../templates/nostr.js");
+    let start = nostr.find("async function publishPublicNote(").unwrap();
+    let end = nostr[start..]
+        .find("\nexport function ")
+        .map(|offset| start + offset)
+        .unwrap();
+    let body = &nostr[start..end];
+    let sealed = body.find("await sealNote(").unwrap();
+    let key = body.find("utils.randomPrivateKey()").unwrap();
+    let mined = body.find("mineSeal(").unwrap();
+    let signed = body.find("await schnorrSign(key, hexToBytes(mined.id))").unwrap();
+    let posted = body.find("fetch(\"/nostr/publish\"").unwrap();
+    assert!(sealed < key);
+    assert!(key < mined);
+    assert!(mined < signed);
+    assert!(signed < posted);
+    assert_eq!(body.matches("schnorrSign(").count(), 1);
+    assert_eq!(body.matches("utils.randomPrivateKey()").count(), 1);
+    assert!(!body.contains("signLongForm"));
+    assert!(!body.contains("KIND_LONG_FORM"));
+    assert!(!body.contains("fetch(\"/nostr/publish?"));
+    assert!(body.contains("tags: mined.tags"));
+    assert!(body.contains("locator: sealed.locator"));
+    let payload_at = body.find("JSON.stringify({").unwrap();
+    let payload_end = body[payload_at..]
+        .find("})")
+        .map(|offset| payload_at + offset)
+        .unwrap();
+    let payload = &body[payload_at..payload_end];
+    assert!(payload.contains("event,"));
+    assert!(payload.contains("relays: relaysForPublicPublish(relays)"));
+    assert!(payload.contains("csrf_token: csrfToken || \"\""));
+    assert!(!payload.contains("secret"));
+    assert!(!payload.contains("key"));
+    assert!(!payload.contains("locator"));
+    assert!(!payload.contains("sealed"));
+
+    let home = include_str!("../templates/home.js");
+    assert!(home.contains("contentMax: contentLimit"));
+    assert!(home.contains("location.assign(\"/\" + result.nevent)"));
+    assert!(!home.contains("result.secret"));
+    assert!(!home.contains("location.hash"));
+}
+
+#[test]
 fn homepage_js_can_send_a_public_long_form_note() {
     let nostr = include_str!("../templates/nostr.js");
     assert!(nostr.contains("KIND_LONG_FORM = 30023"));
