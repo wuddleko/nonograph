@@ -19,6 +19,9 @@ pub const KIND_LONG_FORM: u32 = 30023;
 const KIND_SEAL: u32 = 13;
 pub const KIND_GIFT_WRAP: u32 = 1059;
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
+const SEALED_EVENT_OVERHEAD: usize = 8192;
+const SEALED_FRAME_OVERHEAD: usize = 1024;
+const SEALED_FETCH_LIMIT: usize = 8;
 const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
@@ -572,6 +575,7 @@ fn held_keys_to_drop(
 }
 
 const RELAY_TIMEOUT: &str = "timed out waiting for the relay";
+const RELAY_FRAME_TOO_BIG: &str = "relay frame exceeded the sealed size cap";
 const SOCKS_MISCONFIGURED: &str = "socks proxy is misconfigured";
 const FETCH_POLL: Duration = Duration::from_millis(100);
 
@@ -1435,6 +1439,9 @@ fn read_incoming(
             Err(tungstenite::Error::Io(error))
                 if error.kind() == std::io::ErrorKind::TimedOut
                     || error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(tungstenite::Error::Capacity(_)) => {
+                return Err(RELAY_FRAME_TOO_BIG.to_string());
+            }
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -1530,6 +1537,26 @@ pub fn fetch_public_addr(
     fetch_from_relays(relays, RelayQuery::Addr(naddr.clone()), timeout, true)
 }
 
+pub fn fetch_sealed(
+    relays: &[String],
+    locator: &str,
+    content_max: usize,
+    timeout: Duration,
+) -> Option<String> {
+    Some(
+        fetch_from_relays(
+            relays,
+            RelayQuery::Seal {
+                locator: locator.to_string(),
+                content_max,
+            },
+            timeout,
+            true,
+        )?
+        .content,
+    )
+}
+
 #[derive(Clone)]
 enum RelayQuery {
     Id {
@@ -1537,6 +1564,10 @@ enum RelayQuery {
         recipient_secret: Option<[u8; 32]>,
     },
     Addr(Naddr),
+    Seal {
+        locator: String,
+        content_max: usize,
+    },
 }
 
 fn fetch_from_relays(
@@ -1553,6 +1584,11 @@ fn fetch_from_relays(
         }
         RelayQuery::Addr(naddr) => {
             if naddr.kind != KIND_LONG_FORM || naddr.identifier.len() > 255 {
+                return None;
+            }
+        }
+        RelayQuery::Seal { locator, .. } => {
+            if !seal_query_locator(locator) {
                 return None;
             }
         }
@@ -1600,7 +1636,10 @@ fn fetch_from_relays(
         }));
     }
     drop(tx);
-    let note = take_first_note(rx, deadline);
+    let note = match &query {
+        RelayQuery::Seal { .. } => take_newest_note(rx, deadline),
+        _ => take_first_note(rx, deadline),
+    };
     cancel.store(true, Ordering::Relaxed);
     for handle in handles {
         let _ = handle.join();
@@ -1625,6 +1664,30 @@ fn take_first_note(
     }
 }
 
+fn take_newest_note(
+    rx: mpsc::Receiver<Option<FetchedNote>>,
+    deadline: Instant,
+) -> Option<FetchedNote> {
+    let mut best = None;
+    let mut best_at = i64::MIN;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return best;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(Some(note)) => {
+                if note.created_at >= best_at {
+                    best_at = note.created_at;
+                    best = Some(note);
+                }
+            }
+            Ok(None) => {}
+            Err(_) => return best,
+        }
+    }
+}
+
 fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
     match query {
         RelayQuery::Id { event_id_hex, .. } => {
@@ -1640,6 +1703,16 @@ fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
             }
         ])
         .to_string(),
+        RelayQuery::Seal { locator, .. } => serde_json::json!([
+            "REQ",
+            sub_id,
+            {
+                "kinds": [nonograph_nip44::KIND],
+                "#d": [locator],
+                "limit": SEALED_FETCH_LIMIT,
+            }
+        ])
+        .to_string(),
     }
 }
 
@@ -1651,6 +1724,9 @@ fn fetch_from_relay(
     public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
     let mut socket = connect_relay(relay, deadline, Some(cancel), public_only, relay_socks())?;
+    if let RelayQuery::Seal { content_max, .. } = query {
+        limit_sealed_socket(&mut socket, *content_max);
+    }
     let sub_id = random_hex(8);
     let payload = req_payload(&sub_id, query);
     arm_stream(
@@ -1661,7 +1737,7 @@ fn fetch_from_relay(
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
-    let newest_until_eose = matches!(query, RelayQuery::Addr(_));
+    let newest_until_eose = matches!(query, RelayQuery::Addr(_) | RelayQuery::Seal { .. });
     let mut best = None;
     let mut best_at = i64::MIN;
     loop {
@@ -1679,6 +1755,11 @@ fn fetch_from_relay(
                 };
             }
             Incoming::Text(text) => {
+                if let RelayQuery::Seal { content_max, .. } = query {
+                    if text.len() > sealed_frame_max(*content_max) {
+                        continue;
+                    }
+                }
                 if let Some((created_at, note)) = note_for_query(&text, query) {
                     if !newest_until_eose {
                         return Ok(Some(note));
@@ -1704,6 +1785,21 @@ fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote
         } => note_from_relay_message(message, event_id_hex, recipient_secret.as_ref())
             .map(|note| (0, note)),
         RelayQuery::Addr(naddr) => addr_note_from_relay_message(message, naddr),
+        RelayQuery::Seal {
+            locator,
+            content_max,
+        } => sealed_from_relay_message(message, locator, *content_max).map(
+            |(created_at, event_json)| {
+                (
+                    created_at,
+                    FetchedNote {
+                        content: event_json,
+                        created_at,
+                        ..FetchedNote::default()
+                    },
+                )
+            },
+        ),
     }
 }
 
@@ -1782,6 +1878,58 @@ fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<F
 
 fn addr_note_from_relay_message(message: &str, naddr: &Naddr) -> Option<(i64, FetchedNote)> {
     fetched_public_addr(&event_from_relay_message(message)?, naddr)
+}
+
+fn sealed_from_relay_message(
+    message: &str,
+    locator: &str,
+    content_max: usize,
+) -> Option<(i64, String)> {
+    if message.len() > sealed_frame_max(content_max) {
+        return None;
+    }
+    let event_json = unchanged_relay_event(message)?;
+    if event_json.len() > sealed_event_max(content_max) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&event_json).ok()?;
+    let (_, found) = sealed_note_from_json(&value, content_max)?;
+    if found != locator {
+        return None;
+    }
+    Some((value.get("created_at")?.as_i64()?, event_json))
+}
+
+fn unchanged_relay_event(message: &str) -> Option<String> {
+    let (kind, _sub, event): (String, String, Box<serde_json::value::RawValue>) =
+        serde_json::from_str(message).ok()?;
+    if kind != "EVENT" {
+        return None;
+    }
+    Some(event.get().to_string())
+}
+
+fn sealed_event_max(content_max: usize) -> usize {
+    content_max.saturating_add(SEALED_EVENT_OVERHEAD)
+}
+
+fn sealed_frame_max(content_max: usize) -> usize {
+    sealed_event_max(content_max).saturating_add(SEALED_FRAME_OVERHEAD)
+}
+
+fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, content_max: usize) {
+    let max = sealed_frame_max(content_max);
+    socket.set_config(|config| {
+        config.max_message_size = Some(max);
+        config.max_frame_size = Some(max);
+    });
+}
+
+fn seal_query_locator(locator: &str) -> bool {
+    locator.len() == nonograph_nip44::LOCATOR_LEN
+        && locator
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn fetched_public_addr(value: &serde_json::Value, naddr: &Naddr) -> Option<(i64, FetchedNote)> {

@@ -144,7 +144,11 @@ fn a_nonce_that_does_not_commit_to_twelve_bits_is_rejected() {
 
 #[test]
 fn a_locator_that_is_not_twenty_lowercase_hex_is_rejected() {
-    for locator in ["0123456789abcdef012", "0123456789ABCDEF0123", "0123456789abcdef012g"] {
+    for locator in [
+        "0123456789abcdef012",
+        "0123456789ABCDEF0123",
+        "0123456789abcdef012g",
+    ] {
         let tags = vec![
             vec!["d".to_string(), locator.to_string()],
             vec!["nonce".to_string(), "1".to_string(), POW_BITS.to_string()],

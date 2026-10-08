@@ -49,10 +49,7 @@ fn published_href_is_the_id_with_no_secret() {
 
 #[test]
 fn published_href_drops_a_query_including_nsec() {
-    let href = published_href(
-        false,
-        "hello-a1b2c3d4?nsec=nsec1secret",
-    );
+    let href = published_href(false, "hello-a1b2c3d4?nsec=nsec1secret");
     assert_eq!(href, "/hello-a1b2c3d4");
     assert!(!href.contains("nsec"));
     assert!(!href.contains('?'));

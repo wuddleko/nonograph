@@ -234,9 +234,7 @@ mod seal;
 mod stamp;
 
 pub use seal::{open, seal, Note, SECRET_LEN};
-pub use stamp::{
-    check_stamp, event_id, push_json_string, push_tags, KIND, LOCATOR_LEN, POW_BITS,
-};
+pub use stamp::{check_stamp, event_id, push_json_string, push_tags, KIND, LOCATOR_LEN, POW_BITS};
 
 #[cfg(test)]
 #[path = "../../test/nip44.rs"]

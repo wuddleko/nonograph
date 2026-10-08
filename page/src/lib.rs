@@ -11,8 +11,7 @@ pub fn seal(
 ) -> Result<String, JsError> {
     let secret = bytes32(secret, "invalid secret").map_err(JsError::new)?;
     let nonce = bytes32(nonce, "invalid nonce").map_err(JsError::new)?;
-    nonograph_nip44::seal(title, author, content, locator, &secret, &nonce)
-        .map_err(js_error)
+    nonograph_nip44::seal(title, author, content, locator, &secret, &nonce).map_err(js_error)
 }
 
 #[wasm_bindgen]

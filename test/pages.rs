@@ -427,6 +427,54 @@ fn wrap_link_without_a_file_is_refused() {
 }
 
 #[test]
+fn sealed_query_reuses_relays_for_public_fetch() {
+    let hints = vec![
+        "wss://relay.damus.io".to_string(),
+        "wss://127.0.0.1".to_string(),
+    ];
+    let configured = vec!["wss://relay.primal.net".to_string()];
+    assert_eq!(
+        relays_for_sealed_query(&hints, &configured),
+        vec![
+            "wss://relay.damus.io".to_string(),
+            "wss://relay.primal.net".to_string(),
+        ]
+    );
+    let started = std::time::Instant::now();
+    assert!(fetch_sealed_by_locator(
+        &["wss://127.0.0.1".to_string()],
+        "0123456789abcdef0123",
+        &["ws://10.0.0.1".to_string()],
+        4,
+        std::time::Duration::from_millis(20),
+    )
+    .is_none());
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    assert!(fetch_sealed_by_locator(
+        &configured,
+        "0123456789ABCDEF0123",
+        &[],
+        4,
+        std::time::Duration::from_millis(20),
+    )
+    .is_none());
+    let pages = include_str!("../src/pages.rs");
+    let start = pages.find("fn fetch_sealed_by_locator").unwrap();
+    let body = &pages[start..];
+    let body = &body[..body
+        .find("\npub(crate) fn relays_for_public_fetch")
+        .unwrap()];
+    assert!(body.contains("fetch_sealed("));
+    assert!(!body.contains("event_id"));
+    assert!(!body.contains("read_seal_in_dir("));
+    assert!(!body.contains("remember_seal_in_dir("));
+    assert!(!body.contains("post_from_public_note("));
+    assert!(!body.contains("render_markdown("));
+    assert!(!body.contains("render_markdown_with_config("));
+    assert!(!body.contains("note_fields("));
+}
+
+#[test]
 fn public_fetch_asks_nevent_relays_then_the_instance() {
     let nevent = crate::nostr::Nevent {
         event_id_hex: "ab".repeat(32),
@@ -1310,7 +1358,9 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
         .unwrap();
     let body = &nostr[start..end];
     let sealed = body.find("await sealNote(").unwrap();
-    let signing = body.find("const signingKey = utils.randomPrivateKey()").unwrap();
+    let signing = body
+        .find("const signingKey = utils.randomPrivateKey()")
+        .unwrap();
     let mined = body.find("mineSeal(").unwrap();
     let signed = body
         .find("await schnorrSign(signingKey, hexToBytes(mined.id))")
@@ -1355,10 +1405,7 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
 #[test]
 fn homepage_js_can_send_a_public_long_form_note() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!(
-        "KIND_SEAL = {}",
-        nonograph_nip44::KIND
-    )));
+    assert!(nostr.contains(&format!("KIND_SEAL = {}", nonograph_nip44::KIND)));
     let publish_at = nostr.find("async function publishPublicNote(").unwrap();
     let publish_end = nostr[publish_at..]
         .find("\nexport function ")

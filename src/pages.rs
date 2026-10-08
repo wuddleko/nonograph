@@ -740,6 +740,21 @@ fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
     relays.push(relay.to_string());
 }
 
+pub(crate) fn relays_for_sealed_query(hints: &[String], configured: &[String]) -> Vec<String> {
+    relays_for_public_fetch(hints, configured)
+}
+
+pub(crate) fn fetch_sealed_by_locator(
+    hints: &[String],
+    locator: &str,
+    configured: &[String],
+    content_max: usize,
+    timeout: Duration,
+) -> Option<String> {
+    let relays = relays_for_sealed_query(hints, configured);
+    crate::nostr::fetch_sealed(&relays, locator, content_max, timeout)
+}
+
 pub(crate) fn relays_for_public_fetch(hints: &[String], fallback: &[String]) -> Vec<String> {
     let mut relays = Vec::new();
     let keep_one_for_instance = fallback
