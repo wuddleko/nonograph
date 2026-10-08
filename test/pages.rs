@@ -427,6 +427,140 @@ fn wrap_link_without_a_file_is_refused() {
 }
 
 #[test]
+fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
+    let secret = "VisibleTitleSecretBody";
+    let event = format!(
+        r#"{{"content":"{secret}</script>","tags":[["title","{secret}"],["summary","{secret}"]]}}"#
+    );
+    let mut config = crate::config::Config::default();
+    config.theme.syntax_highlighting = "ocean\"dark".to_string();
+    config.security.max_url_length = 4096;
+    config.security.external_link_security = false;
+    let html = sealed_shell(&event, &config);
+    assert!(html.contains("<title>Sealed note</title>"));
+    assert!(html.contains("property=\"og:title\" content=\"Sealed note\""));
+    assert!(html.contains(
+        "property=\"og:description\" content=\"A note sealed in the browser.\""
+    ));
+    assert!(html.contains("name=\"description\" content=\"A note sealed in the browser.\""));
+    assert!(html.contains("id=\"sealed-title\">Sealed note</h1>"));
+    assert!(html.contains("<p id=\"sealed-preview\">A note sealed in the browser.</p>"));
+    assert!(html.contains("data-syntax-theme=\"ocean&quot;dark\""));
+    assert!(html.contains("data-max-url-length=\"4096\""));
+    assert!(html.contains("data-external-links=\"false\""));
+    assert!(html.contains("id=\"CONTENT\""));
+    assert!(html.contains("/post.css?v="));
+    let head = html.split("<script").next().unwrap();
+    assert!(!head.contains(secret));
+    assert!(html.contains(secret));
+    assert!(html.contains("\\u003c/script>"));
+    assert!(html.contains("id=\"sealed-event\""));
+    assert!(html.contains("<script type=\"module\" src=\"/nostr.js?v="));
+    assert!(html.contains("id=\"sealed-copy\">Copy link</button>"));
+    assert!(!html.contains("location.href"));
+    assert!(!html.contains("location.hash"));
+    assert!(!html.contains("</script><script"));
+    assert!(crate::nostr::sealed_locator("0123456789abcdef0123"));
+    assert!(!crate::nostr::sealed_locator("0123456789ABCDEF0123"));
+    let pages = include_str!("../src/pages.rs");
+    let start = pages.find("pub async fn sealed_view").unwrap();
+    let body = &pages[start..];
+    let body = &body[..body.find("\n#[get(\"/<post_id>\")]").unwrap()];
+    assert!(body.contains("sealed_locator("));
+    assert!(body.contains("fetch_sealed_by_locator("));
+    assert!(body.contains("sealed_shell("));
+    assert!(!body.contains("post_from_public_note("));
+    assert!(!body.contains("note_fields("));
+    assert!(!body.contains("render_markdown"));
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("pages::sealed_view"));
+    let nostr = include_str!("../templates/nostr.js");
+    let sign = nostr.find("async function schnorrSign(").unwrap();
+    let verify = nostr.find("async function schnorrVerify(").unwrap();
+    assert!(sign < verify);
+    let open = nostr.find("export async function openEmbeddedSeal(").unwrap();
+    let open_end = nostr[open..]
+        .find("\nfunction renderOpenedNote")
+        .map(|offset| open + offset)
+        .unwrap();
+    let body = &nostr[open..open_end];
+    let checked = body.find("await verifySealedEvent(event)").unwrap();
+    let fragment = body.find("secretFromFragment(location.hash)").unwrap();
+    let opened = body.find("await page.open(").unwrap();
+    let rendered = body.find("renderOpenedNote(note, page)").unwrap();
+    assert!(checked < fragment);
+    assert!(fragment < opened);
+    assert!(opened < rendered);
+    let draw = nostr.find("function renderOpenedNote(").unwrap();
+    let draw_end = nostr[draw..]
+        .find("\nasync function verifySealedEvent")
+        .map(|offset| draw + offset)
+        .unwrap();
+    let draw_body = &nostr[draw..draw_end];
+    assert!(draw_body.contains(
+        "page.render_markdown(note.content, theme, maxUrl, external)"
+    ));
+    assert!(draw_body.contains("content.innerHTML"));
+    assert!(draw_body.contains("heading.textContent"));
+    assert!(!draw_body.contains("location.hash"));
+    assert!(!draw_body.contains("event.content"));
+    assert!(PAGE_JS.contains(
+        "export function render_markdown(markdown, syntax_theme, max_url_length, external_link_security)"
+    ));
+    assert_eq!(body.matches("location.hash").count(), 1);
+    assert!(!body.contains("fetch("));
+    assert!(!body.contains("XMLHttpRequest"));
+    assert!(!body.contains("sendBeacon"));
+    assert!(!body.contains("location.href"));
+    assert!(!body.contains("location.assign"));
+    assert!(!body.contains("innerHTML"));
+    assert!(nostr.contains("await schnorrVerify(pubkey, message, sigBytes)"));
+    assert!(nostr.contains("if (await schnorrVerify(pubkey, message, flipped))"));
+    let copy = nostr.find("export function copySealedLink(").unwrap();
+    let copy_end = nostr[copy..]
+        .find("\nfunction copyText")
+        .map(|offset| copy + offset)
+        .unwrap();
+    let copy_body = &nostr[copy..copy_end];
+    assert!(copy_body.contains("clipboard.writeText(location.href)"));
+    assert!(copy_body.contains("copyText(location.href)"));
+    assert!(!copy_body.contains("location.hash"));
+    assert!(!copy_body.contains("split("));
+    assert!(!copy_body.contains("fetch("));
+    assert!(!copy_body.contains("location.assign"));
+    assert!(!copy_body.contains("XMLHttpRequest"));
+    assert!(!copy_body.contains("sendBeacon"));
+}
+
+#[test]
+fn nojs_sealed_page_says_the_note_opens_in_the_browser() {
+    let locator = "0123456789abcdef0123";
+    let html = nojs_sealed_page(locator).unwrap();
+    assert!(html.contains("<h1>The note opens in the browser</h1>"));
+    assert!(html.contains("<title>The note opens in the browser</title>"));
+    assert!(html.contains("This page does not decrypt it."));
+    assert!(html.contains(&format!("href=\"/s/{locator}\"")));
+    assert!(!html.contains("<script"));
+    assert!(!html.contains("sealed-event"));
+    assert!(!html.contains("nostr.js"));
+    assert!(!html.contains(".wasm"));
+    assert!(!html.contains("render_markdown"));
+    assert!(nojs_sealed_page("0123456789ABCDEF0123").is_none());
+    assert!(nojs_sealed_page("not-a-locator").is_none());
+    let pages = include_str!("../src/pages.rs");
+    let start = pages.find("pub fn nojs_sealed_view").unwrap();
+    let body = &pages[start..];
+    let body = &body[..body.find("\n#[get(\"/<post_id>\")]").unwrap()];
+    assert!(body.contains("nojs_sealed_page(locator)"));
+    assert!(!body.contains("fetch_sealed"));
+    assert!(!body.contains("open("));
+    assert!(!body.contains("render_markdown"));
+    assert!(!body.contains("post_from_public_note("));
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("pages::nojs_sealed_view"));
+}
+
+#[test]
 fn sealed_query_reuses_relays_for_public_fetch() {
     let hints = vec![
         "wss://relay.damus.io".to_string(),
@@ -836,8 +970,13 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
 
 #[test]
 fn publish_result_names_the_locator_and_accepted_relays() {
+    let configured = vec!["wss://relay.damus.io".to_string()];
     let accepted = vec!["wss://relay.damus.io".to_string()];
-    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone());
+    let result = publish_result(
+        "0123456789abcdef0123".to_string(),
+        accepted.clone(),
+        &configured,
+    );
     assert_eq!(result.locator, "0123456789abcdef0123");
     assert_eq!(result.accepted, accepted);
     let json = serde_json::to_string(&result).unwrap();
@@ -849,12 +988,48 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     assert!(!json.contains("\"key\""));
     assert!(!json.contains("nevent"));
 
-    assert!(publish_result(String::new(), accepted).locator.is_empty());
-    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new());
+    assert!(publish_result(String::new(), accepted, &configured)
+        .locator
+        .is_empty());
+    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new(), &configured);
     assert!(failed.locator.is_empty());
     assert!(failed.accepted.is_empty());
     let failed_json = serde_json::to_string(&failed).unwrap();
     assert!(!failed_json.contains("0123456789abcdef0123"));
+
+    let extra_only = vec!["wss://relay.primal.net".to_string()];
+    let extra = publish_result(
+        "0123456789abcdef0123".to_string(),
+        extra_only.clone(),
+        &configured,
+    );
+    assert!(extra.locator.is_empty());
+    assert_eq!(extra.accepted, extra_only);
+    let both = vec![
+        "wss://relay.primal.net".to_string(),
+        "wss://relay.damus.io".to_string(),
+    ];
+    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone(), &configured);
+    assert_eq!(landed.locator, "0123456789abcdef0123");
+    assert_eq!(landed.accepted, both);
+    let private = publish_result(
+        "0123456789abcdef0123".to_string(),
+        extra_only,
+        &["ws://10.0.0.1".to_string()],
+    );
+    assert!(private.locator.is_empty());
+
+    let pages = include_str!("../src/pages.rs");
+    let start = pages.find("fn publish_result").unwrap();
+    let body = &pages[start..];
+    let body = &body[..body.find("\n#[get(\"/tor-circuits\")]").unwrap()];
+    assert!(body.contains("relays_for_public_fetch(&[], configured)"));
+    assert!(!body.contains("read_seal"));
+    assert!(!body.contains("remember_seal"));
+    let start = pages.find("pub async fn nostr_publish").unwrap();
+    let body = &pages[start..];
+    let body = &body[..body.find("\n#[get(\"/s/<locator>\")]").unwrap()];
+    assert!(body.contains("publish_result(locator, accepted, &config.nostr.relays)"));
 }
 
 #[test]

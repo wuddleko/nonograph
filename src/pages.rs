@@ -452,11 +452,19 @@ pub(crate) fn note_and_relays_for_publish(
     Some((note, relays, locator))
 }
 
-fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
-    let locator = if accepted.is_empty() {
-        String::new()
-    } else {
+fn publish_result(
+    locator: String,
+    accepted: Vec<String>,
+    configured: &[String],
+) -> NostrPublishResult {
+    let instance = relays_for_public_fetch(&[], configured);
+    let locator = if accepted
+        .iter()
+        .any(|relay| instance.iter().any(|have| have == relay))
+    {
         locator
+    } else {
+        String::new()
     };
     NostrPublishResult { locator, accepted }
 }
@@ -518,7 +526,7 @@ pub async fn nostr_publish(
         let (note, relays, locator) = note_and_relays_for_publish(&body, &config)?;
         let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
         let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
-        Some(publish_result(locator, accepted))
+        Some(publish_result(locator, accepted, &config.nostr.relays))
     })
     .await
     {
@@ -683,6 +691,162 @@ type ViewErr = (
     Status,
     rocket::Either<content::RawText<String>, content::RawHtml<String>>,
 );
+
+const SEALED_TITLE: &str = "Sealed note";
+const SEALED_PREVIEW: &str = "A note sealed in the browser.";
+
+pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
+    let version = assets().version.clone();
+    let options = render_options(config);
+    let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
+    let external = if options.external_link_security {
+        "true"
+    } else {
+        "false"
+    };
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <link rel="icon" href="data:," />
+    <meta property="og:title" content="{title}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:description" content="{preview}" />
+    <meta name="description" content="{preview}" />
+    <link rel="stylesheet" href="/post.css?v={version}" />
+    <style>
+        body {{
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            color: #333;
+        }}
+        h1 {{ font-weight: 300; margin-bottom: 16px; }}
+        a {{ color: #333; }}
+        #sealed-copy {{
+            font: inherit;
+            cursor: pointer;
+        }}
+    </style>
+</head>
+<body>
+    <h1 id="sealed-title">{title}</h1>
+    <div class="article-meta" id="sealed-author" hidden></div>
+    <p id="sealed-preview">{preview}</p>
+    <div
+        class="article-content"
+        id="CONTENT"
+        data-syntax-theme="{theme}"
+        data-max-url-length="{max_url}"
+        data-external-links="{external}"
+    ></div>
+    <p><button type="button" id="sealed-copy">Copy link</button></p>
+    <p><a href="/">Write Your Own</a></p>
+    <script type="application/json" id="sealed-event">{event}</script>
+    <script type="module" src="/nostr.js?v={version}"></script>
+</body>
+</html>"#,
+        title = SEALED_TITLE,
+        preview = SEALED_PREVIEW,
+        event = event_json.replace('<', "\\u003c"),
+        version = version,
+        theme = theme,
+        max_url = options.max_url_length,
+        external = external,
+    )
+}
+
+#[get("/s/<locator>")]
+pub async fn sealed_view(
+    locator: &str,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    if !crate::nostr::sealed_locator(locator) {
+        return Err((
+            Status::NotFound,
+            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+        ));
+    }
+    let Some(_slot) = PublicFetchSlot::acquire() else {
+        return Err((
+            Status::ServiceUnavailable,
+            rocket::Either::Left(content::RawText("Service unavailable".to_string())),
+        ));
+    };
+    let config = config.inner().clone();
+    let shell = config.clone();
+    let locator = locator.to_string();
+    let event = match rocket::tokio::task::spawn_blocking(move || {
+        let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+        fetch_sealed_by_locator(
+            &[],
+            &locator,
+            &config.nostr.relays,
+            config.limits.content_max_length,
+            timeout,
+        )
+    })
+    .await
+    {
+        Ok(event) => event,
+        Err(_) => None,
+    };
+    let Some(event) = event else {
+        return Err((
+            Status::NotFound,
+            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+        ));
+    };
+    Ok(content::RawHtml(sealed_shell(&event, &shell)))
+}
+
+pub(crate) fn nojs_sealed_page(locator: &str) -> Option<String> {
+    if !crate::nostr::sealed_locator(locator) {
+        return None;
+    }
+    Some(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The note opens in the browser</title>
+    <link rel="icon" href="data:," />
+    <style>
+        body {{
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+            color: #333;
+        }}
+        h1 {{ font-weight: 300; margin-bottom: 16px; }}
+        a {{ color: #333; }}
+    </style>
+</head>
+<body>
+    <h1>The note opens in the browser</h1>
+    <p>This page does not decrypt it.</p>
+    <p><a href="/s/{locator}">js</a></p>
+    <p><a href="/">Write Your Own</a></p>
+</body>
+</html>"#
+    ))
+}
+
+#[get("/nojs/s/<locator>")]
+pub fn nojs_sealed_view(locator: &str) -> Result<content::RawHtml<String>, ViewErr> {
+    match nojs_sealed_page(locator) {
+        Some(html) => Ok(content::RawHtml(html)),
+        None => Err((
+            Status::NotFound,
+            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+        )),
+    }
+}
 
 #[get("/<post_id>")]
 pub async fn view_post(

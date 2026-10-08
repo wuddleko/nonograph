@@ -296,6 +296,54 @@ async function schnorrSign(secret, message, aux) {
     return etc.concatBytes(rx, etc.numberToBytesBE(s));
 }
 
+async function schnorrVerify(pubkey, message, signature) {
+    if (
+        !(pubkey instanceof Uint8Array) ||
+        pubkey.length !== 32 ||
+        !(message instanceof Uint8Array) ||
+        message.length !== 32 ||
+        !(signature instanceof Uint8Array) ||
+        signature.length !== 64
+    ) {
+        return false;
+    }
+    let point;
+    try {
+        const compressed = new Uint8Array(33);
+        compressed[0] = 0x02;
+        compressed.set(pubkey, 1);
+        point = Point.fromBytes(compressed);
+    } catch (error) {
+        return false;
+    }
+    const rx = signature.subarray(0, 32);
+    const r = etc.bytesToNumberBE(rx);
+    const s = etc.bytesToNumberBE(signature.subarray(32));
+    if (r >= CURVE.p || s >= CURVE.n) {
+        return false;
+    }
+    const e = etc.mod(
+        etc.bytesToNumberBE(
+            await taggedHash("BIP0340/challenge", rx, pubkey, message),
+        ),
+        CURVE.n,
+    );
+    const computed =
+        e === 0n
+            ? multiplyScalar(Point.BASE, s)
+            : multiplyScalar(Point.BASE, s).add(
+                  multiplyScalar(point, e).negate(),
+              );
+    return !computed.is0() && hasEvenY(computed) && computed.x === r;
+}
+
+function multiplyScalar(point, scalar) {
+    if (scalar === 0n) {
+        return Point.ZERO;
+    }
+    return point.multiply(scalar);
+}
+
 async function eventId(pubkey, createdAt, kind, tags, content) {
     const canonical = canonicalEvent(pubkey, createdAt, kind, tags, content);
     const digest = await sha256(new TextEncoder().encode(canonical));
@@ -488,14 +536,24 @@ async function ensureBip340() {
             const secret = hexToBytes(
                 "0000000000000000000000000000000000000000000000000000000000000003",
             );
-            const sig = bytesToHex(
-                await schnorrSign(secret, new Uint8Array(32), new Uint8Array(32)),
-            );
+            const message = new Uint8Array(32);
+            const aux = new Uint8Array(32);
+            const sigBytes = await schnorrSign(secret, message, aux);
+            const sig = bytesToHex(sigBytes);
             if (
                 sig !==
                 "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0"
             ) {
                 throw new Error("schnorr signer is wrong");
+            }
+            const pubkey = hexToBytes(xOnlyPubkey(secret));
+            if (!(await schnorrVerify(pubkey, message, sigBytes))) {
+                throw new Error("schnorr verifier is wrong");
+            }
+            const flipped = new Uint8Array(sigBytes);
+            flipped[flipped.length - 1] ^= 1;
+            if (await schnorrVerify(pubkey, message, flipped)) {
+                throw new Error("schnorr verifier is wrong");
             }
         })();
     }
@@ -702,4 +760,187 @@ function blockedRelayHost(host) {
         }
     }
     return false;
+}
+
+export async function openEmbeddedSeal(eventJson) {
+    let event;
+    try {
+        event = JSON.parse(String(eventJson ?? ""));
+    } catch (error) {
+        return null;
+    }
+    try {
+        await ensureBip340();
+        if (!(await verifySealedEvent(event))) {
+            return null;
+        }
+    } catch (error) {
+        return null;
+    }
+    const secret = secretFromFragment(location.hash);
+    if (!secret) {
+        return null;
+    }
+    const locator = firstTag(event.tags, "d");
+    if (!locator || typeof event.content !== "string") {
+        return null;
+    }
+    try {
+        const page = await loadPage();
+        const note = await page.open(event.content, secret, locator);
+        renderOpenedNote(note, page);
+        return note;
+    } catch (error) {
+        return null;
+    }
+}
+
+function renderOpenedNote(note, page) {
+    if (typeof document === "undefined" || !note || typeof note.content !== "string") {
+        return;
+    }
+    const content = document.getElementById("CONTENT");
+    if (!content) {
+        return;
+    }
+    const theme = content.getAttribute("data-syntax-theme") || "base16-ocean.dark";
+    const parsedLimit = Number(content.getAttribute("data-max-url-length"));
+    const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
+    const external = content.getAttribute("data-external-links") !== "false";
+    content.innerHTML = page.render_markdown(note.content, theme, maxUrl, external);
+    const heading = document.getElementById("sealed-title");
+    if (heading) {
+        heading.textContent = note.title ? String(note.title) : "Untitled";
+    }
+    const preview = document.getElementById("sealed-preview");
+    if (preview) {
+        preview.hidden = true;
+    }
+    const author = document.getElementById("sealed-author");
+    if (author) {
+        const name = note.author ? String(note.author) : "";
+        author.textContent = name;
+        author.hidden = name.length === 0;
+    }
+}
+
+async function verifySealedEvent(event) {
+    try {
+        if (
+            !event ||
+            typeof event.pubkey !== "string" ||
+            typeof event.id !== "string" ||
+            typeof event.sig !== "string" ||
+            typeof event.content !== "string" ||
+            !/^[0-9a-f]{64}$/.test(event.pubkey) ||
+            !/^[0-9a-f]{64}$/.test(event.id) ||
+            !/^[0-9a-f]{128}$/.test(event.sig)
+        ) {
+            return false;
+        }
+        const canonical = canonicalEvent(
+            event.pubkey,
+            event.created_at,
+            event.kind,
+            event.tags,
+            event.content,
+        );
+        const digest = await sha256(new TextEncoder().encode(canonical));
+        if (bytesToHex(digest) !== event.id) {
+            return false;
+        }
+        return schnorrVerify(hexToBytes(event.pubkey), digest, hexToBytes(event.sig));
+    } catch (error) {
+        return false;
+    }
+}
+
+function firstTag(tags, name) {
+    if (!Array.isArray(tags)) {
+        return "";
+    }
+    for (const tag of tags) {
+        if (Array.isArray(tag) && tag[0] === name && typeof tag[1] === "string") {
+            return tag[1];
+        }
+    }
+    return "";
+}
+
+function secretFromFragment(hash) {
+    if (typeof hash !== "string" || !hash.startsWith("#")) {
+        return null;
+    }
+    const text = hash.slice(1);
+    if (!text || /[^A-Za-z0-9_-]/.test(text)) {
+        return null;
+    }
+    const bytes = base64UrlToBytes(text);
+    if (!bytes || bytes.length !== SECRET_LEN) {
+        return null;
+    }
+    return bytes;
+}
+
+function base64UrlToBytes(text) {
+    const pad = (4 - (text.length % 4)) % 4;
+    const encoded = text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(pad);
+    let binary;
+    try {
+        binary = atob(encoded);
+    } catch (error) {
+        return null;
+    }
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        out[i] = binary.charCodeAt(i);
+    }
+    return out;
+}
+
+export function copySealedLink(button) {
+    const showCopied = () => {
+        if (!button) {
+            return;
+        }
+        const label = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => {
+            button.textContent = label;
+        }, 1200);
+    };
+    const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : null;
+    if (clipboard && typeof clipboard.writeText === "function") {
+        const pending = clipboard.writeText(location.href);
+        if (pending && typeof pending.then === "function") {
+            return pending.then(showCopied).catch(() => {
+                copyText(location.href);
+                showCopied();
+            });
+        }
+    }
+    copyText(location.href);
+    showCopied();
+}
+
+function copyText(href) {
+    const textArea = document.createElement("textarea");
+    textArea.value = href;
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textArea);
+}
+
+if (typeof document !== "undefined") {
+    const copy = document.getElementById("sealed-copy");
+    if (copy) {
+        copy.addEventListener("click", () => {
+            copySealedLink(copy);
+        });
+    }
+    const sealedEvent = document.getElementById("sealed-event");
+    if (sealedEvent) {
+        openEmbeddedSeal(sealedEvent.textContent);
+    }
 }

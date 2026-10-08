@@ -1588,7 +1588,7 @@ fn fetch_from_relays(
             }
         }
         RelayQuery::Seal { locator, .. } => {
-            if !seal_query_locator(locator) {
+            if !sealed_locator(locator) {
                 return None;
             }
         }
@@ -1925,7 +1925,7 @@ fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, cont
     });
 }
 
-fn seal_query_locator(locator: &str) -> bool {
+pub(crate) fn sealed_locator(locator: &str) -> bool {
     locator.len() == nonograph_nip44::LOCATOR_LEN
         && locator
             .bytes()
