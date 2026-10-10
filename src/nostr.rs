@@ -21,7 +21,6 @@ pub const KIND_GIFT_WRAP: u32 = 1059;
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
 const SEALED_EVENT_OVERHEAD: usize = 8192;
 const SEALED_FRAME_OVERHEAD: usize = 1024;
-const SEALED_FETCH_LIMIT: usize = 8;
 const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
@@ -77,28 +76,21 @@ pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> S
 pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> SignedNote {
     let keypair = Keypair::new(SECP256K1, &mut thread_rng());
     let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
-    let kind = nonograph_nip44::KIND;
-    for nonce in 0..1_000_000u32 {
-        let tags = sealed_tags(locator, &nonce.to_string());
-        let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
-        if nonograph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content).is_ok()
-        {
-            return signed_event(&keypair, created_at, kind, &tags, content);
-        }
-    }
-    panic!("no stamp in range");
-}
-
-#[cfg(test)]
-fn sealed_tags(locator: &str, nonce: &str) -> Vec<Vec<String>> {
-    vec![
-        vec!["d".to_string(), locator.to_string()],
-        vec![
-            "nonce".to_string(),
-            nonce.to_string(),
-            nonograph_nip44::POW_BITS.to_string(),
-        ],
-    ]
+    let mined = crate::seal::mine_stamp(
+        &pubkey_hex,
+        created_at,
+        locator,
+        content,
+        crate::seal::STAMP_ATTEMPTS,
+    )
+    .expect("no stamp in range");
+    signed_event(
+        &keypair,
+        mined.created_at,
+        nonograph_nip44::KIND,
+        &mined.tags,
+        content,
+    )
 }
 
 #[derive(Debug)]
@@ -366,7 +358,19 @@ pub fn public_note_from_json(
 
 pub fn sealed_note_from_json(
     value: &serde_json::Value,
+    title_max: usize,
+    alias_max: usize,
     content_max: usize,
+) -> Option<(SignedNote, String)> {
+    sealed_note_capped(
+        value,
+        crate::seal::sealed_payload_max(title_max, alias_max, content_max),
+    )
+}
+
+fn sealed_note_capped(
+    value: &serde_json::Value,
+    payload_max: usize,
 ) -> Option<(SignedNote, String)> {
     let parsed = parse_event(value)?;
     if !verify_sig(&parsed) {
@@ -384,7 +388,7 @@ pub fn sealed_note_from_json(
     {
         return None;
     }
-    if parsed.content.len() > content_max {
+    if parsed.content.len() > payload_max {
         return None;
     }
     let locator = stamp_locator(&parsed.tags)?;
@@ -1539,16 +1543,21 @@ pub fn fetch_public_addr(
 
 pub fn fetch_sealed(
     relays: &[String],
+    event_id_hex: &str,
     locator: &str,
+    title_max: usize,
+    alias_max: usize,
     content_max: usize,
     timeout: Duration,
 ) -> Option<String> {
+    let payload_max = crate::seal::sealed_payload_max(title_max, alias_max, content_max);
     Some(
         fetch_from_relays(
             relays,
             RelayQuery::Seal {
+                event_id_hex: event_id_hex.to_string(),
                 locator: locator.to_string(),
-                content_max,
+                payload_max,
             },
             timeout,
             true,
@@ -1565,8 +1574,9 @@ enum RelayQuery {
     },
     Addr(Naddr),
     Seal {
+        event_id_hex: String,
         locator: String,
-        content_max: usize,
+        payload_max: usize,
     },
 }
 
@@ -1587,8 +1597,12 @@ fn fetch_from_relays(
                 return None;
             }
         }
-        RelayQuery::Seal { locator, .. } => {
-            if !sealed_locator(locator) {
+        RelayQuery::Seal {
+            event_id_hex,
+            locator,
+            ..
+        } => {
+            if decode_fixed_hex::<32>(event_id_hex).is_none() || !sealed_locator(locator) {
                 return None;
             }
         }
@@ -1636,10 +1650,7 @@ fn fetch_from_relays(
         }));
     }
     drop(tx);
-    let note = match &query {
-        RelayQuery::Seal { .. } => take_newest_note(rx, deadline),
-        _ => take_first_note(rx, deadline),
-    };
+    let note = take_first_note(rx, deadline);
     cancel.store(true, Ordering::Relaxed);
     for handle in handles {
         let _ = handle.join();
@@ -1664,30 +1675,6 @@ fn take_first_note(
     }
 }
 
-fn take_newest_note(
-    rx: mpsc::Receiver<Option<FetchedNote>>,
-    deadline: Instant,
-) -> Option<FetchedNote> {
-    let mut best = None;
-    let mut best_at = i64::MIN;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return best;
-        }
-        match rx.recv_timeout(remaining) {
-            Ok(Some(note)) => {
-                if note.created_at >= best_at {
-                    best_at = note.created_at;
-                    best = Some(note);
-                }
-            }
-            Ok(None) => {}
-            Err(_) => return best,
-        }
-    }
-}
-
 fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
     match query {
         RelayQuery::Id { event_id_hex, .. } => {
@@ -1703,13 +1690,11 @@ fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
             }
         ])
         .to_string(),
-        RelayQuery::Seal { locator, .. } => serde_json::json!([
+        RelayQuery::Seal { event_id_hex, .. } => serde_json::json!([
             "REQ",
             sub_id,
             {
-                "kinds": [nonograph_nip44::KIND],
-                "#d": [locator],
-                "limit": SEALED_FETCH_LIMIT,
+                "ids": [event_id_hex],
             }
         ])
         .to_string(),
@@ -1724,8 +1709,8 @@ fn fetch_from_relay(
     public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
     let mut socket = connect_relay(relay, deadline, Some(cancel), public_only, relay_socks())?;
-    if let RelayQuery::Seal { content_max, .. } = query {
-        limit_sealed_socket(&mut socket, *content_max);
+    if let RelayQuery::Seal { payload_max, .. } = query {
+        limit_sealed_socket(&mut socket, *payload_max);
     }
     let sub_id = random_hex(8);
     let payload = req_payload(&sub_id, query);
@@ -1737,7 +1722,7 @@ fn fetch_from_relay(
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
-    let newest_until_eose = matches!(query, RelayQuery::Addr(_) | RelayQuery::Seal { .. });
+    let newest_until_eose = matches!(query, RelayQuery::Addr(_));
     let mut best = None;
     let mut best_at = i64::MIN;
     loop {
@@ -1755,8 +1740,8 @@ fn fetch_from_relay(
                 };
             }
             Incoming::Text(text) => {
-                if let RelayQuery::Seal { content_max, .. } = query {
-                    if text.len() > sealed_frame_max(*content_max) {
+                if let RelayQuery::Seal { payload_max, .. } = query {
+                    if text.len() > sealed_frame_max(*payload_max) {
                         continue;
                     }
                 }
@@ -1786,9 +1771,10 @@ fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote
             .map(|note| (0, note)),
         RelayQuery::Addr(naddr) => addr_note_from_relay_message(message, naddr),
         RelayQuery::Seal {
+            event_id_hex,
             locator,
-            content_max,
-        } => sealed_from_relay_message(message, locator, *content_max).map(
+            payload_max,
+        } => sealed_from_relay_message(message, event_id_hex, locator, *payload_max).map(
             |(created_at, event_json)| {
                 (
                     created_at,
@@ -1882,18 +1868,22 @@ fn addr_note_from_relay_message(message: &str, naddr: &Naddr) -> Option<(i64, Fe
 
 fn sealed_from_relay_message(
     message: &str,
+    event_id: &str,
     locator: &str,
-    content_max: usize,
+    payload_max: usize,
 ) -> Option<(i64, String)> {
-    if message.len() > sealed_frame_max(content_max) {
+    if message.len() > sealed_frame_max(payload_max) {
         return None;
     }
     let event_json = unchanged_relay_event(message)?;
-    if event_json.len() > sealed_event_max(content_max) {
+    if event_json.len() > sealed_event_max(payload_max) {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(&event_json).ok()?;
-    let (_, found) = sealed_note_from_json(&value, content_max)?;
+    if value.get("id")?.as_str()? != event_id {
+        return None;
+    }
+    let (_, found) = sealed_note_capped(&value, payload_max)?;
     if found != locator {
         return None;
     }
@@ -1928,6 +1918,13 @@ fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, cont
 pub(crate) fn sealed_locator(locator: &str) -> bool {
     locator.len() == nonograph_nip44::LOCATOR_LEN
         && locator
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+pub(crate) fn sealed_event_id(event_id: &str) -> bool {
+    event_id.len() == 64
+        && event_id
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -1983,7 +1980,7 @@ fn note_fields(tags: &[Vec<String>], event_created_at: i64) -> (String, String, 
     (title, author, created_at)
 }
 
-fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
+pub(crate) fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
     if hex.len() != N * 2 || !hex.is_ascii() {
         return None;
     }
@@ -2003,6 +2000,39 @@ fn valid_relay_url(relay: &str) -> bool {
         && relay.is_ascii()
         && relay.len() <= 255
         && !relay.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+pub(crate) fn canonical_public_relay(relay: &str) -> Option<String> {
+    let relay = relay.trim();
+    if !public_relay_url(relay) {
+        return None;
+    }
+    let url = url::Url::parse(relay).ok()?;
+    let host = match url.host()? {
+        url::Host::Domain(domain) => domain.trim_end_matches('.').to_ascii_lowercase(),
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => format!("[{address}]"),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let mut path = url.path().trim_end_matches('/').to_string();
+    if path == "/" {
+        path.clear();
+    }
+    let mut canonical = format!("wss://{host}{path}");
+    if let Some(query) = url.query() {
+        canonical.push('?');
+        canonical.push_str(query);
+    }
+    Some(canonical)
+}
+
+pub(crate) fn same_public_relay(left: &str, right: &str) -> bool {
+    matches!(
+        (canonical_public_relay(left), canonical_public_relay(right)),
+        (Some(left), Some(right)) if left == right
+    )
 }
 
 pub(crate) fn public_relay_url(relay: &str) -> bool {
@@ -2148,7 +2178,7 @@ fn long_form_tags(title: &str, author: &str, created_at: i64) -> Vec<Vec<String>
     tags
 }
 
-fn signed_event(
+pub(crate) fn signed_event(
     keypair: &Keypair,
     created_at: i64,
     kind: u32,
@@ -2325,7 +2355,7 @@ fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapErro
     }
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
@@ -2370,7 +2400,7 @@ fn random_hex(bytes: usize) -> String {
     hex_encode(&raw)
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

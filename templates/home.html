@@ -38,8 +38,11 @@
                 .nostr-publish {
                     display: none !important;
                 }
-                .nojs-file-note {
+                body:not(.nojs) .needs-js {
                     display: block !important;
+                }
+                body:not(.nojs) button[type="submit"][form="publishForm"] {
+                    display: none !important;
                 }
             </style>
         </noscript>
@@ -49,25 +52,14 @@
         <!-- Mobile Header -->
         <div class="mobile-header">
             <div class="char-count" id="mobileCharCount">
-                <svg class="progress-circle" id="mobileProgressCircle">
-                    <circle class="background" cx="8" cy="8" r="6"></circle>
-                    <circle
-                        class="progress"
-                        cx="8"
-                        cy="8"
-                        r="6"
-                        stroke-dasharray="37.7"
-                        stroke-dashoffset="37.7"
-                    ></circle>
-                </svg>
                 <span class="live-count">0 / {{content_limit}}</span>
                 <span class="static-count">{{content_limit}} characters</span>
             </div>
             <div class="mobile-header-center">
                 <a href="#help-sheet" class="help-link">About</a>
-                <a href="#help-sheet" class="help-link">Relays</a>
+                <a href="#help-sheet" class="help-link relays-open-sheet">Relays</a>
+                <a href="#sidebar-relays" class="help-link relays-open-bar">Relays</a>
                 <button type="submit" form="publishForm">Publish</button>
-                <button type="button" class="nostr-publish">On Nostr</button>
             </div>
         </div>
 
@@ -91,11 +83,10 @@
                             to yourself.
                         </p>
                         <p>
-                            The service and software are designed to last. Your
-                            pages are stored as plaintext markup, no proprietary
-                            formats. Being a simple, lightweight, open-source
-                            project means it should last a long time with very
-                            little funding.
+                            The service and software are designed to last.
+                            {{about_durability}} Being a simple, lightweight,
+                            open-source project means it should last a long
+                            time with very little funding.
                         </p>
                     </div>
 
@@ -127,9 +118,14 @@
 
                     <div class="help-section">
                         <h3>Formatting</h3>
-                        <p>
+                        <p class="format-with-slash">
                             Type <code>/</code> for a menu of formatting
                             options, or use markdown directly. Add
+                            <code>.md</code> to any post URL to see the raw
+                            source.
+                        </p>
+                        <p class="format-markdown">
+                            Use markdown directly. Add
                             <code>.md</code> to any post URL to see the raw
                             source.
                         </p>
@@ -140,8 +136,12 @@
 
         <div class="container">
             <div class="writingarea">
+                <p class="needs-js">
+                    This page needs JavaScript.
+                    <a href="/nojs">The no-JS page</a> seals the note and does not keep a copy.
+                </p>
                 <p class="nojs-file-note">
-                    This page only saves a file on this host. Publishing on Nostr needs JavaScript.
+                    This host seals the note and does not keep a copy. The key stays in the address.
                 </p>
                 <form
                     action="{{form_action}}"
@@ -150,6 +150,7 @@
                     class="content"
                     data-relays="{{nostr_relays}}"
                     data-timeout="{{nostr_timeout_ms}}"
+                    data-seal-max="{{seal_max}}"
                 >
                     <p class="form-error">{{error}}</p>
                     <textarea
@@ -160,7 +161,10 @@
                         rows="1"
                         title="Mind your opsec. Limited to 128 characters."
                         required
-                    ></textarea>
+                    >{{title_value}}</textarea>
+                    <svg class="wave" viewBox="0 0 640 16" preserveAspectRatio="none" aria-hidden="true">
+                        <path d="M0 8 L16 3 L32 13 L48 3 L64 13 L80 3 L96 13 L112 3 L128 13 L144 3 L160 13 L176 3 L192 13 L208 3 L224 13 L240 3 L256 13 L272 3 L288 13 L304 3 L320 13 L336 3 L352 13 L368 3 L384 13 L400 3 L416 13 L432 3 L448 13 L464 3 L480 13 L496 3 L512 13 L528 3 L544 13 L560 3 L576 13 L592 3 L608 13 L624 3 L640 8"></path>
+                    </svg>
                     <div class="alias-anchor">
                         <button
                             type="button"
@@ -192,6 +196,7 @@
                             maxlength="32"
                             class="author-input"
                             title="Mind your opsec. Limited to 32 characters."
+                            value="{{alias_value}}"
                         />
                     </div>
                     {{content_field}}
@@ -200,36 +205,32 @@
                         name="csrf_token"
                         value="{{csrf_token}}"
                     />
+                    <noscript>
+                        <input type="hidden" name="javascript_off" value="on" />
+                    </noscript>
+                    {{relay_field}}
                 </form>
             </div>
 
             <div class="sidebar">
                 <button type="submit" form="publishForm">Publish</button>
-                <button type="button" class="nostr-publish">On Nostr</button>
                 <div class="char-count" id="charCount">
-                    <svg class="progress-circle" id="progressCircle">
-                        <circle class="background" cx="8" cy="8" r="6"></circle>
-                        <circle
-                            class="progress"
-                            cx="8"
-                            cy="8"
-                            r="6"
-                            stroke-dasharray="37.7"
-                            stroke-dashoffset="37.7"
-                        ></circle>
-                    </svg>
                     <span class="live-count">0 / {{content_limit}}</span>
-                <span class="static-count">{{content_limit}} characters</span>
+                    <span class="static-count">{{content_limit}} characters</span>
                 </div>
                 {{relays_sidebar}}
-                <div class="links">
-                    <a href="/markup" target="_blank">markup guide</a>
-                    <a href="/legal" target="_blank">legal &amp; privacy</a>
-                    <a href="https://github.com/wuddleko/nonograph" target="_blank"
-                        >source code</a
-                    >
-                </div>
             </div>
+        </div>
+
+        <div class="footer">
+            <a href="/markup" target="_blank">markup guide</a>
+            <a href="/legal" target="_blank">legal &amp; privacy</a>
+            <a href="/api" target="_blank">api</a>
+            <a class="footer-nojs" href="/nojs" target="_blank">nojs</a>
+            <a class="footer-js" href="/" target="_blank">js</a>
+            <a href="https://github.com/wuddleko/nonograph" target="_blank"
+                >source code</a
+            >
         </div>
 
         {{scripts}}

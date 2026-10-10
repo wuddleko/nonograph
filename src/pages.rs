@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, Header, Status};
 use rocket::response::content;
 use rocket::response::Responder;
 use rocket::serde::json::Json;
@@ -13,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
-use crate::csrf::{self, CsrfProtected};
+use crate::csrf;
 use crate::publish;
 use crate::template;
 use crate::{
@@ -41,6 +43,9 @@ const REVALIDATE: &str = "public, no-cache";
 const STATIC_PAGES: &[&str] = &["about", "legal", "markup", "api"];
 
 pub fn cache_control_for_path(path: &str) -> &'static str {
+    if path.starts_with("/nojs/s/") {
+        return "no-store";
+    }
     match path {
         PAGE_JS_PATH | PAGE_WASM_PATH => REVALIDATE,
         HOME_CSS_PATH
@@ -177,15 +182,23 @@ fn home_scripts(version: &str) -> String {
     )
 }
 
-fn home_content_field(nojs: bool, max_length: &str) -> String {
+fn home_content_field(nojs: bool, max_length: &str, content: &str) -> String {
     if nojs {
         format!(
-            "<textarea name=\"content\" placeholder=\"Write something with markdown...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required></textarea>"
+            "<textarea name=\"content\" placeholder=\"Write something with markdown...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required>{}</textarea>",
+            nonograph_parser::html_escape(content)
         )
     } else {
         format!(
             "<writemark-editor name=\"content\" mode=\"live\" placeholder=\"Write something with markdown or type / for formatting options...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required></writemark-editor>"
         )
+    }
+}
+
+fn split_home_error(error: Option<&str>) -> (Option<&str>, &str) {
+    match error {
+        Some(code @ ("relay_required" | "relay_invalid" | "relay_configured")) => (None, code),
+        other => (other, ""),
     }
 }
 
@@ -198,9 +211,13 @@ fn home_error_message(error: Option<&str>) -> String {
         "title_too_long" => "The title is too long.".to_string(),
         "content_too_long" => "The post is too long.".to_string(),
         "alias_too_long" => "The alias is too long.".to_string(),
+        "relay_required" => "Enter a relay URL.".to_string(),
+        "relay_invalid" => "Use a public wss:// relay URL.".to_string(),
+        "relay_configured" => "That relay is already configured on this site.".to_string(),
         "nostr_publish_failed" => "Publishing failed. Try again.".to_string(),
         "save_failed" => "Saving the post failed. Try again.".to_string(),
         "no_available_slots" => "Could not pick an address for this post. Try again.".to_string(),
+        "javascript_required" => "This page needs JavaScript. Use the no-JS page.".to_string(),
         _ => "Something went wrong. Try again.".to_string(),
     }
 }
@@ -242,6 +259,10 @@ pub(crate) fn tab_relay_timeout_ms(timeout_secs: u64) -> u64 {
         .max(MIN_TAB_RELAY_TIMEOUT_MS)
 }
 
+fn relay_timeout(config: &Config) -> Duration {
+    Duration::from_secs(config.nostr.timeout_secs.max(1))
+}
+
 fn format_count(value: usize) -> String {
     let digits = value.to_string();
     let mut grouped = String::new();
@@ -255,6 +276,21 @@ fn format_count(value: usize) -> String {
 }
 
 fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<String, String> {
+    home_form_context(config, nojs, error, "", "", "", "", "", false, false)
+}
+
+fn home_form_context(
+    config: &Config,
+    nojs: bool,
+    error: Option<&str>,
+    title: &str,
+    alias: &str,
+    content: &str,
+    saved: &str,
+    typed: &str,
+    list_relay: bool,
+    surface_relay_error: bool,
+) -> HashMap<String, String> {
     let mut context = HashMap::new();
     let max_length = config.limits.content_max_length.to_string();
     context.insert(
@@ -266,8 +302,14 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
         if nojs { "nojs" } else { "" }.to_string(),
     );
     context.insert(
+        "about_durability".to_string(),
+        about_durability(nojs).to_string(),
+    );
+    context.insert("title_value".to_string(), title.to_string());
+    context.insert("alias_value".to_string(), alias.to_string());
+    context.insert(
         "content_field".to_string(),
-        home_content_field(nojs, &max_length),
+        home_content_field(nojs, &max_length, content),
     );
     context.insert(
         "nostr_relays".to_string(),
@@ -278,7 +320,25 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
         "nostr_timeout_ms".to_string(),
         tab_relay_timeout_ms(config.nostr.timeout_secs).to_string(),
     );
-    context.insert("error".to_string(), home_error_message(error));
+    context.insert(
+        "seal_max".to_string(),
+        crate::seal::sealed_payload_max(
+            config.limits.title_max_length,
+            config.limits.alias_max_length,
+            config.limits.content_max_length,
+        )
+        .to_string(),
+    );
+    let (mut form_error, relay_error) = split_home_error(error);
+    if surface_relay_error && !relay_error.is_empty() {
+        form_error = Some(relay_error);
+    }
+    context.insert("error".to_string(), home_error_message(form_error));
+    let relay_message = if relay_error.is_empty() {
+        String::new()
+    } else {
+        home_error_message(Some(relay_error))
+    };
     let csrf_token = if config.security.csrf_protection_enabled {
         csrf::generate_csrf_token_with_timestamp()
     } else {
@@ -303,13 +363,36 @@ fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<Str
     let relays = relays_for_public_fetch(&[], &config.nostr.relays);
     context.insert(
         "relays_sidebar".to_string(),
-        crate::relays::render_sidebar(&relays),
+        crate::relays::render_sidebar_field(
+            &relays,
+            nojs,
+            saved,
+            typed,
+            list_relay,
+            &relay_message,
+        ),
     );
     context.insert(
         "relays_section".to_string(),
-        crate::relays::render_about_section(&relays),
+        crate::relays::render_about_section(&relays, nojs),
+    );
+    context.insert(
+        "relay_field".to_string(),
+        if nojs {
+            crate::relays::render_saved_relay_input(saved)
+        } else {
+            String::new()
+        },
     );
     context
+}
+
+fn about_durability(nojs: bool) -> &'static str {
+    if nojs {
+        "The host seals the note and does not keep a copy. The writing is ordinary markup, not a proprietary format."
+    } else {
+        "Your pages are stored as plaintext markup, no proprietary formats."
+    }
 }
 
 fn render_home(config: &Config, nojs: bool, error: Option<&str>) -> content::RawHtml<String> {
@@ -330,12 +413,28 @@ pub fn nojs_index(error: Option<&str>, config: &State<Config>) -> content::RawHt
     render_home(config, true, error)
 }
 
-#[derive(FromForm)]
+#[derive(Clone, FromForm)]
 pub(crate) struct NewPost {
     title: String,
     content: String,
     alias: String,
     csrf_token: String,
+    #[field(default = String::new())]
+    relay: String,
+    #[field(default = String::new())]
+    relay_box: String,
+    #[field(default = false)]
+    relay_remove: bool,
+    #[field(default = false)]
+    javascript_off: bool,
+}
+
+fn csrf_failure(config: &Config, token: &str) -> Option<&'static str> {
+    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(token) {
+        Some("csrf_token_invalid")
+    } else {
+        None
+    }
 }
 
 pub(crate) fn create_location_in_dir(
@@ -346,25 +445,52 @@ pub(crate) fn create_location_in_dir(
     base_dir: &str,
 ) -> String {
     let home = if nojs { "/nojs" } else { "/" };
-    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&form.csrf_token) {
-        return format!("{home}?error=csrf_token_invalid");
+    if !nojs && form.javascript_off {
+        return format!("{home}?error=javascript_required");
+    }
+    if let Some(error) = csrf_failure(config, &form.csrf_token) {
+        return format!("{home}?error={error}");
     }
 
-    let alias = if form.alias.trim().is_empty() {
+    let title = if nojs {
+        form.title.trim()
+    } else {
+        form.title.as_str()
+    };
+    let alias = if nojs {
+        form.alias.trim()
+    } else {
+        form.alias.as_str()
+    };
+    let alias_check = if alias.trim().is_empty() {
         None
     } else {
-        Some(form.alias.as_str())
+        Some(alias)
     };
-    if let Err(error) = config.validate_post(&form.title, &form.content, alias) {
+    if let Err(error) = config.validate_post(title, &form.content, alias_check) {
         return format!("{home}?error={error}");
+    }
+    if nojs {
+        let relay = nojs_chosen_relay(form);
+        if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
+            return format!("{home}?error=relay_invalid");
+        }
+        if nojs_publish_relays(relay, &config.nostr.relays).is_none() {
+            return format!("{home}?error=nostr_publish_failed");
+        }
+        return match publish_nojs_note(form, config) {
+            Ok(published) => nojs_sealed_location(&published, &config.nostr.relays)
+                .unwrap_or_else(|| format!("{home}?error=nostr_publish_failed")),
+            Err(error) => format!("{home}?error={error}"),
+        };
     }
 
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&form.content, &render_options(config));
     match publish::publish_note_in_dir(
         storage,
-        &form.title,
-        &form.alias,
+        title,
+        alias,
         &rendered_content,
         &form.content,
         base_dir,
@@ -372,6 +498,185 @@ pub(crate) fn create_location_in_dir(
         Ok(post_id) => publish::published_href(nojs, &post_id),
         Err(failure) => publish::publish_failure_href(nojs, failure),
     }
+}
+
+struct NojsPublished {
+    accepted: Vec<String>,
+    locator: String,
+    event_id: String,
+    payload: String,
+    k: String,
+}
+
+fn publish_nojs_note(form: &NewPost, config: &Config) -> Result<NojsPublished, &'static str> {
+    let relays = nojs_publish_relays(nojs_chosen_relay(form), &config.nostr.relays)
+        .ok_or("nostr_publish_failed")?;
+    let sealed = match crate::seal::seal_and_sign(
+        form.title.trim(),
+        form.alias.trim(),
+        &form.content,
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+    ) {
+        Ok(sealed) => sealed,
+        Err(crate::seal::SealPlaintextError::TooLong) => return Err("content_too_long"),
+        Err(_) => return Err("nostr_publish_failed"),
+    };
+    #[cfg(test)]
+    remember_nojs_test_event(&sealed.note.event_json);
+    let timeout = relay_timeout(config);
+    let accepted = {
+        let _slot = nojs_publish_slot().map_err(|_| "nostr_publish_failed")?;
+        #[cfg(test)]
+        {
+            if let Some(accepted) = nojs_test_accepted() {
+                accepted
+            } else {
+                crate::nostr::publish_to_relays(&relays, &sealed.note, timeout)
+            }
+        }
+        #[cfg(not(test))]
+        {
+            crate::nostr::publish_to_relays(&relays, &sealed.note, timeout)
+        }
+    };
+    let event: serde_json::Value =
+        serde_json::from_str(&sealed.note.event_json).map_err(|_| "nostr_publish_failed")?;
+    let payload = event
+        .get("content")
+        .and_then(|content| content.as_str())
+        .ok_or("nostr_publish_failed")?
+        .to_string();
+    Ok(NojsPublished {
+        accepted,
+        locator: sealed.locator,
+        event_id: sealed.note.id_hex(),
+        k: sealed.k,
+        payload,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static NOJS_TEST_ACCEPTED: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn nojs_test_accepted() -> Option<Vec<String>> {
+    NOJS_TEST_ACCEPTED.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+fn set_nojs_test_accepted(accepted: Option<Vec<String>>) {
+    NOJS_TEST_ACCEPTED.with(|slot| *slot.borrow_mut() = accepted);
+}
+
+#[cfg(test)]
+enum NojsTestFetch {
+    Live,
+    Missing,
+    Capture,
+    Event(String),
+}
+
+#[cfg(test)]
+static NOJS_TEST_FETCH: Mutex<NojsTestFetch> = Mutex::new(NojsTestFetch::Live);
+
+#[cfg(test)]
+thread_local! {
+    static NOJS_TEST_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+static NOJS_FETCH_HINTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+static NOJS_RECORD_HINTS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn note_nojs_fetch_hints(hints: &[String]) {
+    if NOJS_RECORD_HINTS.load(Ordering::Relaxed) {
+        *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = hints.to_vec();
+    }
+}
+
+#[cfg(test)]
+fn nojs_fetch_hints_seen() -> Vec<String> {
+    NOJS_FETCH_HINTS.lock().expect("nojs fetch hints").clone()
+}
+
+#[cfg(test)]
+fn set_nojs_test_fetch(next: NojsTestFetch) {
+    let capture = matches!(next, NojsTestFetch::Capture);
+    NOJS_TEST_CAPTURE.with(|flag| flag.set(capture));
+    *NOJS_TEST_FETCH.lock().expect("nojs test fetch") = next;
+}
+
+#[cfg(test)]
+fn remember_nojs_test_event(event_json: &str) {
+    if !NOJS_TEST_CAPTURE.with(|flag| flag.get()) {
+        return;
+    }
+    let mut slot = NOJS_TEST_FETCH.lock().expect("nojs test fetch");
+    if matches!(*slot, NojsTestFetch::Capture) {
+        *slot = NojsTestFetch::Event(event_json.to_string());
+    }
+}
+
+#[cfg(test)]
+fn canned_nojs_event() -> Option<Option<String>> {
+    match &*NOJS_TEST_FETCH.lock().expect("nojs test fetch") {
+        NojsTestFetch::Live | NojsTestFetch::Capture => None,
+        NojsTestFetch::Missing => Some(None),
+        NojsTestFetch::Event(event) => Some(Some(event.clone())),
+    }
+}
+
+fn query_escape(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+fn nojs_sealed_location(published: &NojsPublished, configured: &[String]) -> Option<String> {
+    if published.k.is_empty()
+        || published.locator.is_empty()
+        || !crate::nostr::sealed_event_id(&published.event_id)
+    {
+        return None;
+    }
+    let mut kept = Vec::new();
+    for relay in &published.accepted {
+        push_public_relay(&mut kept, relay);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    let instance = relays_for_public_fetch(&[], configured);
+    let hints = kept
+        .into_iter()
+        .filter(|relay| !instance.iter().any(|have| have == relay))
+        .collect::<Vec<_>>();
+    Some(js_seal_href(
+        &published.locator,
+        &published.event_id,
+        &published.k,
+        &hints,
+    ))
 }
 
 async fn handle_create(
@@ -382,18 +687,14 @@ async fn handle_create(
 ) -> rocket::response::Redirect {
     let storage = storage.clone();
     let config = config.clone();
-    let form = NewPost {
-        title: form.title.clone(),
-        content: form.content.clone(),
-        alias: form.alias.clone(),
-        csrf_token: form.csrf_token.clone(),
-    };
+    let form = form.clone();
     match rocket::tokio::task::spawn_blocking(move || {
         create_location_in_dir(nojs, &form, &storage, &config, ".")
     })
     .await
     {
         Ok(location) => rocket::response::Redirect::to(location),
+        Err(_) if nojs => rocket::response::Redirect::to("/nojs?error=nostr_publish_failed"),
         Err(_) => publish::publish_failure_redirect(
             nojs,
             publish::PublishFailure::Save("publishing was interrupted".to_string()),
@@ -403,7 +704,6 @@ async fn handle_create(
 
 #[post("/create", data = "<form>")]
 pub async fn create_post(
-    _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
     config: &State<Config>,
@@ -411,14 +711,185 @@ pub async fn create_post(
     Ok(handle_create(false, &form, storage, config).await)
 }
 
+fn nojs_chosen_relay(form: &NewPost) -> &str {
+    let typed = form.relay_box.trim();
+    if !typed.is_empty() {
+        return typed;
+    }
+    let saved = form.relay.trim();
+    if crate::nostr::public_relay_url(saved) {
+        return saved;
+    }
+    ""
+}
+
+fn nojs_publish_relays(relay: &str, configured: &[String]) -> Option<Vec<String>> {
+    let mut relays = relays_for_public_fetch(&[], configured);
+    if let Some(relay) = crate::nostr::canonical_public_relay(relay) {
+        if !relays.iter().any(|have| have == &relay) {
+            relays.insert(0, relay);
+        }
+    }
+    if relays.is_empty() {
+        None
+    } else {
+        Some(relays)
+    }
+}
+
+fn nojs_publish_slot() -> Result<PublicFetchSlot, &'static str> {
+    PublicFetchSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
+}
+
+fn nojs_relay_add_status(
+    relay: &str,
+    csrf_token: &str,
+    config: &Config,
+) -> (Option<&'static str>, bool) {
+    if let Some(error) = csrf_failure(config, csrf_token) {
+        return (Some(error), false);
+    }
+    if relay.is_empty() {
+        return (Some("relay_required"), false);
+    }
+    if crate::nostr::canonical_public_relay(relay).is_none() {
+        return (Some("relay_invalid"), false);
+    }
+    if relays_for_public_fetch(&[], &config.nostr.relays)
+        .iter()
+        .any(|have| crate::nostr::same_public_relay(have, relay))
+    {
+        return (Some("relay_configured"), false);
+    }
+    (None, true)
+}
+
+fn render_nojs_form(
+    config: &Config,
+    form: &NewPost,
+    error: Option<&str>,
+    list_relay: bool,
+    surface_relay_error: bool,
+) -> content::RawHtml<String> {
+    let saved = crate::nostr::canonical_public_relay(form.relay.trim()).unwrap_or_default();
+    let context = home_form_context(
+        config,
+        true,
+        error,
+        &form.title,
+        &form.alias,
+        &form.content,
+        &saved,
+        form.relay_box.trim(),
+        list_relay,
+        surface_relay_error,
+    );
+    match template::shared().render("home", &context) {
+        Ok(html) => content::RawHtml(html),
+        Err(error) => content::RawHtml(format!("Template error: {error}")),
+    }
+}
+
+fn render_nojs_draft(config: &Config, form: &NewPost) -> content::RawHtml<String> {
+    let mut form = form.clone();
+    if let Some(error) = csrf_failure(config, &form.csrf_token) {
+        return render_nojs_form(
+            config,
+            &form,
+            Some(error),
+            nojs_lists_extra_relay(form.relay.trim(), config),
+            false,
+        );
+    }
+    if form.relay_remove {
+        form.relay.clear();
+        return render_nojs_form(config, &form, None, false, false);
+    }
+    form.relay_box = form.relay_box.trim().to_string();
+    let (error, accept) = nojs_relay_add_status(&form.relay_box, &form.csrf_token, config);
+    if accept {
+        form.relay = crate::nostr::canonical_public_relay(&form.relay_box)
+            .unwrap_or_else(|| form.relay_box.clone());
+        form.relay_box.clear();
+        return render_nojs_form(config, &form, None, true, false);
+    }
+    render_nojs_form(
+        config,
+        &form,
+        error,
+        nojs_lists_extra_relay(form.relay.trim(), config),
+        false,
+    )
+}
+
+fn nojs_error_code(location: &str) -> Option<&str> {
+    let error = location.strip_prefix("/nojs?error=")?;
+    if error.is_empty() || error.contains(['&', '#', '?']) {
+        None
+    } else {
+        Some(error)
+    }
+}
+
+fn nojs_lists_extra_relay(relay: &str, config: &Config) -> bool {
+    crate::nostr::canonical_public_relay(relay).is_some_and(|relay| {
+        !relays_for_public_fetch(&[], &config.nostr.relays)
+            .iter()
+            .any(|have| have == &relay)
+    })
+}
+
+fn nojs_publish_failure_page(
+    config: &Config,
+    form: &NewPost,
+    error: &str,
+) -> content::RawHtml<String> {
+    render_nojs_form(
+        config,
+        form,
+        Some(error),
+        nojs_lists_extra_relay(form.relay.trim(), config),
+        true,
+    )
+}
+
+#[post("/nojs/relay", data = "<form>")]
+pub fn nojs_add_relay(
+    form: rocket::form::Form<NewPost>,
+    config: &State<Config>,
+) -> content::RawHtml<String> {
+    render_nojs_draft(config, &form)
+}
+
 #[post("/nojs/create", data = "<form>")]
 pub async fn nojs_create_post(
-    _csrf: CsrfProtected,
     form: rocket::form::Form<NewPost>,
     storage: &State<PostStorage>,
     config: &State<Config>,
-) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(true, &form, storage, config).await)
+) -> rocket::Either<rocket::response::Redirect, content::RawHtml<String>> {
+    let form = form.into_inner();
+    let storage = storage.inner().clone();
+    let config_owned = config.inner().clone();
+    let moved = form.clone();
+    let location = match rocket::tokio::task::spawn_blocking(move || {
+        create_location_in_dir(true, &moved, &storage, &config_owned, ".")
+    })
+    .await
+    {
+        Ok(location) => location,
+        Err(_) => {
+            return rocket::Either::Right(nojs_publish_failure_page(
+                config,
+                &form,
+                "nostr_publish_failed",
+            ));
+        }
+    };
+    if let Some(error) = nojs_error_code(&location) {
+        rocket::Either::Right(nojs_publish_failure_page(config, &form, error))
+    } else {
+        rocket::Either::Left(rocket::response::Redirect::to(location))
+    }
 }
 
 #[derive(Deserialize)]
@@ -440,27 +911,26 @@ pub(crate) fn note_and_relays_for_publish(
     body: &NostrPublishBody,
     config: &Config,
 ) -> Option<(crate::nostr::SignedNote, Vec<String>, String)> {
-    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&body.csrf_token) {
+    if csrf_failure(config, &body.csrf_token).is_some() {
         return None;
     }
-    let (note, locator) =
-        crate::nostr::sealed_note_from_json(&body.event, config.limits.content_max_length)?;
-    let relays = relays_for_public_fetch(&body.relays, &config.nostr.relays);
+    let (note, locator) = crate::nostr::sealed_note_from_json(
+        &body.event,
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+    )?;
+    let relays = relays_for_public_publish(&body.relays, &config.nostr.relays);
     if relays.is_empty() {
         return None;
     }
     Some((note, relays, locator))
 }
 
-fn publish_result(
-    locator: String,
-    accepted: Vec<String>,
-    configured: &[String],
-) -> NostrPublishResult {
-    let instance = relays_for_public_fetch(&[], configured);
+fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
     let locator = if accepted
         .iter()
-        .any(|relay| instance.iter().any(|have| have == relay))
+        .any(|relay| crate::nostr::canonical_public_relay(relay).is_some())
     {
         locator
     } else {
@@ -490,30 +960,25 @@ pub(crate) fn relays_for_circuit_pass(
     body: &TorCircuitsBody,
     config: &Config,
 ) -> Option<Vec<String>> {
-    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(&body.csrf_token) {
+    if csrf_failure(config, &body.csrf_token).is_some() {
         return None;
     }
     Some(body.relays.clone())
 }
 
 #[post("/tor-circuits", data = "<body>")]
-pub fn assign_tor_circuits(
-    _csrf: CsrfProtected,
-    body: Json<TorCircuitsBody>,
-    config: &State<Config>,
-) -> Status {
+pub fn assign_tor_circuits(body: Json<TorCircuitsBody>, config: &State<Config>) -> Status {
     let config = config.inner();
     let Some(relays) = relays_for_circuit_pass(&body, config) else {
         return Status::BadRequest;
     };
-    let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+    let timeout = relay_timeout(config);
     crate::nostr::schedule_relay_assignments(relays, config.nostr.relays.clone(), timeout);
     Status::NoContent
 }
 
 #[post("/nostr/publish", data = "<body>")]
 pub async fn nostr_publish(
-    _csrf: CsrfProtected,
     body: Json<NostrPublishBody>,
     config: &State<Config>,
 ) -> Result<Json<NostrPublishResult>, Status> {
@@ -524,9 +989,9 @@ pub async fn nostr_publish(
     };
     match rocket::tokio::task::spawn_blocking(move || {
         let (note, relays, locator) = note_and_relays_for_publish(&body, &config)?;
-        let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+        let timeout = relay_timeout(&config);
         let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
-        Some(publish_result(locator, accepted, &config.nostr.relays))
+        Some(publish_result(locator, accepted))
     })
     .await
     {
@@ -611,10 +1076,7 @@ fn serve_static_page(
             Ok(content::RawHtml(html))
         }
         BuiltPage::Invalid(html) => Ok(content::RawHtml(html)),
-        BuiltPage::Missing => Err((
-            Status::NotFound,
-            content::RawHtml(NOT_FOUND_HTML.to_string()),
-        )),
+        BuiltPage::Missing => Err((Status::NotFound, content::RawHtml(not_found_html()))),
     }
 }
 
@@ -630,22 +1092,16 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
     };
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&raw_content, &render_options(config));
-    let mut context = HashMap::new();
-    context.insert("title".to_string(), title);
+    let mut context = article_context(
+        &title,
+        &author,
+        Some(created_at),
+        &format!("/{page_name}"),
+        "",
+        nojs,
+        page_name,
+    );
     context.insert("content".to_string(), rendered_content);
-    context.insert(
-        "created_at".to_string(),
-        created_at.format("%B %d, %Y").to_string(),
-    );
-    context.insert("author".to_string(), author);
-    context.insert("author_display".to_string(), String::new());
-    context.insert(
-        "created_at_iso".to_string(),
-        created_at.format("%Y-%m-%dT00:00:00+00:00").to_string(),
-    );
-    context.insert("url".to_string(), format!("/{page_name}"));
-    context.insert("description".to_string(), String::new());
-    fill_page_chrome(&mut context, nojs, page_name);
     match template::shared().render("post", &context) {
         Ok(html) => BuiltPage::Ready(html),
         Err(error) => BuiltPage::Invalid(format!("Template error: {error}")),
@@ -659,6 +1115,42 @@ pub(crate) fn post_description(raw: &str) -> String {
     let mut description = raw[..end].to_string();
     description.push_str("...");
     description
+}
+
+fn article_context(
+    title: &str,
+    author: &str,
+    created_at: Option<DateTime<Utc>>,
+    url: &str,
+    description: &str,
+    nojs: bool,
+    public_id: &str,
+) -> HashMap<String, String> {
+    let author = if author.is_empty() {
+        "Anonymous".to_string()
+    } else {
+        author.to_string()
+    };
+    let mut context = HashMap::new();
+    context.insert("title".to_string(), title.to_string());
+    context.insert("author".to_string(), author.clone());
+    context.insert("author_display".to_string(), format!("{author} · "));
+    context.insert(
+        "created_at".to_string(),
+        created_at
+            .map(|time| time.format("%B %d, %Y").to_string())
+            .unwrap_or_default(),
+    );
+    context.insert(
+        "created_at_iso".to_string(),
+        created_at
+            .map(|time| time.format("%Y-%m-%dT00:00:00+00:00").to_string())
+            .unwrap_or_default(),
+    );
+    context.insert("url".to_string(), url.to_string());
+    context.insert("description".to_string(), description.to_string());
+    fill_page_chrome(&mut context, nojs, public_id);
+    context
 }
 
 fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id: &str) {
@@ -695,7 +1187,41 @@ type ViewErr = (
 const SEALED_TITLE: &str = "Sealed note";
 const SEALED_PREVIEW: &str = "A note sealed in the browser.";
 
-pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
+fn sealed_hint_inputs(hints: &[String]) -> String {
+    let mut html = String::new();
+    for hint in hints {
+        let Some(relay) = crate::nostr::canonical_public_relay(hint) else {
+            continue;
+        };
+        html.push_str("<input type=\"hidden\" name=\"r\" value=\"");
+        html.push_str(&nonograph_parser::html_attr_escape(&relay));
+        html.push_str("\" />");
+    }
+    html
+}
+
+fn sealed_open_form(locator: &str, event_id: &str, hints: &[String], key_error: &str) -> String {
+    format!(
+        "<form id=\"sealed-open\" method=\"post\" action=\"/s/{locator}/{event_id}\">\
+<p id=\"sealed-key-error\">{}</p>\
+<input id=\"sealed-key\" name=\"k\" type=\"text\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"The key is the part of the address after #.\" required />\
+<button type=\"submit\">Open</button>\
+{}</form>",
+        nonograph_parser::html_escape(key_error),
+        sealed_hint_inputs(hints),
+        locator = nonograph_parser::html_attr_escape(locator),
+        event_id = nonograph_parser::html_attr_escape(event_id),
+    )
+}
+
+pub(crate) fn sealed_shell(
+    event_json: &str,
+    locator: &str,
+    event_id: &str,
+    hints: &[String],
+    key_error: &str,
+    config: &Config,
+) -> String {
     let version = assets().version.clone();
     let options = render_options(config);
     let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
@@ -703,6 +1229,14 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         "true"
     } else {
         "false"
+    };
+    let event = if event_json.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<script type=\"application/json\" id=\"sealed-event\">{}</script>\n    <script type=\"module\" src=\"/nostr.js?v={version}\"></script>",
+            event_json.replace('<', "\\u003c"),
+        )
     };
     format!(
         r#"<!doctype html>
@@ -717,41 +1251,37 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
     <meta property="og:description" content="{preview}" />
     <meta name="description" content="{preview}" />
     <link rel="stylesheet" href="/post.css?v={version}" />
-    <style>
-        body {{
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            color: #333;
-        }}
-        h1 {{ font-weight: 300; margin-bottom: 16px; }}
-        a {{ color: #333; }}
-        #sealed-copy {{
-            font: inherit;
-            cursor: pointer;
-        }}
-    </style>
 </head>
 <body>
-    <h1 id="sealed-title">{title}</h1>
-    <div class="article-meta" id="sealed-author" hidden></div>
-    <p id="sealed-preview">{preview}</p>
-    <div
-        class="article-content"
-        id="CONTENT"
-        data-syntax-theme="{theme}"
-        data-max-url-length="{max_url}"
-        data-external-links="{external}"
-    ></div>
-    <p><button type="button" id="sealed-copy">Copy link</button></p>
-    <p><a href="/">Write Your Own</a></p>
-    <script type="application/json" id="sealed-event">{event}</script>
-    <script type="module" src="/nostr.js?v={version}"></script>
+    <div class="container">
+        <div class="content">
+            <h1 id="sealed-title">{title}</h1>
+            <svg class="wave" viewBox="0 0 640 16" preserveAspectRatio="none" aria-hidden="true"><path d="M0 8 L16 3 L32 13 L48 3 L64 13 L80 3 L96 13 L112 3 L128 13 L144 3 L160 13 L176 3 L192 13 L208 3 L224 13 L240 3 L256 13 L272 3 L288 13 L304 3 L320 13 L336 3 L352 13 L368 3 L384 13 L400 3 L416 13 L432 3 L448 13 L464 3 L480 13 L496 3 L512 13 L528 3 L544 13 L560 3 L576 13 L592 3 L608 13 L624 3 L640 8"></path></svg>
+            <div class="article-meta" id="sealed-author" hidden></div>
+            {form}
+            <div
+                class="article-content"
+                id="CONTENT"
+                data-syntax-theme="{theme}"
+                data-max-url-length="{max_url}"
+                data-external-links="{external}"
+            ></div>
+        </div>
+    </div>
+    <div class="footer">
+        <button type="button" id="sealed-copy">Copy link</button>
+        <a href="/">write your own</a>
+        <a href="/legal">legal</a>
+        <a href="/api">api</a>
+        <a href="https://github.com/wuddleko/nonograph">source code</a>
+    </div>
+    {event}
 </body>
 </html>"#,
         title = SEALED_TITLE,
         preview = SEALED_PREVIEW,
-        event = event_json.replace('<', "\\u003c"),
+        form = sealed_open_form(locator, event_id, hints, key_error),
+        event = event,
         version = version,
         theme = theme,
         max_url = options.max_url_length,
@@ -759,15 +1289,23 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
     )
 }
 
-#[get("/s/<locator>")]
+#[derive(FromForm)]
+pub(crate) struct SealHints {
+    #[field(name = "r", default = Vec::<String>::new())]
+    r: Vec<String>,
+}
+
+#[get("/s/<locator>/<event_id>?<hints..>")]
 pub async fn sealed_view(
     locator: &str,
+    event_id: &str,
+    hints: SealHints,
     config: &State<Config>,
 ) -> Result<content::RawHtml<String>, ViewErr> {
-    if !crate::nostr::sealed_locator(locator) {
+    if !crate::nostr::sealed_locator(locator) || !crate::nostr::sealed_event_id(event_id) {
         return Err((
             Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+            rocket::Either::Right(content::RawHtml(not_found_html())),
         ));
     }
     let Some(_slot) = PublicFetchSlot::acquire() else {
@@ -779,15 +1317,31 @@ pub async fn sealed_view(
     let config = config.inner().clone();
     let shell = config.clone();
     let locator = locator.to_string();
-    let event = match rocket::tokio::task::spawn_blocking(move || {
-        let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
-        fetch_sealed_by_locator(
-            &[],
-            &locator,
-            &config.nostr.relays,
-            config.limits.content_max_length,
-            timeout,
-        )
+    let event_id = event_id.to_string();
+    let query = locator.clone();
+    let query_id = event_id.clone();
+    let hints = hints.r;
+    let event = match rocket::tokio::task::spawn_blocking({
+        let hints = hints.clone();
+        move || {
+            #[cfg(test)]
+            note_nojs_fetch_hints(&hints);
+            #[cfg(test)]
+            if let Some(canned) = canned_nojs_event() {
+                return canned;
+            }
+            let timeout = relay_timeout(&config);
+            fetch_sealed_by_id(
+                &hints,
+                &query_id,
+                &query,
+                &config.nostr.relays,
+                config.limits.title_max_length,
+                config.limits.alias_max_length,
+                config.limits.content_max_length,
+                timeout,
+            )
+        }
     })
     .await
     {
@@ -797,55 +1351,340 @@ pub async fn sealed_view(
     let Some(event) = event else {
         return Err((
             Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+            rocket::Either::Right(content::RawHtml(not_found_html())),
         ));
     };
-    Ok(content::RawHtml(sealed_shell(&event, &shell)))
+    Ok(content::RawHtml(sealed_shell(
+        &event, &locator, &event_id, &hints, "", &shell,
+    )))
 }
 
-pub(crate) fn nojs_sealed_page(locator: &str) -> Option<String> {
-    if !crate::nostr::sealed_locator(locator) {
+pub(crate) fn nojs_query_secret(k: Option<&str>) -> Option<[u8; nonograph_nip44::SECRET_LEN]> {
+    let text = k?;
+    if text.is_empty()
+        || !text
+            .bytes()
+            .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
         return None;
     }
-    Some(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>The note opens in the browser</title>
-    <link rel="icon" href="data:," />
-    <style>
-        body {{
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            text-align: center;
-            color: #333;
-        }}
-        h1 {{ font-weight: 300; margin-bottom: 16px; }}
-        a {{ color: #333; }}
-    </style>
-</head>
-<body>
-    <h1>The note opens in the browser</h1>
-    <p>This page does not decrypt it.</p>
-    <p><a href="/s/{locator}">js</a></p>
-    <p><a href="/">Write Your Own</a></p>
-</body>
-</html>"#
+    let bytes = decode_base64url(text)?;
+    if bytes.len() != nonograph_nip44::SECRET_LEN {
+        return None;
+    }
+    let mut secret = [0u8; nonograph_nip44::SECRET_LEN];
+    secret.copy_from_slice(&bytes);
+    Some(secret)
+}
+
+fn decode_base64url(text: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for byte in text.bytes() {
+        buf = (buf << 6) | u32::from(value(byte)?);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+fn nojs_sealed_refusal(locator: &str, event_id: &str) -> String {
+    centered_notice(
+        "The note opens in the browser",
+        "The note opens in the browser",
+        &format!(
+            "<p>This page does not decrypt it.</p>\n    <p><a href=\"/s/{locator}/{event_id}\">js</a></p>\n    <p><a href=\"/\">Write Your Own</a></p>"
+        ),
+    )
+}
+
+fn nojs_not_found() -> ViewErr {
+    (
+        Status::NotFound,
+        rocket::Either::Right(content::RawHtml(not_found_html())),
+    )
+}
+
+fn event_d_tag(value: &serde_json::Value) -> Option<String> {
+    value.get("tags")?.as_array()?.iter().find_map(|tag| {
+        let tag = tag.as_array()?;
+        if tag.first()?.as_str()? != "d" {
+            return None;
+        }
+        tag.get(1)?.as_str().map(str::to_string)
+    })
+}
+
+pub(crate) fn nojs_open_fetched(
+    secret: &[u8; nonograph_nip44::SECRET_LEN],
+    event_json: &str,
+    locator: &str,
+    event_id: &str,
+) -> Option<nonograph_nip44::Note> {
+    let value: serde_json::Value = serde_json::from_str(event_json).ok()?;
+    if value.get("id")?.as_str()? != event_id {
+        return None;
+    }
+    let payload = value.get("content")?.as_str()?;
+    let d_tag = event_d_tag(&value)?;
+    if d_tag != locator {
+        return None;
+    }
+    let note = nonograph_nip44::open(payload, secret, &d_tag).ok()?;
+    (note.locator == locator).then_some(note)
+}
+
+pub(crate) fn nojs_opened_page(
+    locator: &str,
+    event_id: &str,
+    secret: &[u8; nonograph_nip44::SECRET_LEN],
+    event_json: &str,
+    k: &str,
+    hints: &[String],
+    config: &Config,
+) -> String {
+    let Some(note) = nojs_open_fetched(secret, event_json, locator, event_id) else {
+        return nojs_sealed_refusal(locator, event_id);
+    };
+    nojs_note_html(locator, event_id, &note, event_json, k, hints, config)
+        .unwrap_or_else(|error| format!("Template error: {error}"))
+}
+
+fn event_created_at(event_json: &str) -> Option<DateTime<Utc>> {
+    let value: serde_json::Value = serde_json::from_str(event_json).ok()?;
+    DateTime::from_timestamp(value.get("created_at")?.as_i64()?, 0)
+}
+
+fn nojs_note_html(
+    locator: &str,
+    event_id: &str,
+    note: &nonograph_nip44::Note,
+    event_json: &str,
+    k: &str,
+    hints: &[String],
+    config: &Config,
+) -> Result<String, String> {
+    let content =
+        nonograph_parser::render_markdown_with_config(&note.content, &render_options(config));
+    let share = js_seal_href(locator, event_id, k, hints);
+    let page = share.split_once('#').map(|(page, _)| page).unwrap_or(&share);
+    let mut context = article_context(
+        &note.title,
+        &note.author,
+        event_created_at(event_json),
+        page,
+        &post_description(&note.content),
+        true,
+        locator,
+    );
+    context.insert("content".to_string(), content);
+    context.insert("mode_href".to_string(), share);
+    context.insert("mode_label".to_string(), "link".to_string());
+    template::shared().render("post", &context)
+}
+
+fn js_seal_href(locator: &str, event_id: &str, k: &str, hints: &[String]) -> String {
+    let mut href = format!("/s/{locator}/{event_id}");
+    let mut first = true;
+    for relay in hints {
+        let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
+            continue;
+        };
+        href.push(if first { '?' } else { '&' });
+        first = false;
+        href.push_str("r=");
+        href.push_str(&query_escape(&relay));
+    }
+    href.push('#');
+    href.push_str(k);
+    href
+}
+
+pub(crate) async fn nojs_sealed_response(
+    locator: &str,
+    event_id: &str,
+    k: Option<&str>,
+    hints: &[String],
+    config: &Config,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    if !crate::nostr::sealed_locator(locator) || !crate::nostr::sealed_event_id(event_id) {
+        return Err(nojs_not_found());
+    }
+    let Some(k) = k else {
+        return Ok(content::RawHtml(sealed_shell(
+            "",
+            locator,
+            event_id,
+            hints,
+            "The key does not open this note.",
+            config,
+        )));
+    };
+    let Some(secret) = nojs_query_secret(Some(k)) else {
+        return Ok(content::RawHtml(sealed_shell(
+            "",
+            locator,
+            event_id,
+            hints,
+            "The key does not open this note.",
+            config,
+        )));
+    };
+    let Some(_slot) = PublicFetchSlot::acquire() else {
+        return Err((
+            Status::ServiceUnavailable,
+            rocket::Either::Left(content::RawText("Service unavailable".to_string())),
+        ));
+    };
+    let config = config.clone();
+    let query = locator.to_string();
+    let query_id = event_id.to_string();
+    let locator = locator.to_string();
+    let event_id = event_id.to_string();
+    let hints = hints.to_vec();
+    let event = match rocket::tokio::task::spawn_blocking({
+        let config = config.clone();
+        let hints = hints.clone();
+        move || {
+            #[cfg(test)]
+            note_nojs_fetch_hints(&hints);
+            #[cfg(test)]
+            if let Some(canned) = canned_nojs_event() {
+                return canned;
+            }
+            let timeout = relay_timeout(&config);
+            fetch_sealed_by_id(
+                &hints,
+                &query_id,
+                &query,
+                &config.nostr.relays,
+                config.limits.title_max_length,
+                config.limits.alias_max_length,
+                config.limits.content_max_length,
+                timeout,
+            )
+        }
+    })
+    .await
+    {
+        Ok(event) => event,
+        Err(_) => None,
+    };
+    let Some(event) = event else {
+        return Err(nojs_not_found());
+    };
+    let Some(note) = nojs_open_fetched(&secret, &event, &locator, &event_id) else {
+        return Ok(content::RawHtml(sealed_shell(
+            &event,
+            &locator,
+            &event_id,
+            &hints,
+            "The key does not open this note.",
+            &config,
+        )));
+    };
+    Ok(content::RawHtml(
+        nojs_note_html(&locator, &event_id, &note, &event, k, &hints, &config)
+            .unwrap_or_else(|error| format!("Template error: {error}")),
     ))
 }
 
-#[get("/nojs/s/<locator>")]
-pub fn nojs_sealed_view(locator: &str) -> Result<content::RawHtml<String>, ViewErr> {
-    match nojs_sealed_page(locator) {
-        Some(html) => Ok(content::RawHtml(html)),
-        None => Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
-        )),
+pub struct NojsSealedHeaders<R>(R);
+
+impl<'r, 'o: 'r, R: Responder<'r, 'o>> Responder<'r, 'o> for NojsSealedHeaders<R> {
+    fn respond_to(self, request: &'r rocket::Request<'_>) -> rocket::response::Result<'o> {
+        let mut response = self.0.respond_to(request)?;
+        response.set_header(Header::new("Referrer-Policy", "no-referrer"));
+        response.set_header(Header::new("Cache-Control", "no-store"));
+        Ok(response)
     }
+}
+
+#[derive(FromForm)]
+pub(crate) struct NojsSealQuery {
+    k: Option<String>,
+    #[field(name = "r", default = Vec::<String>::new())]
+    r: Vec<String>,
+}
+
+pub(crate) struct FragmentRedirect(String);
+
+impl<'r> Responder<'r, 'static> for FragmentRedirect {
+    fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
+        rocket::Response::build()
+            .status(Status::SeeOther)
+            .header(Header::new("Location", self.0))
+            .ok()
+    }
+}
+
+fn sealed_reader_href(locator: &str, event_id: &str, k: Option<&str>, hints: &[String]) -> String {
+    match k.filter(|value| nojs_query_secret(Some(value)).is_some()) {
+        Some(k) => js_seal_href(locator, event_id, k, hints),
+        None => {
+            let href = js_seal_href(locator, event_id, "", hints);
+            href.strip_suffix('#').unwrap_or(&href).to_string()
+        }
+    }
+}
+
+#[get("/nojs/s/<locator>/<event_id>?<seal..>")]
+pub fn nojs_sealed_view(
+    locator: &str,
+    event_id: &str,
+    seal: NojsSealQuery,
+) -> NojsSealedHeaders<Result<FragmentRedirect, ViewErr>> {
+    if !crate::nostr::sealed_locator(locator) || !crate::nostr::sealed_event_id(event_id) {
+        return NojsSealedHeaders(Err(nojs_not_found()));
+    }
+    NojsSealedHeaders(Ok(FragmentRedirect(sealed_reader_href(
+        locator,
+        event_id,
+        seal.k.as_deref(),
+        &seal.r,
+    ))))
+}
+
+#[derive(FromForm)]
+pub(crate) struct OpenSealForm {
+    #[field(default = String::new())]
+    k: String,
+    #[field(name = "r", default = Vec::<String>::new())]
+    r: Vec<String>,
+}
+
+#[post("/s/<locator>/<event_id>", data = "<form>")]
+pub async fn sealed_open(
+    locator: &str,
+    event_id: &str,
+    form: rocket::form::Form<OpenSealForm>,
+    config: &State<Config>,
+) -> NojsSealedHeaders<Result<content::RawHtml<String>, ViewErr>> {
+    NojsSealedHeaders(
+        nojs_sealed_response(
+            locator,
+            event_id,
+            Some(form.k.as_str()),
+            &form.r,
+            config.inner(),
+        )
+        .await,
+    )
 }
 
 #[get("/<post_id>")]
@@ -895,28 +1734,46 @@ fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
     if relays.len() == crate::nostr::MAX_FETCH_RELAYS {
         return;
     }
-    if !crate::nostr::public_relay_url(relay) {
+    let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
+        return;
+    };
+    if relays.iter().any(|have| have == &relay) {
         return;
     }
-    if relays.iter().any(|have| have == relay) {
-        return;
+    relays.push(relay);
+}
+
+pub(crate) fn relays_for_public_publish(requested: &[String], configured: &[String]) -> Vec<String> {
+    let mut relays = Vec::new();
+    for relay in configured {
+        push_public_relay(&mut relays, relay);
     }
-    relays.push(relay.to_string());
+    for relay in requested {
+        push_public_relay(&mut relays, relay);
+    }
+    relays
 }
 
-pub(crate) fn relays_for_sealed_query(hints: &[String], configured: &[String]) -> Vec<String> {
-    relays_for_public_fetch(hints, configured)
-}
-
-pub(crate) fn fetch_sealed_by_locator(
+pub(crate) fn fetch_sealed_by_id(
     hints: &[String],
+    event_id: &str,
     locator: &str,
     configured: &[String],
+    title_max: usize,
+    alias_max: usize,
     content_max: usize,
     timeout: Duration,
 ) -> Option<String> {
-    let relays = relays_for_sealed_query(hints, configured);
-    crate::nostr::fetch_sealed(&relays, locator, content_max, timeout)
+    let relays = relays_for_public_fetch(hints, configured);
+    crate::nostr::fetch_sealed(
+        &relays,
+        event_id,
+        locator,
+        title_max,
+        alias_max,
+        content_max,
+        timeout,
+    )
 }
 
 pub(crate) fn relays_for_public_fetch(hints: &[String], fallback: &[String]) -> Vec<String> {
@@ -960,14 +1817,11 @@ pub(crate) fn is_gift_wrap(kind: Option<u32>) -> bool {
     kind == Some(crate::nostr::KIND_GIFT_WRAP)
 }
 
-pub(crate) fn refuse_unopened_wrap(
-    kind: Option<u32>,
-    has_local_file: bool,
-) -> Option<&'static str> {
+pub(crate) fn refuse_unopened_wrap(kind: Option<u32>, has_local_file: bool) -> Option<String> {
     if has_local_file || !is_gift_wrap(kind) {
         None
     } else {
-        Some(WRAP_REFUSED_HTML)
+        Some(wrap_refused_html())
     }
 }
 
@@ -1266,7 +2120,7 @@ async fn fetch_public(
     let Some(_slot) = PublicFetchSlot::acquire() else {
         return Err(PublicFetchBusy);
     };
-    let timeout = Duration::from_secs(config.nostr.timeout_secs.max(1));
+    let timeout = relay_timeout(config);
     let fetched = match rocket::tokio::task::spawn_blocking(move || fetch(relays, timeout)).await {
         Ok(note) => note,
         Err(_) => return Ok(None),
@@ -1303,7 +2157,7 @@ async fn render_post(
     if !is_valid_post_id(file_id) {
         return Err((
             Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+            rocket::Either::Right(content::RawHtml(not_found_html())),
         ));
     }
 
@@ -1365,7 +2219,7 @@ async fn render_post(
     if let Some(html) = refuse_unopened_wrap(kind, local.is_some()) {
         return Err((
             Status::NotFound,
-            rocket::Either::Right(content::RawHtml(html.to_string())),
+            rocket::Either::Right(content::RawHtml(html)),
         ));
     }
     let fetched = if let Some(post) = local {
@@ -1419,7 +2273,7 @@ async fn render_post(
         Some(post) => view_post_page(storage, file_id, &post, nojs, post_id),
         None => Err((
             Status::NotFound,
-            rocket::Either::Right(content::RawHtml(NOT_FOUND_HTML.to_string())),
+            rocket::Either::Right(content::RawHtml(not_found_html())),
         )),
     }
 }
@@ -1510,43 +2364,21 @@ fn serve_article(
 }
 
 fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, String> {
-    let mut context = HashMap::new();
-    context.insert("title".to_string(), post.title.clone());
-    context.insert("content".to_string(), post.content.clone());
-    let author = if post.author.is_empty() {
-        "Anonymous".to_string()
-    } else {
-        post.author.clone()
-    };
-    context.insert("author".to_string(), author);
-    let author_display = if post.author.is_empty() {
-        "Anonymous · ".to_string()
-    } else {
-        format!("{} · ", post.author)
-    };
-    context.insert("author_display".to_string(), author_display);
-    context.insert(
-        "created_at".to_string(),
-        post.created_at.format("%B %d, %Y").to_string(),
-    );
-    context.insert(
-        "created_at_iso".to_string(),
-        post.created_at
-            .format("%Y-%m-%dT00:00:00+00:00")
-            .to_string(),
-    );
-    // OpenGraph variables
     let nostr_id = post
         .nostr_id
         .as_deref()
         .filter(|id| is_nostr_identifier(id))
         .unwrap_or("");
-    context.insert("url".to_string(), format!("/{public_id}"));
-    context.insert(
-        "description".to_string(),
-        post_description(&post.raw_content),
+    let mut context = article_context(
+        &post.title,
+        &post.author,
+        Some(post.created_at),
+        &format!("/{public_id}"),
+        &post_description(&post.raw_content),
+        nojs,
+        public_id,
     );
-    fill_page_chrome(&mut context, nojs, public_id);
+    context.insert("content".to_string(), post.content.clone());
     let nostr_link = if nostr_id.is_empty() {
         String::new()
     } else {
@@ -1557,54 +2389,50 @@ fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, Stri
     template::shared().render("post", &context)
 }
 
-pub(crate) const WRAP_REFUSED_HTML: &str = r#"<!doctype html>
-<html>
+fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
 <head>
-    <title>Open this in the extension</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{document_title}</title>
+    <link rel="icon" href="data:," />
     <style>
-        body {
+        body {{
             max-width: 720px;
             margin: 0 auto;
             padding: 40px 20px;
             text-align: center;
             color: #333;
-        }
-        h1 { font-weight: 300; margin-bottom: 16px; }
-        a { color: #333; }
+        }}
+        h1 {{ font-weight: 300; margin-bottom: 16px; }}
+        a {{ color: #333; }}
     </style>
 </head>
 <body>
-    <h1>Open this in the extension</h1>
-    <p>This is a private note. This site does not decrypt it.</p>
-    <p><a href="/">Write Your Own</a></p>
+    <h1>{heading}</h1>
+    {body}
 </body>
-</html>"#;
+</html>"#
+    )
+}
 
-const NOT_FOUND_HTML: &str = r#"<!doctype html>
-<html>
-<head>
-    <title>404 - Page not found</title>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-        body {
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            text-align: center;
-            color: #333;
-        }
-        h1 { font-weight: 300; margin-bottom: 16px; }
-        a { color: #333; }
-    </style>
-</head>
-<body>
-    <h1>Page Not Found</h1>
-    <p><a href="/">Write Your Own</a></p>
-</body>
-</html>"#;
+pub(crate) fn wrap_refused_html() -> String {
+    centered_notice(
+        "Open this in the extension",
+        "Open this in the extension",
+        "<p>This is a private note. This site does not decrypt it.</p>\n    <p><a href=\"/\">Write Your Own</a></p>",
+    )
+}
+
+fn not_found_html() -> String {
+    centered_notice(
+        "404 - Page not found",
+        "Page Not Found",
+        "<p><a href=\"/\">Write Your Own</a></p>",
+    )
+}
 
 #[get("/page/nonograph_page.js")]
 pub fn parser_js() -> (ContentType, &'static str) {

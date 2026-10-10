@@ -254,49 +254,57 @@ fn test_naddr_keeps_the_newer_event() {
 }
 
 #[test]
-fn seal_query_asks_for_kind_and_d_tag() {
-    let locator = "0123456789abcdef0123";
+fn seal_query_asks_for_the_event_id() {
+    let event_id = "ab".repeat(32);
     let payload = req_payload(
         "sub",
         &RelayQuery::Seal {
-            locator: locator.to_string(),
-            content_max: 256,
+            event_id_hex: event_id.clone(),
+            locator: "0123456789abcdef0123".to_string(),
+            payload_max: crate::seal::sealed_payload_max(128, 32, 256),
         },
     );
     let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(value[0], "REQ");
     assert_eq!(value[1], "sub");
-    assert_eq!(value[2]["kinds"][0], nonograph_nip44::KIND);
-    assert_eq!(value[2]["#d"][0], locator);
-    assert_eq!(
-        value[2]["limit"].as_u64().unwrap(),
-        SEALED_FETCH_LIMIT as u64
-    );
+    assert_eq!(value[2]["ids"][0], event_id);
+    assert!(value[2].get("kinds").is_none());
+    assert!(value[2].get("#d").is_none());
+    assert!(value[2].get("limit").is_none());
     assert!(value[2].get("authors").is_none());
-    assert!(value[2].get("ids").is_none());
 }
 
 #[test]
 fn a_sealed_relay_event_is_returned_unchanged() {
     let locator = "0123456789abcdef0123";
+    let payload_max = crate::seal::sealed_payload_max(0, 0, 4);
     let note = sign_sealed_note("abcd", locator, 1_700_000_000);
     let spaced = note.event_json.replace("\":\"", "\" : \"");
     let message = format!(r#"["EVENT","sub",{spaced}]"#);
-    let (created_at, event_json) = sealed_from_relay_message(&message, locator, 4).unwrap();
+    let (created_at, event_json) =
+        sealed_from_relay_message(&message, &note.id_hex(), locator, payload_max).unwrap();
     assert_eq!(created_at, 1_700_000_000);
     assert_eq!(event_json, spaced);
     let parsed: serde_json::Value = serde_json::from_str(&event_json).unwrap();
     assert_eq!(parsed["content"], "abcd");
     assert_eq!(parsed["id"], note.id_hex());
-    assert!(sealed_from_relay_message(&message, locator, 3).is_none());
-    assert!(sealed_from_relay_message(&message, "ffffffffffffffff0000", 4).is_none());
+    assert!(parsed["content"].as_str().unwrap().len() <= payload_max);
+    let huge = sign_sealed_note(&"h".repeat(payload_max + 1), locator, 1_700_000_000);
+    let huge_message = format!(r#"["EVENT","sub",{}]"#, huge.event_json);
+    assert!(sealed_from_relay_message(&huge_message, &huge.id_hex(), locator, payload_max).is_none());
+    assert!(
+        sealed_from_relay_message(&message, &note.id_hex(), "ffffffffffffffff0000", payload_max)
+            .is_none()
+    );
+    assert!(sealed_from_relay_message(&message, &"ab".repeat(32), locator, payload_max).is_none());
     let padded = format!(
         r#"{},"pad":"{}"}}"#,
         &spaced[..spaced.len() - 1],
-        "x".repeat(SEALED_EVENT_OVERHEAD + 1)
+        "x".repeat(sealed_event_max(payload_max))
     );
     let padded_message = format!(r#"["EVENT","sub",{padded}]"#);
-    assert!(sealed_from_relay_message(&padded_message, locator, 4).is_none());
+    assert!(padded.len() > sealed_event_max(payload_max));
+    assert!(sealed_from_relay_message(&padded_message, &note.id_hex(), locator, payload_max).is_none());
     let mut bad_sig = parsed.clone();
     let sig = bad_sig["sig"].as_str().unwrap();
     let flipped = if sig.ends_with('0') {
@@ -306,18 +314,19 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     };
     bad_sig["sig"] = serde_json::Value::String(flipped);
     let bad_message = format!(r#"["EVENT","sub",{}]"#, bad_sig);
-    assert!(sealed_from_relay_message(&bad_message, locator, 4).is_none());
+    assert!(sealed_from_relay_message(&bad_message, &note.id_hex(), locator, payload_max).is_none());
     let clear = sign_note("Hello", "Ada", "plaintext", 1_700_000_000);
     let clear_message = format!(r#"["EVENT","sub",{}]"#, clear.event_json);
-    assert!(sealed_from_relay_message(&clear_message, locator, 4).is_none());
+    assert!(sealed_from_relay_message(&clear_message, &clear.id_hex(), locator, payload_max).is_none());
     let source = include_str!("../src/nostr.rs");
     let start = source.find("fn sealed_from_relay_message").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn unchanged_relay_event").unwrap()];
-    assert!(body.contains("sealed_note_from_json("));
+    assert!(body.contains("sealed_note_capped("));
+    assert!(!body.contains("sealed_payload_max("));
     assert!(body.contains("sealed_frame_max("));
     assert!(body.contains("sealed_event_max("));
-    assert!(!body.contains("event_id"));
+    assert!(body.contains("event_id"));
     assert!(!body.contains("note.id"));
     let frame = body.find("sealed_frame_max(").unwrap();
     let extract = body.find("unchanged_relay_event(").unwrap();
@@ -333,6 +342,7 @@ fn a_sealed_relay_event_is_returned_unchanged() {
 #[test]
 fn a_sealed_fetch_sizes_the_event_not_the_frame() {
     let locator = "0123456789abcdef0123";
+    let payload_max = crate::seal::sealed_payload_max(0, 0, 4);
     let note = sign_sealed_note("abcd", locator, 1_700_000_000);
     let pretty = serde_json::to_string_pretty(
         &serde_json::from_str::<serde_json::Value>(&note.event_json).unwrap(),
@@ -340,7 +350,8 @@ fn a_sealed_fetch_sizes_the_event_not_the_frame() {
     .unwrap();
     assert!(pretty.len() > note.event_json.len());
     let pretty_message = format!(r#"["EVENT","sub",{pretty}]"#);
-    let (_, event_json) = sealed_from_relay_message(&pretty_message, locator, 4).unwrap();
+    let (_, event_json) =
+        sealed_from_relay_message(&pretty_message, &note.id_hex(), locator, payload_max).unwrap();
     assert_eq!(event_json, pretty);
     let pad = " ".repeat(
         sealed_event_max(4)
@@ -350,7 +361,19 @@ fn a_sealed_fetch_sizes_the_event_not_the_frame() {
     let wrapped = format!(r#"["EVENT","sub",{}{pad}]"#, note.event_json);
     assert!(wrapped.len() > sealed_event_max(4));
     assert!(wrapped.len() <= sealed_frame_max(4));
-    let (_, kept) = sealed_from_relay_message(&wrapped, locator, 4).unwrap();
+    let (_, kept) =
+        sealed_from_relay_message(&wrapped, &note.id_hex(), locator, payload_max).unwrap();
+    assert_eq!(kept, note.event_json);
+    let wide = " ".repeat(
+        sealed_frame_max(4)
+            .saturating_sub(note.event_json.len())
+            .saturating_add(64),
+    );
+    let wide_message = format!(r#"["EVENT","sub",{}{wide}]"#, note.event_json);
+    assert!(wide_message.len() > sealed_frame_max(4));
+    assert!(wide_message.len() <= sealed_frame_max(payload_max));
+    let (_, kept) =
+        sealed_from_relay_message(&wide_message, &note.id_hex(), locator, payload_max).unwrap();
     assert_eq!(kept, note.event_json);
     assert_eq!(sealed_event_max(4), 4 + SEALED_EVENT_OVERHEAD);
     assert_eq!(
@@ -361,44 +384,40 @@ fn a_sealed_fetch_sizes_the_event_not_the_frame() {
 }
 
 #[test]
-fn a_sealed_fetch_keeps_the_newest_event() {
+fn a_sealed_fetch_keeps_the_requested_event() {
     let locator = "0123456789abcdef0123";
-    let query = RelayQuery::Seal {
-        locator: locator.to_string(),
-        content_max: 256,
-    };
     let older = sign_sealed_note("old1", locator, 1_700_000_000);
     let newer = sign_sealed_note("new1", locator, 1_800_000_000);
+    let query = RelayQuery::Seal {
+        event_id_hex: older.id_hex(),
+        locator: locator.to_string(),
+        payload_max: crate::seal::sealed_payload_max(128, 32, 256),
+    };
     let old_message = format!(r#"["EVENT","sub",{}]"#, older.event_json);
     let new_message = format!(r#"["EVENT","sub",{}]"#, newer.event_json);
     let old_note = note_for_query(&old_message, &query).unwrap();
-    let new_note = note_for_query(&new_message, &query).unwrap();
-    assert!(new_note.0 > old_note.0);
+    assert!(note_for_query(&new_message, &query).is_none());
     assert!(old_note.1.content.contains("old1"));
-    assert!(new_note.1.content.contains("new1"));
+    assert!(!old_note.1.content.contains("new1"));
     let (tx, rx) = mpsc::channel();
     tx.send(Some(old_note.1)).unwrap();
-    tx.send(Some(new_note.1)).unwrap();
     drop(tx);
     let started = Instant::now();
-    let kept = take_newest_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
+    let kept = take_first_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(kept.content.contains("new1"));
-    assert!(!kept.content.contains("old1"));
+    assert!(kept.content.contains("old1"));
+    assert!(!kept.content.contains("new1"));
     let source = include_str!("../src/nostr.rs");
     let start = source.find("fn fetch_from_relays").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn take_first_note").unwrap()];
-    let newest = body
-        .find("RelayQuery::Seal { .. } => take_newest_note(")
-        .unwrap();
-    let take_first = body.find("take_first_note(").unwrap();
-    assert!(newest < take_first);
-    assert!(!body.contains("Seal { event_id"));
+    assert!(body.contains("take_first_note("));
+    assert!(!body.contains("take_newest_note("));
     let start = source.find("fn fetch_from_relay(").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    assert!(body.contains("RelayQuery::Addr(_) | RelayQuery::Seal { .. }"));
+    assert!(body.contains("RelayQuery::Addr(_)"));
+    assert!(!body.contains("RelayQuery::Seal { .. }"));
     let first = body.find("if !newest_until_eose").unwrap();
     let keep = body.find("created_at >= best_at").unwrap();
     assert!(first < keep);
@@ -424,15 +443,44 @@ fn a_title_tag_is_dropped_on_the_sealed_fetch_path() {
     );
     let message = format!(r#"["EVENT","sub",{}]"#, titled.event_json);
     assert!(titled.event_json.contains("Visible"));
-    assert!(sealed_from_relay_message(&message, locator, 256).is_none());
+    assert!(sealed_from_relay_message(
+        &message,
+        &titled.id_hex(),
+        locator,
+        crate::seal::sealed_payload_max(128, 32, 256),
+    )
+    .is_none());
 }
 
 #[test]
 fn fetch_sealed_skips_when_it_cannot_ask() {
-    assert!(fetch_sealed(&[], "0123456789abcdef0123", 4, Duration::from_millis(20)).is_none());
+    let event_id = "ab".repeat(32);
+    assert!(fetch_sealed(
+        &[],
+        &event_id,
+        "0123456789abcdef0123",
+        128,
+        32,
+        4,
+        Duration::from_millis(20)
+    )
+    .is_none());
     assert!(fetch_sealed(
         &["wss://relay.damus.io".to_string()],
+        &event_id,
         "not-a-locator",
+        128,
+        32,
+        4,
+        Duration::from_millis(20),
+    )
+    .is_none());
+    assert!(fetch_sealed(
+        &["wss://relay.damus.io".to_string()],
+        "not-an-id",
+        "0123456789abcdef0123",
+        128,
+        32,
         4,
         Duration::from_millis(20),
     )
@@ -441,12 +489,8 @@ fn fetch_sealed_skips_when_it_cannot_ask() {
     let start = source.find("fn fetch_from_relays").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn take_first_note").unwrap()];
-    let newest = body
-        .find("RelayQuery::Seal { .. } => take_newest_note(")
-        .unwrap();
-    let take_first = body.find("take_first_note(").unwrap();
-    assert!(newest < take_first);
-    assert!(!body.contains("Seal { event_id"));
+    assert!(body.contains("take_first_note("));
+    assert!(!body.contains("take_newest_note("));
     let start = source.find("fn fetch_from_relay(").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn note_for_query").unwrap()];
@@ -534,13 +578,13 @@ fn a_sealed_fetch_stops_on_an_oversize_frame() {
 }
 
 #[test]
-fn a_sealed_fetch_keeps_reading_past_the_req_limit() {
-    assert_eq!(SEALED_FETCH_LIMIT, 8);
+fn a_sealed_fetch_asks_for_one_event_id() {
     let source = include_str!("../src/nostr.rs");
     let start = source.find("fn req_payload(").unwrap();
     let req = &source[start..];
     let req = &req[..req.find("\nfn fetch_from_relay").unwrap()];
-    assert!(req.contains("\"limit\": SEALED_FETCH_LIMIT"));
+    assert!(req.contains("\"ids\": [event_id_hex]"));
+    assert!(!req.contains("SEALED_FETCH_LIMIT"));
     let start = source.find("fn fetch_from_relay(").unwrap();
     let body = &source[start..];
     let body = &body[..body.find("\nfn note_for_query").unwrap()];
@@ -1476,7 +1520,7 @@ fn public_note_from_json_accepts_a_signed_long_form() {
     let parsed = public_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, note.id);
     assert!(public_note_from_json(&value, 4, 32, 256_000).is_none());
-    assert!(sealed_note_from_json(&value, 256_000).is_none());
+    assert!(sealed_note_from_json(&value, 128, 32, 256_000).is_none());
 }
 
 #[test]
@@ -1486,10 +1530,14 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
     let created_at = 1_700_000_000;
     let note = sign_sealed_note(content, locator, created_at);
     let value: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
-    let (parsed, parsed_locator) = sealed_note_from_json(&value, 256_000).unwrap();
+    let (parsed, parsed_locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, note.id);
     assert_eq!(parsed_locator, locator);
-    assert!(sealed_note_from_json(&value, content.len() - 1).is_none());
+    let payload_max = crate::seal::sealed_payload_max(0, 0, 1);
+    let over = sign_sealed_note(&"x".repeat(payload_max + 1), locator, created_at);
+    let over_value: serde_json::Value = serde_json::from_str(&over.event_json).unwrap();
+    assert!(sealed_note_from_json(&over_value, 0, 0, 1).is_none());
+    assert!(sealed_note_from_json(&value, 0, 0, 1).is_some());
     assert!(public_note_from_json(&value, 128, 32, 256_000).is_none());
 
     let mut bad_sig = value.clone();
@@ -1500,13 +1548,13 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
         format!("a{}", &sig[1..])
     };
     bad_sig["sig"] = serde_json::Value::String(flipped);
-    assert!(sealed_note_from_json(&bad_sig, 256_000).is_none());
+    assert!(sealed_note_from_json(&bad_sig, 128, 32, 256_000).is_none());
 
     let keypair = Keypair::new(SECP256K1, &mut thread_rng());
     let kind = nonograph_nip44::KIND;
     let weak = signed_without_enough_zero_bits(&keypair, created_at, kind, locator, content);
     let weak_value: serde_json::Value = serde_json::from_str(&weak.event_json).unwrap();
-    assert!(sealed_note_from_json(&weak_value, 256_000).is_none());
+    assert!(sealed_note_from_json(&weak_value, 128, 32, 256_000).is_none());
 
     let titled = signed_event(
         &keypair,
@@ -1524,17 +1572,17 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
         content,
     );
     let titled_value: serde_json::Value = serde_json::from_str(&titled.event_json).unwrap();
-    assert!(sealed_note_from_json(&titled_value, 256_000).is_none());
+    assert!(sealed_note_from_json(&titled_value, 128, 32, 256_000).is_none());
 
     let uppercase = signed_event(
         &keypair,
         created_at,
         kind,
-        &sealed_tags("0123456789ABCDEF0123", "1"),
+        &crate::seal::sealed_tags("0123456789ABCDEF0123", "1"),
         content,
     );
     let uppercase_value: serde_json::Value = serde_json::from_str(&uppercase.event_json).unwrap();
-    assert!(sealed_note_from_json(&uppercase_value, 256_000).is_none());
+    assert!(sealed_note_from_json(&uppercase_value, 128, 32, 256_000).is_none());
 }
 
 fn signed_without_enough_zero_bits(
@@ -1546,7 +1594,7 @@ fn signed_without_enough_zero_bits(
 ) -> SignedNote {
     let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
     for nonce in 0..1_000_000u32 {
-        let tags = sealed_tags(locator, &nonce.to_string());
+        let tags = crate::seal::sealed_tags(locator, &nonce.to_string());
         let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
         if matches!(
             nonograph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content),
@@ -1752,6 +1800,28 @@ fn public_relay_urls_reject_loopback_and_private_hosts() {
     assert!(!public_relay_url("wss://[ff02::1]"));
     assert!(!public_relay_url("wss://user:pass@relay.damus.io"));
     assert!(!public_relay_url("wss://relay.damus.io:4444"));
+    assert_eq!(
+        canonical_public_relay("wss://Relay.Damus.io/"),
+        Some("wss://relay.damus.io".to_string())
+    );
+    assert_eq!(
+        canonical_public_relay("wss://relay.damus.io:443"),
+        Some("wss://relay.damus.io".to_string())
+    );
+    assert_eq!(
+        canonical_public_relay("wss://relay.damus.io./path/"),
+        Some("wss://relay.damus.io/path".to_string())
+    );
+    assert_eq!(
+        canonical_public_relay("  wss://nos.lol/  "),
+        Some("wss://nos.lol".to_string())
+    );
+    assert!(canonical_public_relay("wss://127.0.0.1").is_none());
+    assert!(same_public_relay(
+        "wss://Relay.Primal.net/",
+        "wss://relay.primal.net"
+    ));
+    assert!(!same_public_relay("wss://relay.damus.io", "wss://nos.lol"));
 }
 
 #[test]

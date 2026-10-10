@@ -62,7 +62,7 @@ fn test_nip44_padded_lengths() {
     {
         let input = pair[0].as_u64().unwrap() as usize;
         let expected = pair[1].as_u64().unwrap() as usize;
-        assert_eq!(calc_padded_len(input), expected);
+        assert_eq!(calc_padded_len(input), Some(expected));
     }
 }
 

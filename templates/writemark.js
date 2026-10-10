@@ -4138,9 +4138,29 @@ class WritemarkEditorElement extends HTMLElement {
   _insertLink(ctx, args = {}) { const selected = ctx.value.slice(ctx.selectionStart, ctx.selectionEnd); const url = args.url ?? ""; if (selected) { const insert = `[${selected}](${url})`; const cursor = url ? ctx.selectionStart + insert.length : ctx.selectionStart + selected.length + 3; return ok(tx(ctx, "inline.link", [{ from: ctx.selectionStart, to: ctx.selectionEnd, insert }], { start: cursor, end: cursor, direction: "none" }, "inline"), "Link."); } const insert = url ? `[](${url})` : `[]()`; return ok(tx(ctx, "inline.link", [{ from: ctx.selectionStart, to: ctx.selectionEnd, insert }], { start: ctx.selectionStart + 1, end: ctx.selectionStart + 1, direction: "none" }, "inline"), "Link."); }
   _insertImage(ctx, args = {}) { const alt = args.alt ?? ""; const src = args.src ?? ""; const insert = `![${alt}](${src})`; const cursor = alt ? ctx.selectionStart + insert.length : ctx.selectionStart + 2; return ok(tx(ctx, "inline.image", [{ from: ctx.selectionStart, to: ctx.selectionEnd, insert }], { start: cursor, end: cursor, direction: "none" }, "inline"), "Image."); }
 
-  _matchSlash(ctx) { if (ctx.block.kind === "fenced-code" || ctx.inline.insideInlineCode) return null; const before = ctx.currentLine.text.slice(0, ctx.selectionStart - ctx.currentLine.start); const m = /^(\s*)\/([\w-]*)$/.exec(before); if (!m) return null; return { from: ctx.currentLine.start + m[1].length, to: ctx.selectionStart, trigger: "/", query: m[2], providerId: "slash" }; }
+  _matchSlash(ctx) {
+    if (ctx.block.kind === "fenced-code" || ctx.inline.insideInlineCode) return null;
+    const before = ctx.currentLine.text.slice(0, ctx.selectionStart - ctx.currentLine.start);
+    const matched = /(^|\s)\/([\w-]*)$/.exec(before);
+    if (!matched) return null;
+    const slashAt = before.length - matched[2].length - 1;
+    return { from: ctx.currentLine.start + slashAt, to: ctx.selectionStart, trigger: "/", query: matched[2], providerId: "slash", midLine: before.slice(0, slashAt).trim().length > 0 };
+  }
   _getSlashItems(match) { const q = match.query.toLowerCase(); const items = []; for (const action of this._actions.values()) { if (!action.visibleInSlash) continue; const hay = [action.label, action.description, ...(action.aliases || []), ...(action.keywords || [])].filter(Boolean).join(" ").toLowerCase(); if (q && !hay.includes(q)) continue; items.push({ id: action.id, label: action.label, detail: displayShortcut(action.defaultShortcut), description: "", kind: "slash-command", actionId: action.id }); } return items.slice(0, 24); }
-  _applySlashItem(item, match, ctx) { const repl = this._slashReplacementForAction(item.actionId); if (repl) { const insert = typeof repl.insert === "function" ? repl.insert(ctx) : repl.insert; const off = typeof repl.selectionOffset === "number" ? repl.selectionOffset : insert.length; return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert }], { start: match.from + off, end: match.from + off + (repl.selectionLength || 0), direction: "none" }, "slash"), item.label); } return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert: "" }], { start: match.from, end: match.from, direction: "none" }, "slash"), item.label); }
+  _applySlashItem(item, match, ctx) {
+    const repl = this._slashReplacementForAction(item.actionId);
+    if (!repl) return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert: "" }], { start: match.from, end: match.from, direction: "none" }, "slash"), item.label);
+    let insert = typeof repl.insert === "function" ? repl.insert(ctx) : repl.insert;
+    let off = typeof repl.selectionOffset === "number" ? repl.selectionOffset : insert.length;
+    let from = match.from;
+    if (match.midLine && String(item.actionId || "").startsWith("block.")) {
+      insert = "\n" + insert;
+      off += 1;
+      if (from > ctx.currentLine.start && ctx.value[from - 1] === " ") from -= 1;
+    }
+    const len = repl.selectionLength || 0;
+    return ok(tx(ctx, "completion.accept", [{ from, to: match.to, insert }], { start: from + off, end: from + off + len, direction: "none" }, "slash"), item.label);
+  }
   _slashReplacementForAction(actionId) { return { "block.paragraph": { insert: "", selectionOffset: 0 }, "block.heading.1": { insert: "# ", selectionOffset: 2 }, "block.heading.2": { insert: "## ", selectionOffset: 3 }, "block.heading.3": { insert: "### ", selectionOffset: 4 }, "block.heading.4": { insert: "#### ", selectionOffset: 5 }, "block.bulletList": { insert: "- ", selectionOffset: 2 }, "block.orderedList": { insert: "1. ", selectionOffset: 3 }, "block.taskList": { insert: "- [ ] ", selectionOffset: 6 }, "block.blockquote": { insert: "> ", selectionOffset: 2 }, "block.codeFence": { insert: "```\n\n```", selectionOffset: 4 }, "block.horizontalRule": { insert: "---\n", selectionOffset: 4 }, "block.table": { insert: "| Column 1 | Column 2 | Column 3 |\n| --- | --- | --- |\n| Cell 1 | Cell 2 | Cell 3 |", selectionOffset: 2, selectionLength: "Column 1".length }, "inline.link": { insert: "[]()", selectionOffset: 3 }, "inline.image": { insert: "![]()", selectionOffset: 4 }, "inline.bold": { insert: "****", selectionOffset: 2 }, "inline.italic": { insert: "**", selectionOffset: 1 }, "inline.code": { insert: "``", selectionOffset: 1 }, "inline.underline": { insert: "__", selectionOffset: 1 }, "inline.strikethrough": { insert: "~~", selectionOffset: 1 }, "inline.superscript": { insert: "^^", selectionOffset: 1 }, "inline.highlight": { insert: "====", selectionOffset: 2 }, "inline.secret": { insert: "##", selectionOffset: 1 } }[actionId] || null; }
   _matchCodeLanguage(ctx) { if (ctx.block.kind === "fenced-code") return null; const before = ctx.currentLine.text.slice(0, ctx.selectionStart - ctx.currentLine.start); const m = /^(\s*)(`{3,}|~{3,})([\w+-]*)$/.exec(before); if (!m || LANGUAGES.includes(m[3].toLowerCase())) return null; return { from: ctx.currentLine.start + m[1].length, to: ctx.selectionStart, trigger: m[2], sequence: m[2], query: m[3], providerId: "code-language" }; }
 

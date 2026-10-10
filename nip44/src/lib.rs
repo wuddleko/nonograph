@@ -9,7 +9,7 @@ use secp256k1::{Parity, PublicKey, SecretKey, XOnlyPublicKey};
 type HmacSha256 = Hmac<Sha256>;
 
 const MIN_PAYLOAD_CHARS: usize = 132;
-const MAX_PAYLOAD_CHARS: usize = 1_048_576;
+pub const MAX_PAYLOAD_CHARS: usize = 1_048_576;
 const MIN_PAYLOAD_BYTES: usize = 99;
 const MAX_PAYLOAD_BYTES: usize = 786_432;
 const EXTENDED_PREFIX_AT: usize = 65536;
@@ -153,8 +153,27 @@ fn pad(plaintext: &str) -> Result<Vec<u8>, Error> {
         (unpadded_len as u16).to_be_bytes().to_vec()
     };
     out.extend_from_slice(unpadded);
-    out.resize(out.len() + calc_padded_len(unpadded_len) - unpadded_len, 0);
+    let padded_len = calc_padded_len(unpadded_len).ok_or(Error::PlaintextLength)?;
+    let extra = padded_len
+        .checked_sub(unpadded_len)
+        .ok_or(Error::PlaintextLength)?;
+    out.resize(out.len() + extra, 0);
     Ok(out)
+}
+
+/// Standard-base64 length of [`encrypt`] for a plaintext of `plaintext_len` bytes.
+pub fn encrypted_len(plaintext_len: usize) -> Option<usize> {
+    if plaintext_len == 0 || plaintext_len > u32::MAX as usize {
+        return None;
+    }
+    let padded = calc_padded_len(plaintext_len)?;
+    let prefix = if plaintext_len >= EXTENDED_PREFIX_AT {
+        6
+    } else {
+        2
+    };
+    let binary = 65usize.checked_add(prefix)?.checked_add(padded)?;
+    binary.div_ceil(3).checked_mul(4)
 }
 
 fn unpad(padded: &[u8]) -> Result<String, Error> {
@@ -178,7 +197,8 @@ fn unpad(padded: &[u8]) -> Result<String, Error> {
     if unpadded_len == 0 || padded.len() < end {
         return Err(Error::Padding);
     }
-    if padded.len() != prefix_len + calc_padded_len(unpadded_len) {
+    let padded_len = calc_padded_len(unpadded_len).ok_or(Error::Padding)?;
+    if padded.len() != prefix_len.checked_add(padded_len).ok_or(Error::Padding)? {
         return Err(Error::Padding);
     }
     str::from_utf8(&padded[prefix_len..end])
@@ -186,18 +206,20 @@ fn unpad(padded: &[u8]) -> Result<String, Error> {
         .map_err(|_| Error::Utf8)
 }
 
-fn calc_padded_len(unpadded_len: usize) -> usize {
+fn calc_padded_len(unpadded_len: usize) -> Option<usize> {
     if unpadded_len <= 32 {
-        return 32;
+        return Some(32);
     }
-    let unpadded_len = unpadded_len as u64;
-    let next_power = 1u64 << ((unpadded_len - 1).ilog2() + 1);
+    let unpadded_len = u64::try_from(unpadded_len).ok()?;
+    let shift = (unpadded_len - 1).ilog2() + 1;
+    let next_power = 1u64.checked_shl(shift)?;
     let chunk = if next_power <= 256 {
         32
     } else {
         next_power / 8
     };
-    (chunk * ((unpadded_len - 1) / chunk + 1)) as usize
+    let chunks = (unpadded_len - 1) / chunk + 1;
+    usize::try_from(chunk.checked_mul(chunks)?).ok()
 }
 
 pub(crate) fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {

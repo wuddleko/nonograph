@@ -1,86 +1,97 @@
-use rocket::request::{FromRequest, Outcome, Request};
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct CsrfProtected;
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for CsrfProtected {
-    type Error = ();
-
-    async fn from_request(_request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        Outcome::Success(CsrfProtected)
-    }
-}
+use rand::RngCore;
+use sha2::{Digest, Sha256};
 
 pub fn generate_csrf_token_with_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let random_part = generate_csrf_token();
-    let combined = format!("{timestamp}:{random_part}");
-
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    combined.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    format!("{combined}.{hash:x}")
+    let random_part = random_token();
+    let data = format!("{timestamp}:{random_part}");
+    format!("{data}.{}", csrf_mac(&data))
 }
 
 pub fn is_valid_csrf_token(token: &str) -> bool {
-    if token.is_empty() {
+    let Some((data, provided)) = token.split_once('.') else {
+        return false;
+    };
+    if !mac_matches(provided, &csrf_mac(data)) {
         return false;
     }
 
-    // Split token into data and hash parts
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 2 {
+    // The token expires after 24 hours.
+    let Some((timestamp, random)) = data.split_once(':') else {
+        return false;
+    };
+    if random.len() != 64 || !random.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return false;
     }
-
-    let data = parts[0];
-    let provided_hash = parts[1];
-
-    // Recreate hash from data
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    let expected_hash = format!("{:x}", hasher.finish());
-
-    // Verify hash matches
-    if provided_hash != expected_hash {
+    let Ok(timestamp) = timestamp.parse::<u64>() else {
         return false;
-    }
-
-    // Check timestamp (token expires after 1 hour)
-    let data_parts: Vec<&str> = data.split(':').collect();
-    if data_parts.len() != 2 {
-        return false;
-    }
-
-    if let Ok(timestamp) = data_parts[0].parse::<u64>() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Token is valid for 24 hours
-        current_time - timestamp < 86400
-    } else {
-        false
-    }
+    };
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    current_time
+        .checked_sub(timestamp)
+        .is_some_and(|age| age < 86400)
 }
 
-fn generate_csrf_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..32)
-        .map(|_| format!("{:02x}", rng.gen::<u8>()))
-        .collect::<String>()
+fn csrf_key() -> &'static [u8; 32] {
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key);
+        key
+    })
+}
+
+fn csrf_mac(data: &str) -> String {
+    let key = csrf_key();
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for (index, byte) in key.iter().enumerate() {
+        ipad[index] ^= byte;
+        opad[index] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(data.as_bytes());
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner.finalize());
+    hex_encode(&outer.finalize())
+}
+
+fn mac_matches(provided: &str, expected: &str) -> bool {
+    if provided.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in provided.bytes().zip(expected.bytes()) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex_encode(&bytes)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
 }
 
 #[cfg(test)]

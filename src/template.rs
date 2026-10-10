@@ -99,6 +99,7 @@ fn placeholder_value(key: &str, value: &str) -> String {
             | "nostr_link"
             | "relays_section"
             | "relays_sidebar"
+            | "relay_field"
     ) {
         value.to_string()
     } else {

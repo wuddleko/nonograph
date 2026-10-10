@@ -1899,20 +1899,121 @@ fn test_comments() {
     assert!(result.contains("This is normal text"));
     assert!(result.contains("More normal text"));
     assert!(result.contains("Final text"));
+    assert_eq!(render_markdown("// only a comment"), render_markdown(""));
 }
 
 #[test]
-fn markdown_for_page_omits_prose_comments_and_renders_the_same() {
-    let input = "Visible line\r\n// hidden note\r\n\r\n```javascript\r\n// kept in code\r\nlet x = 1;\r\n```\r\n// also hidden\r\n`// not a comment`\r\nDone\n";
-    let page = markdown_for_page(input);
+fn language_table_maps_aliases_to_css_and_syntect_names() {
+    assert_eq!(language_names("js"), ("javascript", "JavaScript"));
+    assert_eq!(language_names("patch"), ("patch", "Diff"));
+    assert_eq!(
+        language_names("properties"),
+        ("properties", "Java Properties")
+    );
+    assert_eq!(language_names("jsx"), ("jsx", "JavaScript (JSX)"));
+    assert_eq!(language_names("vlang"), ("v", "V"));
+    assert_eq!(language_names("txt"), ("plaintext", "Plain Text"));
+    assert_eq!(language_names("unknown"), ("unknown", "unknown"));
+    assert_eq!(language_names(""), ("", ""));
+}
 
-    assert!(!page.contains("hidden note"));
-    assert!(!page.contains("also hidden"));
-    assert!(page.contains("// kept in code"));
-    assert!(page.contains("`// not a comment`"));
-    assert_eq!(render_markdown(input), render_markdown(&page));
-    assert_eq!(markdown_for_page("nothing to hide"), "nothing to hide");
-    assert_eq!(render_markdown("// only a comment"), render_markdown(""));
+#[test]
+fn inline_markers_match_the_editor_pair_scanner() {
+    let samples = [
+        "**bold**",
+        "*italic*",
+        "_under_",
+        "~gone~",
+        "^up^",
+        "==mark==",
+        "#secret#",
+        "**b** *i* _u_ ~d~ ^s^ ==m== #h#",
+        "*a* and *b*",
+        "**not em**",
+        "****",
+        "**open",
+        "**a\nb**",
+        "plain text",
+        "*a**b*",
+        "a_b_c",
+    ];
+    let expected = format!(
+        "[{}]",
+        samples
+            .iter()
+            .map(|sample| json_string(&inline_html(sample)))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert_eq!(editor_inline_json(&samples).trim(), expected);
+}
+
+fn inline_html(text: &str) -> String {
+    let mut working = text.to_string();
+    working = safe_replace(&working, "**", "**", "<strong>", "</strong>");
+    working = safe_replace(&working, "*", "*", "<em>", "</em>");
+    working = safe_replace(&working, "_", "_", "<u>", "</u>");
+    working = safe_replace(&working, "~", "~", "<del>", "</del>");
+    working = safe_replace(&working, "^", "^", "<sup>", "</sup>");
+    working = safe_replace(&working, "==", "==", "<mark>", "</mark>");
+    safe_replace(&working, "#", "#", "<span class=\"secret\">", "</span>")
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn editor_inline_json(samples: &[&str]) -> String {
+    let source = include_str!("../../templates/writemark.js");
+    let start = source
+        .find("const NONOGRAPH_INLINE_RULES")
+        .expect("editor inline rules");
+    let end = source
+        .find("function escapeAttribute")
+        .expect("end of escapeHtml");
+    let listed = samples
+        .iter()
+        .map(|sample| json_string(sample))
+        .collect::<Vec<_>>()
+        .join(",");
+    let program = format!(
+        "{slice}\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => renderNonographEmphasis(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        slice = &source[start..end],
+        listed = listed,
+    );
+    let path = std::env::temp_dir().join(format!("nonograph-inline-{}.js", std::process::id()));
+    std::fs::write(&path, &program).expect("write editor fixture");
+    let text = match std::process::Command::new("node").arg(&path).output() {
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout).unwrap(),
+        _ => {
+            let output = std::process::Command::new("osascript")
+                .args(["-l", "JavaScript"])
+                .arg(&path)
+                .output()
+                .expect("node or osascript must run the editor pair scanner");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+    };
+    let _ = std::fs::remove_file(&path);
+    text
 }
 
 #[test]

@@ -8,6 +8,7 @@ members = ["parser", "page", "nip44"]
 
 [dependencies]
 rocket = { version = "0.5", features = ["json"] }
+log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"

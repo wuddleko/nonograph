@@ -630,243 +630,119 @@ fn extract_fenced_code_blocks(text: &str) -> (String, Vec<(String, String, u32)>
     (result, fenced_blocks)
 }
 
-fn map_language_for_css(lang: &str) -> &str {
-    match lang.to_lowercase().as_str() {
-        // Primary languages
-        "javascript" | "js" => "javascript",
-        "python" | "py" => "python",
-        "java" => "java",
-        "typescript" | "ts" => "typescript",
-        "html" => "html",
-        "css" => "css",
-        "bash" | "sh" | "shell" => "bash",
-        "sql" => "sql",
-        "c" => "c",
-        "cpp" | "c++" => "cpp",
-        "csharp" | "c#" | "cs" => "csharp",
-        "php" => "php",
-        "ruby" | "rb" => "ruby",
-        "go" | "golang" => "go",
-        "rust" | "rs" => "rust",
-        "swift" => "swift",
-        "kotlin" | "kt" => "kotlin",
-        "r" => "r",
-        "matlab" => "matlab",
-        "scala" => "scala",
-        "perl" => "perl",
-        "powershell" | "ps1" => "powershell",
-        "json" => "json",
-        "xml" => "xml",
-        "yaml" | "yml" => "yaml",
-        "markdown" | "md" => "markdown",
-        "toml" => "toml",
-        "ini" => "ini",
-        "properties" => "properties",
-        "jsx" => "jsx",
-        "tsx" => "tsx",
-        "vue" => "vue",
-        "scss" => "scss",
-        "sass" => "sass",
-        "less" => "less",
-        "graphql" | "gql" => "graphql",
-        "svelte" => "svelte",
-        "handlebars" | "hbs" => "handlebars",
-        "pug" | "jade" => "pug",
-        "ejs" => "ejs",
-        "nunjucks" | "njk" => "nunjucks",
-        "dockerfile" | "docker" => "dockerfile",
-        "makefile" | "make" => "makefile",
-        "cmake" => "cmake",
-        "nginx" => "nginx",
-        "apache" => "apache",
-        "lua" => "lua",
-        "dart" => "dart",
-        "elixir" | "ex" => "elixir",
-        "haskell" | "hs" => "haskell",
-        "clojure" | "clj" => "clojure",
-        "objective-c" | "objc" => "objective-c",
-        "coffeescript" | "coffee" => "coffeescript",
-        "groovy" => "groovy",
-        "racket" | "rkt" => "racket",
-        "scheme" | "scm" => "scheme",
-        "lisp" => "lisp",
-        "erlang" | "erl" => "erlang",
-        "fsharp" | "f#" | "fs" => "fsharp",
-        "ocaml" | "ml" => "ocaml",
-        "julia" | "jl" => "julia",
-        "nim" => "nim",
-        "crystal" | "cr" => "crystal",
-        "d" => "d",
-        "zig" => "zig",
-        "vlang" => "v",
-        "solidity" | "sol" => "solidity",
-        "vhdl" => "vhdl",
-        "verilog" => "verilog",
-        "assembly" | "asm" => "assembly",
-        "fortran" | "f90" | "f95" => "fortran",
-        "cobol" | "cob" => "cobol",
-        "pascal" | "pas" => "pascal",
-        "ada" => "ada",
-        "prolog" | "pl" => "prolog",
-        "smalltalk" | "st" => "smalltalk",
-        "tcl" => "tcl",
-        "awk" => "awk",
-        "sed" => "sed",
-        "vim" | "vimscript" => "vim",
-        "emacs-lisp" | "elisp" => "emacs-lisp",
-        "elm" => "elm",
-        "purescript" | "purs" => "purescript",
-        "reasonml" | "reason" | "re" => "reasonml",
-        "apex" => "apex",
-        "arduino" | "ino" => "arduino",
-        "processing" | "pde" => "processing",
-        "openscad" | "scad" => "openscad",
-        "latex" | "tex" => "latex",
-        "bibtex" | "bib" => "bibtex",
-        "rmarkdown" | "rmd" => "rmarkdown",
-        "restructuredtext" | "rst" => "restructuredtext",
-        "asciidoc" | "adoc" => "asciidoc",
-        "textile" => "textile",
-        "org" => "org",
-        "diff" => "diff",
-        "patch" => "patch",
-        "plaintext" | "text" | "txt" => "plaintext",
-        _ => lang,
+const LANGUAGES: &[(&[&str], &str, &str)] = &[
+    (&["javascript", "js"], "javascript", "JavaScript"),
+    (&["python", "py"], "python", "Python"),
+    (&["java"], "java", "Java"),
+    (&["typescript", "ts"], "typescript", "TypeScript"),
+    (&["html"], "html", "HTML"),
+    (&["css"], "css", "CSS"),
+    (&["bash", "sh", "shell"], "bash", "Bash"),
+    (&["sql"], "sql", "SQL"),
+    (&["c"], "c", "C"),
+    (&["cpp", "c++"], "cpp", "C++"),
+    (&["csharp", "c#", "cs"], "csharp", "C#"),
+    (&["php"], "php", "PHP"),
+    (&["ruby", "rb"], "ruby", "Ruby"),
+    (&["go", "golang"], "go", "Go"),
+    (&["rust", "rs"], "rust", "Rust"),
+    (&["swift"], "swift", "Swift"),
+    (&["kotlin", "kt"], "kotlin", "Kotlin"),
+    (&["r"], "r", "R"),
+    (&["matlab"], "matlab", "MATLAB"),
+    (&["scala"], "scala", "Scala"),
+    (&["perl"], "perl", "Perl"),
+    (&["powershell", "ps1"], "powershell", "PowerShell"),
+    (&["json"], "json", "JSON"),
+    (&["xml"], "xml", "XML"),
+    (&["yaml", "yml"], "yaml", "YAML"),
+    (&["markdown", "md"], "markdown", "Markdown"),
+    (&["toml"], "toml", "TOML"),
+    (&["ini"], "ini", "INI"),
+    (&["properties"], "properties", "Java Properties"),
+    (&["jsx"], "jsx", "JavaScript (JSX)"),
+    (&["tsx"], "tsx", "TypeScript (TSX)"),
+    (&["vue"], "vue", "Vue"),
+    (&["scss"], "scss", "SCSS"),
+    (&["sass"], "sass", "Sass"),
+    (&["less"], "less", "Less"),
+    (&["graphql", "gql"], "graphql", "GraphQL"),
+    (&["svelte"], "svelte", "Svelte"),
+    (&["handlebars", "hbs"], "handlebars", "Handlebars"),
+    (&["pug", "jade"], "pug", "Pug"),
+    (&["ejs"], "ejs", "EJS"),
+    (&["nunjucks", "njk"], "nunjucks", "Nunjucks"),
+    (&["dockerfile", "docker"], "dockerfile", "Dockerfile"),
+    (&["makefile", "make"], "makefile", "Makefile"),
+    (&["cmake"], "cmake", "CMake"),
+    (&["nginx"], "nginx", "nginx"),
+    (&["apache"], "apache", "ApacheConf"),
+    (&["lua"], "lua", "Lua"),
+    (&["dart"], "dart", "Dart"),
+    (&["elixir", "ex"], "elixir", "Elixir"),
+    (&["haskell", "hs"], "haskell", "Haskell"),
+    (&["clojure", "clj"], "clojure", "Clojure"),
+    (&["objective-c", "objc"], "objective-c", "Objective-C"),
+    (&["coffeescript", "coffee"], "coffeescript", "CoffeeScript"),
+    (&["groovy"], "groovy", "Groovy"),
+    (&["racket", "rkt"], "racket", "Racket"),
+    (&["scheme", "scm"], "scheme", "Scheme"),
+    (&["lisp"], "lisp", "Lisp"),
+    (&["erlang", "erl"], "erlang", "Erlang"),
+    (&["fsharp", "f#", "fs"], "fsharp", "F#"),
+    (&["ocaml", "ml"], "ocaml", "OCaml"),
+    (&["julia", "jl"], "julia", "Julia"),
+    (&["nim"], "nim", "Nim"),
+    (&["crystal", "cr"], "crystal", "Crystal"),
+    (&["d"], "d", "D"),
+    (&["zig"], "zig", "Zig"),
+    (&["vlang"], "v", "V"),
+    (&["solidity", "sol"], "solidity", "Solidity"),
+    (&["vhdl"], "vhdl", "VHDL"),
+    (&["verilog"], "verilog", "Verilog"),
+    (&["assembly", "asm"], "assembly", "Assembly"),
+    (&["fortran", "f90", "f95"], "fortran", "Fortran"),
+    (&["cobol", "cob"], "cobol", "COBOL"),
+    (&["pascal", "pas"], "pascal", "Pascal"),
+    (&["ada"], "ada", "Ada"),
+    (&["prolog", "pl"], "prolog", "Prolog"),
+    (&["smalltalk", "st"], "smalltalk", "Smalltalk"),
+    (&["tcl"], "tcl", "Tcl"),
+    (&["awk"], "awk", "AWK"),
+    (&["sed"], "sed", "sed"),
+    (&["vim", "vimscript"], "vim", "VimL"),
+    (&["emacs-lisp", "elisp"], "emacs-lisp", "Emacs Lisp"),
+    (&["elm"], "elm", "Elm"),
+    (&["purescript", "purs"], "purescript", "PureScript"),
+    (&["reasonml", "reason", "re"], "reasonml", "Reason"),
+    (&["apex"], "apex", "Apex"),
+    (&["arduino", "ino"], "arduino", "Arduino"),
+    (&["processing", "pde"], "processing", "Processing"),
+    (&["openscad", "scad"], "openscad", "OpenSCAD"),
+    (&["latex", "tex"], "latex", "LaTeX"),
+    (&["bibtex", "bib"], "bibtex", "BibTeX"),
+    (&["rmarkdown", "rmd"], "rmarkdown", "R Markdown"),
+    (
+        &["restructuredtext", "rst"],
+        "restructuredtext",
+        "reStructuredText",
+    ),
+    (&["asciidoc", "adoc"], "asciidoc", "AsciiDoc"),
+    (&["textile"], "textile", "Textile"),
+    (&["org"], "org", "Org"),
+    (&["diff"], "diff", "Diff"),
+    (&["patch"], "patch", "Diff"),
+    (&["plaintext", "text", "txt"], "plaintext", "Plain Text"),
+];
+
+fn language_names(lang: &str) -> (&str, &str) {
+    let key = lang.to_lowercase();
+    for &(aliases, css, syntect) in LANGUAGES {
+        if aliases.iter().any(|alias| *alias == key) {
+            return (css, syntect);
+        }
     }
-}
-
-fn map_language_for_syntect(lang: &str) -> &str {
-    match lang.to_lowercase().as_str() {
-        // Primary languages
-        "javascript" | "js" => "JavaScript",
-        "python" | "py" => "Python",
-        "java" => "Java",
-        "typescript" | "ts" => "TypeScript",
-        "html" => "HTML",
-        "css" => "CSS",
-        "bash" | "sh" | "shell" => "Bash",
-        "sql" => "SQL",
-        "c" => "C",
-        "cpp" | "c++" => "C++",
-        "csharp" | "c#" | "cs" => "C#",
-        "php" => "PHP",
-        "ruby" | "rb" => "Ruby",
-        "go" | "golang" => "Go",
-        "rust" | "rs" => "Rust",
-        "swift" => "Swift",
-        "kotlin" | "kt" => "Kotlin",
-        "r" => "R",
-        "matlab" => "MATLAB",
-        "scala" => "Scala",
-        "perl" => "Perl",
-        "powershell" | "ps1" => "PowerShell",
-
-        // Data formats
-        "json" => "JSON",
-        "xml" => "XML",
-        "yaml" | "yml" => "YAML",
-        "markdown" | "md" => "Markdown",
-        "toml" => "TOML",
-        "ini" => "INI",
-        "properties" => "Java Properties",
-
-        // Web technologies
-        "jsx" => "JavaScript (JSX)",
-        "tsx" => "TypeScript (TSX)",
-        "vue" => "Vue",
-        "scss" => "SCSS",
-        "sass" => "Sass",
-        "less" => "Less",
-        "graphql" | "gql" => "GraphQL",
-        "svelte" => "Svelte",
-        "handlebars" | "hbs" => "Handlebars",
-        "pug" | "jade" => "Pug",
-        "ejs" => "EJS",
-        "nunjucks" | "njk" => "Nunjucks",
-
-        // Systems and config
-        "dockerfile" | "docker" => "Dockerfile",
-        "makefile" | "make" => "Makefile",
-        "cmake" => "CMake",
-        "nginx" => "nginx",
-        "apache" => "ApacheConf",
-
-        // Functional and other languages
-        "lua" => "Lua",
-        "dart" => "Dart",
-        "elixir" | "ex" => "Elixir",
-        "haskell" | "hs" => "Haskell",
-        "clojure" | "clj" => "Clojure",
-        "objective-c" | "objc" => "Objective-C",
-        "coffeescript" | "coffee" => "CoffeeScript",
-        "groovy" => "Groovy",
-        "racket" | "rkt" => "Racket",
-        "scheme" | "scm" => "Scheme",
-        "lisp" => "Lisp",
-        "erlang" | "erl" => "Erlang",
-        "fsharp" | "f#" | "fs" => "F#",
-        "ocaml" | "ml" => "OCaml",
-        "julia" | "jl" => "Julia",
-        "nim" => "Nim",
-        "crystal" | "cr" => "Crystal",
-        "d" => "D",
-        "zig" => "Zig",
-        "vlang" => "V",
-        "solidity" | "sol" => "Solidity",
-
-        // Hardware description
-        "vhdl" => "VHDL",
-        "verilog" => "Verilog",
-        "assembly" | "asm" => "Assembly",
-
-        // Legacy and specialized
-        "fortran" | "f90" | "f95" => "Fortran",
-        "cobol" | "cob" => "COBOL",
-        "pascal" | "pas" => "Pascal",
-        "ada" => "Ada",
-        "prolog" | "pl" => "Prolog",
-        "smalltalk" | "st" => "Smalltalk",
-        "tcl" => "Tcl",
-        "awk" => "AWK",
-        "sed" => "sed",
-
-        // Editors
-        "vim" | "vimscript" => "VimL",
-        "emacs-lisp" | "elisp" => "Emacs Lisp",
-
-        // Alternative languages
-        "elm" => "Elm",
-        "purescript" | "purs" => "PureScript",
-        "reasonml" | "reason" | "re" => "Reason",
-        "apex" => "Apex",
-        "arduino" | "ino" => "Arduino",
-        "processing" | "pde" => "Processing",
-        "openscad" | "scad" => "OpenSCAD",
-
-        // Document formats
-        "latex" | "tex" => "LaTeX",
-        "bibtex" | "bib" => "BibTeX",
-        "rmarkdown" | "rmd" => "R Markdown",
-        "restructuredtext" | "rst" => "reStructuredText",
-        "asciidoc" | "adoc" => "AsciiDoc",
-        "textile" => "Textile",
-        "org" => "Org",
-
-        // Version control and patches
-        "diff" => "Diff",
-        "patch" => "Diff",
-
-        // Generic
-        "plaintext" | "text" | "txt" => "Plain Text",
-
-        // Return original if no mapping found
-        _ => lang,
-    }
-}
-
-#[allow(dead_code)]
-fn restore_fenced_code_blocks(text: &str, fenced_blocks: &[(String, String, u32)]) -> String {
-    restore_fenced_code_blocks_with_config(text, fenced_blocks, &RenderOptions::default())
+    (lang, lang)
 }
 
 fn process_lists(text: &str) -> String {
@@ -1154,17 +1030,7 @@ fn restore_fenced_code_blocks_with_config(
 
     for (index, (language, code_content, line_count)) in fenced_blocks.iter().enumerate() {
         let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", index);
-        let syntect_lang = map_language_for_syntect(language);
-
-        // Generate the complete HTML structure
-        let replacement = render_code_block(
-            &ps,
-            theme,
-            language,
-            &syntect_lang,
-            code_content,
-            *line_count,
-        );
+        let replacement = render_code_block(&ps, theme, language, code_content, *line_count);
 
         result = result.replace(&placeholder, &replacement);
     }
@@ -1191,11 +1057,10 @@ fn render_code_block(
     syntax_set: &SyntaxSet,
     theme: &syntect::highlighting::Theme,
     original_language: &str,
-    syntect_language: &str,
     code_content: &str,
     line_count: u32,
 ) -> String {
-    // Find syntax for language - syntect_language is already mapped to syntect names
+    let (css_lang, syntect_language) = language_names(original_language);
     let (syntax, auto_detected) = if let Some(s) = syntax_set.find_syntax_by_name(syntect_language)
     {
         (s, false)
@@ -1239,8 +1104,6 @@ fn render_code_block(
         .collect::<Vec<_>>()
         .join("");
 
-    // Create the complete HTML structure
-    let css_lang = map_language_for_css(original_language);
     let lang_display = if auto_detected && syntax.name != "Plain Text" {
         format!(
             "<span class=\"code-language code-language-detected\" title=\"auto-detected\">{}</span>",
@@ -1359,90 +1222,15 @@ fn format_paragraphs_with_headers(text: &str) -> String {
     clear_breaks_before_tables(result)
 }
 
-fn clear_breaks_before_tables(input: String) -> String {
-    let iterations = table_break_iterations(&input);
-    if iterations == 0 {
-        return input;
-    }
-
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"<br>") {
-            let mut count = 0;
-            let mut end = i;
-            while bytes[end..].starts_with(b"<br>") {
-                count += 1;
-                end += 4;
-            }
-            let strip =
-                bytes[end..].starts_with(b"<table>") || bytes[end..].starts_with(b"\n<table>");
-            let keep = transformed_break_count(count, strip, iterations);
-            for _ in 0..keep {
-                out.push_str("<br>");
-            }
-            i = end;
-            continue;
-        }
-        let next = bytes[i + 1..]
-            .iter()
-            .position(|&byte| byte == b'<')
-            .map(|offset| i + 1 + offset)
-            .unwrap_or(bytes.len());
-        out.push_str(&input[i..next]);
-        i = next;
-    }
-    out
-}
-
-fn table_break_iterations(input: &str) -> usize {
-    let bytes = input.as_bytes();
-    let mut i = 0;
+fn clear_breaks_before_tables(mut input: String) -> String {
     let mut iterations = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"<br>") {
-            let mut count = 0;
-            while bytes[i..].starts_with(b"<br>") {
-                count += 1;
-                i += 4;
-            }
-            if bytes[i..].starts_with(b"<table>") {
-                iterations = iterations.max(iterations_to_clear_breaks(count));
-                if iterations == 50 {
-                    return 50;
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-    iterations
-}
-
-fn iterations_to_clear_breaks(mut count: usize) -> usize {
-    let mut iterations = 0;
-    while count > 0 && iterations < 50 {
-        count = (count + 1) / 2;
-        if count > 0 {
-            count -= 1;
-        }
+    while input.contains("<br><table>") && iterations < 50 {
+        input = input.replace("<br><br>", "<br>");
+        input = input.replace("<br><table>", "<table>");
+        input = input.replace("<br>\n<table>", "\n<table>");
         iterations += 1;
     }
-    iterations
-}
-
-fn transformed_break_count(mut count: usize, strip: bool, iterations: usize) -> usize {
-    for _ in 0..iterations {
-        if count == 0 {
-            break;
-        }
-        count = (count + 1) / 2;
-        if strip && count > 0 {
-            count -= 1;
-        }
-    }
-    count
+    input
 }
 
 fn process_dividers(content: &str) -> String {
@@ -1830,42 +1618,6 @@ fn process_comments(content: &str) -> String {
         .filter(|line| !is_comment_line(line))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Markdown safe to embed in a page.
-///
-/// Prose comments (`// ` at the start of a line) are omitted, including indented
-/// ones. Comments inside fenced code blocks stay, matching [`process_comments`],
-/// which runs only after fences have been extracted. The result renders the same
-/// HTML as `content`. When there is nothing to omit, `content` is returned unchanged.
-pub fn markdown_for_page(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut kept = Vec::with_capacity(lines.len());
-    let mut removed = false;
-    let mut i = 0;
-
-    while i < lines.len() {
-        if let Some(end) = fenced_block_end(&lines, i) {
-            kept.extend_from_slice(&lines[i..=end]);
-            i = end + 1;
-            continue;
-        }
-
-        if is_comment_line(lines[i]) {
-            removed = true;
-            i += 1;
-            continue;
-        }
-
-        kept.push(lines[i]);
-        i += 1;
-    }
-
-    if !removed {
-        content.to_string()
-    } else {
-        kept.join("\n")
-    }
 }
 
 fn fenced_block_end(lines: &[&str], index: usize) -> Option<usize> {

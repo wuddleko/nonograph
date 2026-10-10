@@ -65,16 +65,12 @@ pub(crate) fn publish_note_in_dir(
     base_dir: &str,
 ) -> Result<String, PublishFailure> {
     let created_at = Utc::now();
-    let id = if base_dir == "." {
-        crate::generate_post_id(title, storage)
-    } else {
-        crate::generate_post_id_in_dir(
-            title,
-            storage,
-            base_dir,
-            &crate::generate_unguessable_segment(),
-        )
-    }
+    let id = crate::generate_post_id_in_dir(
+        title,
+        storage,
+        base_dir,
+        &crate::generate_unguessable_segment(),
+    )
     .map_err(|_| PublishFailure::NoSlots)?;
     let post = Arc::new(Post {
         id: id.clone(),

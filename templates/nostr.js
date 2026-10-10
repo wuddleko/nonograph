@@ -2,7 +2,6 @@ const { Point, utils, etc, CURVE } = await import(
     new URL(`./secp256k1.js${new URL(import.meta.url).search}`, import.meta.url)
 );
 
-export const KIND_LONG_FORM = 30023;
 export const MAX_FETCH_RELAYS = 6;
 
 export function publicRelayUrl(relay) {
@@ -116,147 +115,6 @@ export async function publishPublicNote({
     }
 }
 
-export function encodeNevent(idHex, pubkeyHex, kind, relays) {
-    const id = hexToBytes(idHex);
-    const pubkey = hexToBytes(pubkeyHex);
-    if (id.length !== 32 || pubkey.length !== 32) {
-        return "";
-    }
-    const data = [];
-    pushTlv(data, 0, id);
-    for (const relay of relaysForPublicPublish(relays)) {
-        const bytes = new TextEncoder().encode(relay);
-        if (bytes.length > 255) {
-            continue;
-        }
-        pushTlv(data, 1, bytes);
-    }
-    pushTlv(data, 2, pubkey);
-    const kindBytes = new Uint8Array(4);
-    const value = Number(kind) >>> 0;
-    kindBytes[0] = (value >>> 24) & 0xff;
-    kindBytes[1] = (value >>> 16) & 0xff;
-    kindBytes[2] = (value >>> 8) & 0xff;
-    kindBytes[3] = value & 0xff;
-    pushTlv(data, 3, kindBytes);
-    return encodeBech32("nevent", data);
-}
-
-function pushTlv(out, tag, value) {
-    out.push(tag, value.length);
-    for (const byte of value) {
-        out.push(byte);
-    }
-}
-
-function encodeBech32(hrp, data) {
-    const values = convertBits(data, 8, 5, true);
-    const checksum = bech32Checksum(hrp, values);
-    let out = hrp + "1";
-    const charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-    for (const value of values.concat(checksum)) {
-        out += charset[value];
-    }
-    return out;
-}
-
-function convertBits(data, from, to, pad) {
-    let acc = 0;
-    let bits = 0;
-    const maxv = (1 << to) - 1;
-    const out = [];
-    for (const value of data) {
-        acc = (acc << from) | value;
-        bits += from;
-        while (bits >= to) {
-            bits -= to;
-            out.push((acc >> bits) & maxv);
-        }
-    }
-    if (pad && bits > 0) {
-        out.push((acc << (to - bits)) & maxv);
-    }
-    return out;
-}
-
-function bech32Checksum(hrp, data) {
-    const values = hrpExpand(hrp).concat(data, [0, 0, 0, 0, 0, 0]);
-    const mod = bech32Polymod(values) ^ 1;
-    const ret = [];
-    for (let i = 0; i < 6; i++) {
-        ret.push((mod >>> (5 * (5 - i))) & 31);
-    }
-    return ret;
-}
-
-function hrpExpand(hrp) {
-    const ret = [];
-    for (let i = 0; i < hrp.length; i++) {
-        ret.push(hrp.charCodeAt(i) >>> 5);
-    }
-    ret.push(0);
-    for (let i = 0; i < hrp.length; i++) {
-        ret.push(hrp.charCodeAt(i) & 31);
-    }
-    return ret;
-}
-
-function bech32Polymod(values) {
-    const gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-    let chk = 1;
-    for (const value of values) {
-        const top = chk >>> 25;
-        chk = ((chk & 0x1ffffff) << 5) ^ value;
-        for (let i = 0; i < 5; i++) {
-            if ((top >>> i) & 1) {
-                chk ^= gen[i];
-            }
-        }
-    }
-    return chk;
-}
-
-export async function signLongForm({
-    title,
-    author,
-    content,
-    createdAt,
-    secret,
-    aux,
-    identifier,
-} = {}) {
-    await ensureBip340();
-    const created_at = createdAt || Math.floor(Date.now() / 1000);
-    const key = to32Bytes(secret) || utils.randomPrivateKey();
-    const tags = longFormTags(title || "", author || "", created_at, identifier);
-    const kind = KIND_LONG_FORM;
-    const body = content || "";
-    const pubkey = xOnlyPubkey(key);
-    const id = await eventId(pubkey, created_at, kind, tags, body);
-    const sig = await schnorrSign(key, hexToBytes(id), to32Bytes(aux));
-    return {
-        id,
-        pubkey,
-        created_at,
-        kind,
-        tags,
-        content: body,
-        sig: bytesToHex(sig),
-    };
-}
-
-function longFormTags(title, author, createdAt, identifier) {
-    const tags = [
-        ["d", identifier || randomHex(16)],
-        ["title", title],
-        ["published_at", String(createdAt)],
-    ];
-    if (author) {
-        tags.push(["author", author]);
-    }
-    return tags;
-}
-
 function xOnlyPubkey(secret) {
     const point = Point.fromPrivateKey(secret);
     return bytesToHex(etc.numberToBytesBE(point.x));
@@ -342,12 +200,6 @@ function multiplyScalar(point, scalar) {
         return Point.ZERO;
     }
     return point.multiply(scalar);
-}
-
-async function eventId(pubkey, createdAt, kind, tags, content) {
-    const canonical = canonicalEvent(pubkey, createdAt, kind, tags, content);
-    const digest = await sha256(new TextEncoder().encode(canonical));
-    return bytesToHex(digest);
 }
 
 function canonicalEvent(pubkey, createdAt, kind, tags, content) {
@@ -560,19 +412,6 @@ async function ensureBip340() {
     return bip340Ready;
 }
 
-function to32Bytes(value) {
-    if (value instanceof Uint8Array) {
-        if (value.length !== 32) {
-            throw new Error("expected 32 bytes");
-        }
-        return value;
-    }
-    if (typeof value === "string" && value.length === 64) {
-        return hexToBytes(value);
-    }
-    return null;
-}
-
 function hasEvenY(point) {
     return (point.y & 1n) === 0n;
 }
@@ -638,12 +477,6 @@ export async function sealNote({ title, author, content, contentMax } = {}) {
         throw new Error("The sealed note is too long.");
     }
     return { secret, locator, payload };
-}
-
-function randomHex(bytes) {
-    const raw = new Uint8Array(bytes);
-    crypto.getRandomValues(raw);
-    return bytesToHex(raw);
 }
 
 export function mineSeal({ pubkey, createdAt, locator, content } = {}) {
@@ -777,12 +610,19 @@ export async function openEmbeddedSeal(eventJson) {
     } catch (error) {
         return null;
     }
-    const secret = secretFromFragment(location.hash);
-    if (!secret) {
+    const path = sealPath(location.pathname);
+    const field = document.getElementById("sealed-key");
+    const typed = field && field.value.trim();
+    const secret = secretFromFragment(typed ? "#" + typed : location.hash);
+    if (!path || !secret) {
         return null;
     }
     const locator = firstTag(event.tags, "d");
-    if (!locator || typeof event.content !== "string") {
+    if (
+        event.id !== path.eventId ||
+        locator !== path.locator ||
+        typeof event.content !== "string"
+    ) {
         return null;
     }
     try {
@@ -821,6 +661,10 @@ function renderOpenedNote(note, page) {
         const name = note.author ? String(note.author) : "";
         author.textContent = name;
         author.hidden = name.length === 0;
+    }
+    const form = document.getElementById("sealed-open");
+    if (form) {
+        form.hidden = true;
     }
 }
 
@@ -865,6 +709,17 @@ function firstTag(tags, name) {
         }
     }
     return "";
+}
+
+function sealPath(pathname) {
+    const parts = String(pathname || "").split("/").filter(Boolean);
+    if (parts.length !== 3 || parts[0] !== "s") {
+        return null;
+    }
+    if (!/^[0-9a-f]{20}$/.test(parts[1]) || !/^[0-9a-f]{64}$/.test(parts[2])) {
+        return null;
+    }
+    return { locator: parts[1], eventId: parts[2] };
 }
 
 function secretFromFragment(hash) {
@@ -932,15 +787,91 @@ function copyText(href) {
     document.body.removeChild(textArea);
 }
 
+export function sealedReadingFooter() {
+    if (!document.getElementById("sealed-title")) {
+        return;
+    }
+    if (document.querySelector('.footer a[href="/api"]')) {
+        return;
+    }
+    const footer = document.createElement("div");
+    footer.className = "footer";
+    const copy = document.getElementById("sealed-copy");
+    if (copy) {
+        footer.appendChild(copy);
+    }
+    const links = [
+        ["/", "write your own"],
+        ["/legal", "legal"],
+        ["/api", "api"],
+        ["https://github.com/wuddleko/nonograph", "source code"],
+    ];
+    for (const [href, label] of links) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.textContent = label;
+        footer.appendChild(link);
+    }
+    document.querySelectorAll("body > p").forEach((paragraph) => {
+        if (paragraph.id === "sealed-preview") {
+            return;
+        }
+        const text = paragraph.textContent.replace(/\s+/g, " ").trim().toLowerCase();
+        if (text === "write your own" || text === "copy link" || text === "") {
+            paragraph.remove();
+        }
+    });
+    document.body.appendChild(footer);
+}
+
+function prefillSealedKey() {
+    const field = document.getElementById("sealed-key");
+    if (!field || field.value) {
+        return;
+    }
+    if (!secretFromFragment(location.hash)) {
+        return;
+    }
+    field.value = location.hash.slice(1);
+}
+
+function showSealedKeyError(message) {
+    const error = document.getElementById("sealed-key-error");
+    if (error) {
+        error.textContent = message || "";
+    }
+}
+
 if (typeof document !== "undefined") {
+    const form = document.getElementById("sealed-open");
+    const sealedEvent = document.getElementById("sealed-event");
+    if (form && sealedEvent && secretFromFragment(location.hash)) {
+        form.hidden = true;
+    }
+    sealedReadingFooter();
+    prefillSealedKey();
     const copy = document.getElementById("sealed-copy");
     if (copy) {
         copy.addEventListener("click", () => {
             copySealedLink(copy);
         });
     }
-    const sealedEvent = document.getElementById("sealed-event");
-    if (sealedEvent) {
-        openEmbeddedSeal(sealedEvent.textContent);
+    if (form && sealedEvent) {
+        const openNote = () => {
+            showSealedKeyError("");
+            openEmbeddedSeal(sealedEvent.textContent).then((note) => {
+                if (!note) {
+                    form.hidden = false;
+                    showSealedKeyError("The key does not open this note.");
+                }
+            });
+        };
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            openNote();
+        });
+        if (form.hidden) {
+            openNote();
+        }
     }
 }

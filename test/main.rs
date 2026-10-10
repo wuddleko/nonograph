@@ -34,18 +34,30 @@ fn assert_unguessable_id(post_id: &str, slug: &str) {
 fn test_post_id_generation() {
     let storage = PostCache::shared(128);
 
-    let id1 = generate_post_id("Hello World", &storage).unwrap();
+    let id1 = generate_post_id_in_dir(
+        "Hello World",
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    )
+    .unwrap();
     assert_unguessable_id(&id1, "hello-world");
 
     // Test with special characters
-    let id2 = generate_post_id("Hello, World! & More", &storage).unwrap();
+    let id2 = generate_post_id_in_dir(
+        "Hello, World! & More",
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    )
+    .unwrap();
     assert_unguessable_id(&id2, "hello-world-more");
     assert_ne!(id1, id2);
 }
 
 #[test]
 fn test_is_valid_post_id_accepts_generated_ids() {
-    // Slugs produced by generate_post_id and the static pages.
+    // Slugs produced by generate_post_id_in_dir and the static pages.
     assert!(is_valid_post_id("hello-world-a1b2c3d4"));
     assert!(is_valid_post_id("hello-world-a1b2c3d4-3"));
     assert!(is_valid_post_id("hello-world-09-01-2026"));
@@ -110,7 +122,7 @@ fn test_is_valid_post_id_length_bound() {
 
 #[test]
 fn test_generated_ids_are_always_valid() {
-    // Every id generate_post_id can emit must pass the read-path guard,
+    // Every id generate_post_id_in_dir can emit must pass the read-path guard,
     // otherwise a freshly created post would 404. These titles exercise
     // each slug branch: a normal slug, the symbol-only and whitespace-only
     // fallbacks ("na-XXXX"), and the long-title truncation ("-etc").
@@ -122,7 +134,8 @@ fn test_generated_ids_are_always_valid() {
         "   ",
         &"very long title ".repeat(40),
     ] {
-        let id = generate_post_id(title, &storage).unwrap();
+        let id =
+            generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment()).unwrap();
         assert!(
             is_valid_post_id(&id),
             "generated id {:?} rejected by is_valid_post_id",
@@ -392,7 +405,13 @@ fn test_post_creation_sanitization_integration() {
     let malicious_author = "<b>Bold</b><img src=x>Author";
     let clean_content = "This is safe content";
 
-    let post_id = generate_post_id("clean-fallback", &storage).unwrap();
+    let post_id = generate_post_id_in_dir(
+        "clean-fallback",
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    )
+    .unwrap();
     let rendered_content = parser::render_markdown(clean_content);
 
     let post = Post {
@@ -458,8 +477,20 @@ fn insert_cached_post(storage: &PostStorage, id: &str) {
 fn test_same_title_gets_a_different_random_segment() {
     let storage = PostCache::shared(128);
 
-    let first = generate_post_id("Hello World", &storage).unwrap();
-    let second = generate_post_id("Hello World", &storage).unwrap();
+    let first = generate_post_id_in_dir(
+        "Hello World",
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    )
+    .unwrap();
+    let second = generate_post_id_in_dir(
+        "Hello World",
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    )
+    .unwrap();
     assert_unguessable_id(&first, "hello-world");
     assert_unguessable_id(&second, "hello-world");
     assert_ne!(first, second);
@@ -471,8 +502,10 @@ fn test_same_title_gets_a_different_random_segment() {
 fn test_empty_title_ids_differ() {
     let storage = PostCache::shared(128);
 
-    let first = generate_post_id("", &storage).unwrap();
-    let second = generate_post_id("   ", &storage).unwrap();
+    let first =
+        generate_post_id_in_dir("", &storage, ".", &generate_unguessable_segment()).unwrap();
+    let second =
+        generate_post_id_in_dir("   ", &storage, ".", &generate_unguessable_segment()).unwrap();
     assert_ne!(first, second);
     for post_id in [&first, &second] {
         let short = &post_id[3..7];
@@ -486,15 +519,15 @@ fn test_cached_exact_id_takes_the_next_suffix() {
     let random = "a1b2c3d4";
 
     insert_cached_post(&storage, &assemble_post_id("other", random, 0));
-    let open = generate_post_id_with_segment("Test", &storage, random).unwrap();
+    let open = generate_post_id_in_dir("Test", &storage, ".", random).unwrap();
     assert_eq!(open, assemble_post_id("test", random, 0));
 
     insert_cached_post(&storage, &open);
-    let next = generate_post_id_with_segment("Test", &storage, random).unwrap();
+    let next = generate_post_id_in_dir("Test", &storage, ".", random).unwrap();
     assert_eq!(next, assemble_post_id("test", random, 1));
 
     insert_cached_post(&storage, &next);
-    let after = generate_post_id_with_segment("Test", &storage, random).unwrap();
+    let after = generate_post_id_in_dir("Test", &storage, ".", random).unwrap();
     assert_eq!(after, assemble_post_id("test", random, 2));
 }
 
@@ -507,7 +540,7 @@ fn test_cached_id_slots_exhausted() {
         insert_cached_post(&storage, &assemble_post_id("test", random, index));
     }
 
-    let err = generate_post_id_with_segment("Test", &storage, random).unwrap_err();
+    let err = generate_post_id_in_dir("Test", &storage, ".", random).unwrap_err();
     assert!(err.contains("choose another title"), "{err}");
 }
 
@@ -515,7 +548,8 @@ fn test_cached_id_slots_exhausted() {
 fn test_max_length_id_stays_within_path_limit() {
     let storage = PostCache::shared(128);
     let long_title = "word ".repeat(80);
-    let id = generate_post_id(&long_title, &storage).unwrap();
+    let id = generate_post_id_in_dir(&long_title, &storage, ".", &generate_unguessable_segment())
+        .unwrap();
     assert!(id.len() <= 250, "id length {}", id.len());
     assert!(is_valid_post_id(&id));
 
@@ -617,7 +651,9 @@ fn test_emoji_handling() {
     let emoji_title = "🍆 Test Post with Emojis 🎉";
     let emoji_content = "🌟 ".repeat(80) + "This is content with lots of emojis! 🎯🔥💯";
 
-    let post_id = generate_post_id(emoji_title, &storage).unwrap();
+    let post_id =
+        generate_post_id_in_dir(emoji_title, &storage, ".", &generate_unguessable_segment())
+            .unwrap();
     assert!(!post_id.is_empty());
 
     let post = Post {
@@ -659,11 +695,13 @@ fn test_emoji_parsing_edge_cases() {
 
     let storage = PostCache::shared(128);
     let emoji_title = "🎯";
-    let result = generate_post_id(emoji_title, &storage);
+    let result =
+        generate_post_id_in_dir(emoji_title, &storage, ".", &generate_unguessable_segment());
     assert!(result.is_ok());
 
     let mixed_title = "Hello 🎯 World";
-    let mixed_result = generate_post_id(mixed_title, &storage);
+    let mixed_result =
+        generate_post_id_in_dir(mixed_title, &storage, ".", &generate_unguessable_segment());
     assert!(mixed_result.is_ok());
 }
 
@@ -673,7 +711,12 @@ fn test_chinese_characters_transliteration() {
 
     // Test Chinese characters get transliterated
     let chinese_title = "李琴峰";
-    let result = generate_post_id(chinese_title, &storage);
+    let result = generate_post_id_in_dir(
+        chinese_title,
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    );
     assert!(result.is_ok());
 
     let post_id = result.unwrap();
@@ -687,7 +730,12 @@ fn test_chinese_characters_transliteration() {
 
     // Test mixed Chinese and English
     let mixed_chinese = "Hello 李琴峰 World";
-    let mixed_result = generate_post_id(mixed_chinese, &storage);
+    let mixed_result = generate_post_id_in_dir(
+        mixed_chinese,
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    );
     assert!(mixed_result.is_ok());
     let mixed_id = mixed_result.unwrap();
 
@@ -716,7 +764,7 @@ fn test_unicode_languages_transliteration() {
     ];
 
     for (title, expected_slug) in test_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(result.is_ok(), "Failed to generate ID for: {}", title);
 
         let post_id = result.unwrap();
@@ -738,7 +786,7 @@ fn test_unicode_languages_transliteration() {
     ];
 
     for title in complex_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(result.is_ok(), "Failed to generate ID for: {}", title);
 
         let post_id = result.unwrap();
@@ -779,7 +827,7 @@ fn test_unicode_transliteration() {
     ];
 
     for (title, expected_slug) in test_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(result.is_ok(), "Failed to generate ID for: {}", title);
 
         let post_id = result.unwrap();
@@ -794,7 +842,7 @@ fn test_unicode_transliteration() {
     ];
 
     for title in fallback_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(result.is_ok(), "Failed to generate ID for: '{}'", title);
 
         let post_id = result.unwrap();
@@ -819,7 +867,8 @@ fn test_title_truncation_with_etc_marker() {
 
     // Test long transliterated title gets truncated with etc marker
     let long_title = "🍆".repeat(100); // 100 eggplant emojis
-    let result = generate_post_id(&long_title, &storage);
+    let result =
+        generate_post_id_in_dir(&long_title, &storage, ".", &generate_unguessable_segment());
     assert!(result.is_ok());
 
     let post_id = result.unwrap();
@@ -835,7 +884,12 @@ fn test_title_truncation_with_etc_marker() {
 
     // Test with a very long Chinese title
     let long_chinese = "学习编程".repeat(50); // Repeat "learn programming" 50 times
-    let chinese_result = generate_post_id(&long_chinese, &storage);
+    let chinese_result = generate_post_id_in_dir(
+        &long_chinese,
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    );
     assert!(chinese_result.is_ok());
 
     let chinese_id = chinese_result.unwrap();
@@ -845,7 +899,8 @@ fn test_title_truncation_with_etc_marker() {
 
     // Test edge case where title is exactly at limit (should not truncate)
     let medium_title = "Short Title Test";
-    let medium_result = generate_post_id(medium_title, &storage);
+    let medium_result =
+        generate_post_id_in_dir(medium_title, &storage, ".", &generate_unguessable_segment());
     assert!(medium_result.is_ok());
 
     let medium_id = medium_result.unwrap();
@@ -854,7 +909,12 @@ fn test_title_truncation_with_etc_marker() {
 
     // Test very short title that would become empty after truncation
     let symbol_title = "©™®".repeat(200);
-    let symbol_result = generate_post_id(&symbol_title, &storage);
+    let symbol_result = generate_post_id_in_dir(
+        &symbol_title,
+        &storage,
+        ".",
+        &generate_unguessable_segment(),
+    );
     assert!(symbol_result.is_ok());
 
     let symbol_id = symbol_result.unwrap();
@@ -881,7 +941,7 @@ fn test_deunicode_processes_all_titles() {
     ];
 
     for (title, expected_slug) in test_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(result.is_ok(), "Failed to generate ID for: {}", title);
 
         let post_id = result.unwrap();
@@ -898,7 +958,7 @@ fn test_deunicode_processes_all_titles() {
     ];
 
     for title in edge_cases {
-        let result = generate_post_id(title, &storage);
+        let result = generate_post_id_in_dir(title, &storage, ".", &generate_unguessable_segment());
         assert!(
             result.is_ok(),
             "Failed to generate ID for edge case: '{}'",
@@ -947,7 +1007,12 @@ fn test_bypass_prevention() {
     ];
 
     for (malicious_title, expected_slug) in bypass_attempts {
-        let result = generate_post_id(malicious_title, &storage);
+        let result = generate_post_id_in_dir(
+            malicious_title,
+            &storage,
+            ".",
+            &generate_unguessable_segment(),
+        );
         assert!(
             result.is_ok(),
             "Failed to process potentially malicious title: '{}'",
@@ -1187,7 +1252,9 @@ fn test_opengraph_description_integration() {
     let long_emoji_content = "🚀🎉🌟💯".repeat(50);
     let emoji_title = "Emoji Test Post";
 
-    let post_id = generate_post_id(emoji_title, &storage).unwrap();
+    let post_id =
+        generate_post_id_in_dir(emoji_title, &storage, ".", &generate_unguessable_segment())
+            .unwrap();
     let post = Post {
         id: post_id.clone(),
         title: emoji_title.to_string(),
@@ -1208,7 +1275,9 @@ fn test_opengraph_description_integration() {
         "This is a very long post content that should be truncated. ".repeat(10);
     let ascii_title = "Long ASCII Test";
 
-    let post_id2 = generate_post_id(ascii_title, &storage).unwrap();
+    let post_id2 =
+        generate_post_id_in_dir(ascii_title, &storage, ".", &generate_unguessable_segment())
+            .unwrap();
     let post2 = Post {
         id: post_id2.clone(),
         title: ascii_title.to_string(),
@@ -1289,17 +1358,18 @@ fn test_edge_cases() {
     // Test very short titles
     let short_title = "A";
     let storage = PostCache::shared(128);
-    let id = generate_post_id(short_title, &storage);
+    let id = generate_post_id_in_dir(short_title, &storage, ".", &generate_unguessable_segment());
     assert!(id.is_ok());
     assert!(id.unwrap().starts_with("a-"));
 
     let special_only = "!@#$%^&*()";
-    let result = generate_post_id(special_only, &storage);
+    let result =
+        generate_post_id_in_dir(special_only, &storage, ".", &generate_unguessable_segment());
     assert!(result.is_ok());
 
     // Test numeric titles
     let numeric = "12345";
-    let id = generate_post_id(numeric, &storage);
+    let id = generate_post_id_in_dir(numeric, &storage, ".", &generate_unguessable_segment());
     assert!(id.is_ok());
     assert!(id.unwrap().starts_with("12345-"));
 }

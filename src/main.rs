@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate rocket;
 
+mod access_log;
 mod archiver;
 pub(crate) mod cache;
 pub(crate) mod config;
@@ -10,6 +11,7 @@ mod pages;
 pub(crate) mod publish;
 pub(crate) mod relays;
 pub(crate) mod save;
+pub(crate) mod seal;
 pub(crate) mod template;
 pub(crate) mod tor_circuits;
 
@@ -148,7 +150,7 @@ pub(crate) const UNGUESSABLE_HEX_LEN: usize = UNGUESSABLE_BYTES * 2;
 ///
 /// A valid identifier is a non-empty, length-bounded slug composed only of
 /// ASCII letters, digits, hyphens, and underscores. Every identifier the
-/// application produces satisfies this: [`generate_post_id`] emits
+/// application produces satisfies this: [`generate_post_id_in_dir`] emits
 /// `[a-z0-9-]`, the static pages are lowercase words, and the Telegraph
 /// archiver yields `[A-Za-z0-9_-]` slugs.
 ///
@@ -196,33 +198,11 @@ fn id_is_taken(storage: &PostStorage, post_id: &str, base_dir: &str) -> bool {
         || save::post_file_exists_in_dir(post_id, base_dir)
 }
 
-pub(crate) fn generate_post_id(title: &str, storage: &PostStorage) -> Result<String, String> {
-    generate_post_id_in_dir(title, storage, ".", &generate_unguessable_segment())
-}
-
 pub(crate) fn generate_post_id_in_dir(
     title: &str,
     storage: &PostStorage,
     base_dir: &str,
     random: &str,
-) -> Result<String, String> {
-    generate_post_id_with_segment_in_dir(title, storage, random, base_dir)
-}
-
-#[cfg(test)]
-fn generate_post_id_with_segment(
-    title: &str,
-    storage: &PostStorage,
-    random: &str,
-) -> Result<String, String> {
-    generate_post_id_with_segment_in_dir(title, storage, random, ".")
-}
-
-fn generate_post_id_with_segment_in_dir(
-    title: &str,
-    storage: &PostStorage,
-    random: &str,
-    base_dir: &str,
 ) -> Result<String, String> {
     // Transliterate ALL characters to ASCII equivalents (safe for all input)
     let transliterated_title = deunicode(title);
@@ -433,7 +413,9 @@ async fn main() -> Result<(), rocket::Error> {
         return Ok(());
     }
 
-    // Default behavior - launch web server
+    // Default behavior - launch web server. Install first so Rocket's
+    // request line cannot print a sealed note's k.
+    access_log::install();
     let _rocket = rocket().launch().await?;
     Ok(())
 }
@@ -545,6 +527,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
             ..rocket::Config::default()
         })
         .attach(SecurityHeadersFairing)
+        .attach(access_log::LocationLog)
         .manage(storage)
         .manage(config)
         .mount(
@@ -556,6 +539,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::tor_circuits,
                 pages::assign_tor_circuits,
                 pages::sealed_view,
+                pages::sealed_open,
                 pages::view_post,
                 pages::markup_page,
                 pages::legal_page,
@@ -566,6 +550,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::nojs_sealed_view,
                 pages::nojs_view_post,
                 pages::nojs_create_post,
+                pages::nojs_add_relay,
                 pages::parser_js,
                 pages::parser_wasm,
                 pages::home_css,

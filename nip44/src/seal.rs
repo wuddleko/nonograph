@@ -58,5 +58,5 @@ fn conversation_key(secret: &[u8; SECRET_LEN]) -> [u8; SECRET_LEN] {
 }
 
 #[cfg(test)]
-#[path = "../../test/seal.rs"]
+#[path = "../../test/nip44_seal.rs"]
 mod tests;

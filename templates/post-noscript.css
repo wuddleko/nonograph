@@ -2,8 +2,9 @@
 .secret {
     filter: none !important;
     user-select: text !important;
-    background: #f0f0f0 !important;
-    color: #333 !important;
+    background: var(--ground) !important;
+    color: var(--ink) !important;
+    box-shadow: inset 0 0 0 1px var(--ink);
     cursor: default !important;
 }
 .secret::before {

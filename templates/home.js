@@ -4,10 +4,17 @@
             const form = document.getElementById("publishForm");
 
             const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
-            const MAX_EXTRA_RELAYS = 8;
-            const MAX_FETCH_RELAYS = 6;
+            let maxFetchRelays = 6;
+            let relaysForPublicPublish = () => [];
+            let publicRelayUrl = () => false;
+            let nostrLoading;
 
-            function loadExtraRelays() {
+            function extraRelayLimit() {
+                const configured = Math.min(serverRelays().length, maxFetchRelays);
+                return maxFetchRelays - configured;
+            }
+
+            function readExtraRelays() {
                 try {
                     const raw = localStorage.getItem(EXTRA_RELAYS_KEY);
                     const parsed = JSON.parse(raw || "[]");
@@ -18,6 +25,15 @@
                 } catch (error) {
                     return [];
                 }
+            }
+
+            function loadExtraRelays() {
+                const stored = readExtraRelays();
+                const kept = stored.slice(0, extraRelayLimit());
+                if (kept.length !== stored.length) {
+                    saveExtraRelays(kept);
+                }
+                return kept;
             }
 
             function saveExtraRelays(relays) {
@@ -33,11 +49,15 @@
             }
 
             function mergePublishRelays() {
-                const merged = [...serverRelays()];
-                for (const relay of loadExtraRelays()) {
-                    if (!merged.includes(relay)) {
-                        merged.push(relay);
+                const merged = [];
+                const seen = new Set();
+                for (const relay of [...serverRelays(), ...loadExtraRelays()]) {
+                    const key = relayKey(relay);
+                    if (seen.has(key)) {
+                        continue;
                     }
+                    seen.add(key);
+                    merged.push(relay);
                 }
                 return merged;
             }
@@ -46,43 +66,37 @@
                 return mergePublishRelays().length > 0;
             }
 
-            // Same cap as nostr.js relaysForPublicPublish: extras past six can
-            // keep a spinner, but they must not hold On Nostr.
-            function relaysForPublicPublish(relays) {
-                const out = [];
-                for (const relay of relays) {
-                    if (out.length === MAX_FETCH_RELAYS) {
-                        break;
-                    }
-                    if (!out.includes(relay)) {
-                        out.push(relay);
-                    }
-                }
-                return out;
-            }
-
             globalThis.nonographPublishPublicNote = async function (fields) {
-                const { publishPublicNote } = await import(
-                    new URL(
-                        `./nostr.js${new URL(import.meta.url).search}`,
-                        import.meta.url,
-                    )
-                );
+                const { publishPublicNote } = await loadNostr();
                 const timeoutMs = Number(form.dataset.timeout) || 10_000;
                 return publishPublicNote({
                     title: fields.title,
                     author: fields.author,
                     content: fields.content,
-                    contentMax: contentLimit,
+                    contentMax: Number(form.dataset.sealMax),
                     relays: mergePublishRelays(),
                     timeoutMs,
                     csrfToken: form.csrf_token ? form.csrf_token.value : "",
                 });
             };
-            const progressCircle = document.getElementById("progressCircle");
-            const mobileProgressCircle = document.getElementById(
-                "mobileProgressCircle",
-            );
+
+            async function loadNostr() {
+                if (!nostrLoading) {
+                    nostrLoading = (async () => {
+                        const nostr = await import(
+                            new URL(
+                                `./nostr.js${new URL(import.meta.url).search}`,
+                                import.meta.url,
+                            )
+                        );
+                        relaysForPublicPublish = nostr.relaysForPublicPublish;
+                        publicRelayUrl = nostr.publicRelayUrl;
+                        maxFetchRelays = nostr.MAX_FETCH_RELAYS;
+                        return nostr;
+                    })();
+                }
+                return nostrLoading;
+            }
 
             // Check if device is mobile
             function isMobile() {
@@ -107,28 +121,9 @@
                 });
             }
 
-            function updateProgressCircle(percentage, circleElement) {
-                if (!circleElement) return;
-
-                const progress = circleElement.querySelector(".progress");
-                const circumference = 2 * Math.PI * 6; // radius = 6
-                const offset =
-                    circumference - (percentage / 100) * circumference;
-
-                progress.style.strokeDashoffset = offset;
-
-                if (percentage >= 100) {
-                    progress.style.stroke = "#e74c3c"; // Red
-                } else if (percentage >= 75) {
-                    progress.style.stroke = "#f39c12"; // Yellow/Orange
-                } else {
-                    progress.style.stroke = "#666"; // Dark grey
-                }
-            }
-
             const contentLimit = Number(editor.getAttribute("maxlength")) || 0;
             const publishButtons = document.querySelectorAll(
-                'button[type="submit"], .nostr-publish',
+                'button[type="submit"][form="publishForm"]',
             );
             const errorEl = form.querySelector(".form-error");
             const circuitByRelay = new Map();
@@ -151,7 +146,7 @@
             function syncNostrButtons() {
                 const show = hasAnyPublishRelay();
                 const waiting = show && !everyRelayHasPath();
-                document.querySelectorAll(".nostr-publish").forEach((button) => {
+                publishButtons.forEach((button) => {
                     button.hidden = !show;
                     button.classList.toggle("circuits-pending", waiting);
                     button.setAttribute("aria-disabled", waiting ? "true" : "false");
@@ -169,7 +164,11 @@
                 if (!match) {
                     return url;
                 }
-                const host = match[1].replace(/\.+$/, "").toLowerCase();
+                let host = match[1];
+                if (host.endsWith(":443")) {
+                    host = host.slice(0, -4);
+                }
+                host = host.replace(/\.+$/, "").toLowerCase();
                 let tail = match[2];
                 if (tail === "/") {
                     tail = "";
@@ -217,12 +216,7 @@
                     }
                     return;
                 }
-                const { publicRelayUrl } = await import(
-                    new URL(
-                        `./nostr.js${new URL(import.meta.url).search}`,
-                        import.meta.url,
-                    )
-                );
+                await loadNostr();
                 if (!publicRelayUrl(value)) {
                     if (errorEl) {
                         errorEl.textContent = "Use a public wss:// relay URL.";
@@ -230,26 +224,30 @@
                     return;
                 }
                 const extra = loadExtraRelays();
-                if (extra.includes(value)) {
+                const key = relayKey(value);
+                if (extra.some((entry) => relayKey(entry) === key)) {
                     if (errorEl) {
                         errorEl.textContent = "Already in your list.";
                     }
                     return;
                 }
-                if (serverRelays().includes(value)) {
+                if (serverRelays().some((entry) => relayKey(entry) === key)) {
                     if (errorEl) {
                         errorEl.textContent = "That relay is already configured on this site.";
                     }
                     return;
                 }
-                if (extra.length >= MAX_EXTRA_RELAYS) {
+                const limit = extraRelayLimit();
+                if (extra.length >= limit) {
                     if (errorEl) {
                         errorEl.textContent =
-                            "Remove one first (max " + MAX_EXTRA_RELAYS + ").";
+                            limit === 0
+                                ? "This site already uses every relay slot."
+                                : "Remove one first (max " + limit + ").";
                     }
                     return;
                 }
-                extra.push(value);
+                extra.push(key);
                 saveExtraRelays(extra);
                 input.value = "";
                 if (errorEl) {
@@ -312,6 +310,7 @@
                                         ? form.csrf_token.value
                                         : "",
                                 }),
+                                signal: AbortSignal.timeout(4000),
                             });
                         } catch (error) {
                             break;
@@ -325,6 +324,7 @@
                 }
             }
             async function refreshRelayCircuits() {
+                await loadNostr();
                 await sendRelayList();
                 let payload;
                 try {
@@ -408,6 +408,39 @@
                 }
             }
 
+            function acceptedRelayHints(accepted) {
+                const instance = new Set(
+                    relaysForPublicPublish(serverRelays()).map((relay) => relayKey(relay)),
+                );
+                const hints = [];
+                for (const relay of accepted || []) {
+                    if (typeof relay !== "string" || !publicRelayUrl(relay)) {
+                        continue;
+                    }
+                    const key = relayKey(relay);
+                    if (instance.has(key) || hints.includes(key)) {
+                        continue;
+                    }
+                    hints.push(key);
+                }
+                return hints;
+            }
+
+            function openedSealHref(result) {
+                const query = acceptedRelayHints(result.accepted)
+                    .map((relay) => "r=" + encodeURIComponent(relay))
+                    .join("&");
+                return (
+                    "/s/" +
+                    result.locator +
+                    "/" +
+                    result.event.id +
+                    (query ? "?" + query : "") +
+                    "#" +
+                    result.key
+                );
+            }
+
             async function publishOnNostr() {
                 if (publishing || !everyRelayHasPath()) {
                     return;
@@ -445,6 +478,8 @@
                     if (
                         !result.locator ||
                         !result.key ||
+                        !result.event ||
+                        !/^[0-9a-f]{64}$/.test(result.event.id) ||
                         !result.accepted ||
                         !result.accepted.length
                     ) {
@@ -452,10 +487,17 @@
                         return;
                     }
                     leaveBusy = true;
-                    location.assign("/s/" + result.locator + "#" + result.key);
+                    location.assign(openedSealHref(result));
                 } catch (error) {
                     console.error(error);
-                    showPublishError("Publishing failed. Try again.");
+                    const tooLong =
+                        error instanceof Error &&
+                        error.message === "The sealed note is too long.";
+                    showPublishError(
+                        tooLong
+                            ? "The post is too long."
+                            : "Publishing failed. Try again.",
+                    );
                 } finally {
                     if (!leaveBusy) {
                         setPublishBusy(false);
@@ -463,9 +505,6 @@
                 }
             }
 
-            document.querySelectorAll(".nostr-publish").forEach((button) => {
-                button.addEventListener("click", publishOnNostr);
-            });
 
             function updateCharCount() {
                 const count = editor.value.length;
@@ -473,20 +512,11 @@
                     count.toLocaleString() +
                     " / " +
                     contentLimit.toLocaleString();
-                const percentage = (count / contentLimit) * 100;
 
-                // Update desktop character count
-                if (charCount) {
-                    const span = charCount.querySelector("span");
+                for (const root of [charCount, mobileCharCount]) {
+                    if (!root) continue;
+                    const span = root.querySelector(".live-count");
                     if (span) span.textContent = countText;
-                    updateProgressCircle(percentage, progressCircle);
-                }
-
-                // Update mobile character count
-                if (mobileCharCount) {
-                    const span = mobileCharCount.querySelector("span");
-                    if (span) span.textContent = countText;
-                    updateProgressCircle(percentage, mobileProgressCircle);
                 }
 
                 // Update button state and character count styling
@@ -508,20 +538,8 @@
             editor.addEventListener("md-change", updateCharCount);
 
             form.addEventListener("submit", function (e) {
-                if (publishing) {
-                    e.preventDefault();
-                    return false;
-                }
-                if (editor.value.length > contentLimit) {
-                    e.preventDefault();
-                    alert(
-                        "Content exceeds " +
-                            contentLimit.toLocaleString() +
-                            " character limit.",
-                    );
-                    return false;
-                }
-                setPublishBusy(true);
+                e.preventDefault();
+                publishOnNostr();
             });
 
             updateCharCount();
