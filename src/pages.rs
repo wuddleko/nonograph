@@ -2,7 +2,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -16,12 +16,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::csrf;
-use crate::publish;
 use crate::template;
-use crate::{
-    is_nostr_identifier, is_valid_post_id, parse_frontmatter, render_options,
-    yaml_frontmatter_field, Post, PostStorage,
-};
+use crate::{parse_frontmatter, render_options};
 
 pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
 pub const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
@@ -215,9 +211,6 @@ fn home_error_message(error: Option<&str>) -> String {
         "relay_invalid" => "Use a public wss:// relay URL.".to_string(),
         "relay_configured" => "That relay is already configured on this site.".to_string(),
         "nostr_publish_failed" => "Publishing failed. Try again.".to_string(),
-        "save_failed" => "Saving the post failed. Try again.".to_string(),
-        "no_available_slots" => "Could not pick an address for this post. Try again.".to_string(),
-        "javascript_required" => "This page needs JavaScript. Use the no-JS page.".to_string(),
         _ => "Something went wrong. Try again.".to_string(),
     }
 }
@@ -345,10 +338,13 @@ fn home_form_context(
         String::new()
     };
     context.insert("csrf_token".to_string(), csrf_token);
-    // Update form action to point to /nojs/create
     context.insert(
         "form_action".to_string(),
-        if nojs { "/nojs/create" } else { "/create" }.to_string(),
+        if nojs { "/nojs/create" } else { "/nojs" }.to_string(),
+    );
+    context.insert(
+        "form_method".to_string(),
+        if nojs { "post" } else { "get" }.to_string(),
     );
     let version = assets().version.clone();
     context.insert("asset_version".to_string(), version.clone());
@@ -391,7 +387,7 @@ fn about_durability(nojs: bool) -> &'static str {
     if nojs {
         "The host seals the note and does not keep a copy. The writing is ordinary markup, not a proprietary format."
     } else {
-        "Your pages are stored as plaintext markup, no proprietary formats."
+        "The browser seals the note and this host does not keep a copy. The writing is ordinary markup, not a proprietary format."
     }
 }
 
@@ -425,8 +421,6 @@ pub(crate) struct NewPost {
     relay_box: String,
     #[field(default = false)]
     relay_remove: bool,
-    #[field(default = false)]
-    javascript_off: bool,
 }
 
 fn csrf_failure(config: &Config, token: &str) -> Option<&'static str> {
@@ -437,66 +431,29 @@ fn csrf_failure(config: &Config, token: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn create_location_in_dir(
-    nojs: bool,
-    form: &NewPost,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> String {
-    let home = if nojs { "/nojs" } else { "/" };
-    if !nojs && form.javascript_off {
-        return format!("{home}?error=javascript_required");
-    }
+pub(crate) fn create_location(form: &NewPost, config: &Config) -> String {
+    let home = "/nojs";
     if let Some(error) = csrf_failure(config, &form.csrf_token) {
         return format!("{home}?error={error}");
     }
 
-    let title = if nojs {
-        form.title.trim()
-    } else {
-        form.title.as_str()
-    };
-    let alias = if nojs {
-        form.alias.trim()
-    } else {
-        form.alias.as_str()
-    };
-    let alias_check = if alias.trim().is_empty() {
-        None
-    } else {
-        Some(alias)
-    };
+    let title = form.title.trim();
+    let alias = form.alias.trim();
+    let alias_check = if alias.is_empty() { None } else { Some(alias) };
     if let Err(error) = config.validate_post(title, &form.content, alias_check) {
         return format!("{home}?error={error}");
     }
-    if nojs {
-        let relay = nojs_chosen_relay(form);
-        if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
-            return format!("{home}?error=relay_invalid");
-        }
-        if nojs_publish_relays(relay, &config.nostr.relays).is_none() {
-            return format!("{home}?error=nostr_publish_failed");
-        }
-        return match publish_nojs_note(form, config) {
-            Ok(published) => nojs_sealed_location(&published, &config.nostr.relays)
-                .unwrap_or_else(|| format!("{home}?error=nostr_publish_failed")),
-            Err(error) => format!("{home}?error={error}"),
-        };
+    let relay = nojs_chosen_relay(form);
+    if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
+        return format!("{home}?error=relay_invalid");
     }
-
-    let rendered_content =
-        nonograph_parser::render_markdown_with_config(&form.content, &render_options(config));
-    match publish::publish_note_in_dir(
-        storage,
-        title,
-        alias,
-        &rendered_content,
-        &form.content,
-        base_dir,
-    ) {
-        Ok(post_id) => publish::published_href(nojs, &post_id),
-        Err(failure) => publish::publish_failure_href(nojs, failure),
+    if nojs_publish_relays(relay, &config.nostr.relays).is_none() {
+        return format!("{home}?error=nostr_publish_failed");
+    }
+    match publish_nojs_note(form, config) {
+        Ok(published) => nojs_sealed_location(&published, &config.nostr.relays)
+            .unwrap_or_else(|| format!("{home}?error=nostr_publish_failed")),
+        Err(error) => format!("{home}?error={error}"),
     }
 }
 
@@ -679,38 +636,6 @@ fn nojs_sealed_location(published: &NojsPublished, configured: &[String]) -> Opt
     ))
 }
 
-async fn handle_create(
-    nojs: bool,
-    form: &NewPost,
-    storage: &PostStorage,
-    config: &Config,
-) -> rocket::response::Redirect {
-    let storage = storage.clone();
-    let config = config.clone();
-    let form = form.clone();
-    match rocket::tokio::task::spawn_blocking(move || {
-        create_location_in_dir(nojs, &form, &storage, &config, ".")
-    })
-    .await
-    {
-        Ok(location) => rocket::response::Redirect::to(location),
-        Err(_) if nojs => rocket::response::Redirect::to("/nojs?error=nostr_publish_failed"),
-        Err(_) => publish::publish_failure_redirect(
-            nojs,
-            publish::PublishFailure::Save("publishing was interrupted".to_string()),
-        ),
-    }
-}
-
-#[post("/create", data = "<form>")]
-pub async fn create_post(
-    form: rocket::form::Form<NewPost>,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<rocket::response::Redirect, content::RawHtml<String>> {
-    Ok(handle_create(false, &form, storage, config).await)
-}
-
 fn nojs_chosen_relay(form: &NewPost) -> &str {
     let typed = form.relay_box.trim();
     if !typed.is_empty() {
@@ -864,15 +789,13 @@ pub fn nojs_add_relay(
 #[post("/nojs/create", data = "<form>")]
 pub async fn nojs_create_post(
     form: rocket::form::Form<NewPost>,
-    storage: &State<PostStorage>,
     config: &State<Config>,
 ) -> rocket::Either<rocket::response::Redirect, content::RawHtml<String>> {
     let form = form.into_inner();
-    let storage = storage.inner().clone();
     let config_owned = config.inner().clone();
     let moved = form.clone();
     let location = match rocket::tokio::task::spawn_blocking(move || {
-        create_location_in_dir(true, &moved, &storage, &config_owned, ".")
+        create_location(&moved, &config_owned)
     })
     .await
     {
@@ -1038,6 +961,17 @@ pub fn api_page(
     serve_static_page("api", config, false)
 }
 
+#[get("/nojs/<page>")]
+pub fn nojs_static_page(
+    page: &str,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
+    if !is_static_page(page) {
+        return Err((Status::NotFound, content::RawHtml(not_found_html())));
+    }
+    serve_static_page(page, config, true)
+}
+
 #[derive(Debug)]
 enum BuiltPage {
     Ready(String),
@@ -1171,12 +1105,6 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
         post_fallback_css(nojs, &version),
     );
     context.insert("nostr_link".to_string(), String::new());
-}
-
-#[derive(Responder)]
-pub enum ViewPage {
-    Page(rocket::Either<content::RawHtml<String>, content::RawText<String>>),
-    Redirect(rocket::response::Redirect),
 }
 
 type ViewErr = (
@@ -1687,49 +1615,6 @@ pub async fn sealed_open(
     )
 }
 
-#[get("/<post_id>")]
-pub async fn view_post(
-    post_id: &str,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<ViewPage, ViewErr> {
-    render_post(post_id, storage, config, false).await
-}
-
-#[get("/nojs/<post_id>")]
-pub async fn nojs_view_post(
-    post_id: &str,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-) -> Result<ViewPage, ViewErr> {
-    render_post(post_id, storage, config, true).await
-}
-
-pub(crate) fn leftover_wrap_file_id(post_id: &str) -> Option<String> {
-    crate::nostr::decode_nevent(post_id).map(|nevent| nevent.event_id_hex)
-}
-
-pub(crate) fn short_view_href(nojs: bool, post_id: &str, requested: &str) -> Option<String> {
-    if post_id == requested || !is_valid_post_id(post_id) {
-        None
-    } else {
-        Some(publish::published_href(nojs, post_id))
-    }
-}
-
-pub(crate) fn leftover_wrap_post_in_dir(
-    post_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    let file_id = leftover_wrap_file_id(post_id)?;
-    if !is_valid_post_id(&file_id) {
-        return None;
-    }
-    load_post_from_disk(&file_id, storage, config, base_dir)
-}
-
 fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
     if relays.len() == crate::nostr::MAX_FETCH_RELAYS {
         return;
@@ -1809,256 +1694,6 @@ pub(crate) fn relays_to_assign(page_relays: &[String], configured: &[String]) ->
     relays
 }
 
-pub(crate) fn may_fetch_public_kind(kind: Option<u32>) -> bool {
-    matches!(kind, None | Some(crate::nostr::KIND_LONG_FORM))
-}
-
-pub(crate) fn is_gift_wrap(kind: Option<u32>) -> bool {
-    kind == Some(crate::nostr::KIND_GIFT_WRAP)
-}
-
-pub(crate) fn refuse_unopened_wrap(kind: Option<u32>, has_local_file: bool) -> Option<String> {
-    if has_local_file || !is_gift_wrap(kind) {
-        None
-    } else {
-        Some(wrap_refused_html())
-    }
-}
-
-pub(crate) fn post_from_public_note(
-    fetched: crate::nostr::FetchedNote,
-    storage: &PostStorage,
-    config: &Config,
-    cache_id: &str,
-    nostr_id: &str,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    if fetched.content.len() > config.limits.content_max_length {
-        return None;
-    }
-    if !is_valid_post_id(cache_id) || !is_valid_post_id(&fetched.id_hex) {
-        return None;
-    }
-    let keys = public_lookup_ids(cache_id, &fetched);
-    if keys.is_empty() {
-        return None;
-    }
-    if let Some(existing) = load_any_post(&keys, storage, config, base_dir) {
-        return Some(ensure_short_link(
-            existing, &keys, nostr_id, storage, config, base_dir,
-        ));
-    }
-    let title = nonograph_parser::sanitize_text(&fetched.title);
-    let title = if title.is_empty() {
-        "Untitled".to_string()
-    } else {
-        title
-    };
-    let author = nonograph_parser::sanitize_text(&fetched.author);
-    if title.len() > config.limits.title_max_length {
-        return None;
-    }
-    if author.len() > config.limits.alias_max_length {
-        return None;
-    }
-    let created_at = DateTime::from_timestamp(fetched.created_at, 0).unwrap_or_else(Utc::now);
-    let rendered_content =
-        nonograph_parser::render_markdown_with_config(&fetched.content, &render_options(config));
-    let stored_nostr_id = is_nostr_identifier(nostr_id).then(|| nostr_id.to_string());
-
-    let _persist = public_note_files().lock().unwrap();
-    if let Some(existing) = load_any_post(&keys, storage, config, base_dir) {
-        return Some(shorten_and_store(
-            with_nostr_id(existing, nostr_id),
-            &keys,
-            storage,
-            base_dir,
-        ));
-    }
-    let post = Arc::new(Post {
-        id: next_short_id(&title, &keys, storage, base_dir)
-            .unwrap_or_else(|| fetched.id_hex.clone()),
-        title,
-        author,
-        content: rendered_content,
-        raw_content: fetched.content,
-        created_at,
-        nostr_id: stored_nostr_id,
-    });
-    store_public_note(post, &keys, storage, base_dir)
-        .or_else(|| load_any_post(&keys, storage, config, base_dir))
-}
-
-fn public_note_files() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn public_lookup_ids(cache_id: &str, fetched: &crate::nostr::FetchedNote) -> Vec<String> {
-    let mut ids = Vec::new();
-    push_lookup_id(&mut ids, cache_id);
-    push_lookup_id(&mut ids, &fetched.id_hex);
-    if !fetched.identifier.is_empty() {
-        push_lookup_id(
-            &mut ids,
-            &crate::nostr::naddr_cache_id(&crate::nostr::Naddr {
-                identifier: fetched.identifier.clone(),
-                pubkey: fetched.pubkey,
-                kind: crate::nostr::KIND_LONG_FORM,
-                relays: Vec::new(),
-            }),
-        );
-    }
-    ids
-}
-
-fn push_lookup_id(ids: &mut Vec<String>, id: &str) {
-    if is_valid_post_id(id) && ids.iter().all(|have| have != id) {
-        ids.push(id.to_string());
-    }
-}
-
-fn load_any_post(
-    ids: &[String],
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    ids.iter()
-        .find_map(|id| load_post_from_disk(id, storage, config, base_dir))
-}
-
-fn next_short_id(
-    title: &str,
-    keys: &[String],
-    storage: &PostStorage,
-    base_dir: &str,
-) -> Option<String> {
-    for key in keys {
-        if let Some(old) = crate::save::alias_target_in_dir(key, base_dir) {
-            return Some(old);
-        }
-    }
-    crate::generate_post_id_in_dir(
-        title,
-        storage,
-        base_dir,
-        &crate::generate_unguessable_segment(),
-    )
-    .ok()
-}
-
-fn persist_pointer(key: &str, short_id: &str, base_dir: &str) -> Result<(), ()> {
-    if key == short_id {
-        return Ok(());
-    }
-    match crate::save::alias_target_in_dir(key, base_dir) {
-        Some(target) if target == short_id => Ok(()),
-        Some(target) if crate::save::post_file_exists_in_dir(&target, base_dir) => Err(()),
-        _ => {
-            let replace = crate::save::post_file_exists_in_dir(key, base_dir);
-            crate::save::write_alias_pointer(key, short_id, base_dir, replace).map_err(|_| ())
-        }
-    }
-}
-
-fn persist_public_note_files(post: &Post, keys: &[String], base_dir: &str) -> Result<(), ()> {
-    let created = match crate::save::save_post_to_file_in_dir(post, base_dir) {
-        Ok(()) => true,
-        Err(crate::save::SaveError::AlreadyExists) => false,
-        Err(_) => return Err(()),
-    };
-    for key in keys {
-        if persist_pointer(key, &post.id, base_dir).is_err() {
-            if created {
-                crate::save::remove_post_file_in_dir(&post.id, base_dir);
-            }
-            return Err(());
-        }
-    }
-    Ok(())
-}
-
-fn with_nostr_id(post: Arc<Post>, nostr_id: &str) -> Arc<Post> {
-    if post.nostr_id.as_deref().is_some_and(is_nostr_identifier) {
-        return post;
-    }
-    if !is_nostr_identifier(nostr_id) {
-        return post;
-    }
-    let mut copy = (*post).clone();
-    copy.nostr_id = Some(nostr_id.to_string());
-    Arc::new(copy)
-}
-
-fn needs_persist(post: &Post, keys: &[String], base_dir: &str) -> bool {
-    keys.iter().any(|key| {
-        crate::save::alias_target_in_dir(key, base_dir).as_deref() != Some(post.id.as_str())
-    })
-}
-
-fn ensure_short_link(
-    post: Arc<Post>,
-    keys: &[String],
-    nostr_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> Arc<Post> {
-    let post = with_nostr_id(post, nostr_id);
-    if !needs_persist(&post, keys, base_dir) {
-        return post;
-    }
-    let _persist = public_note_files().lock().unwrap();
-    let post = match load_any_post(keys, storage, config, base_dir) {
-        Some(existing) => with_nostr_id(existing, nostr_id),
-        None => post,
-    };
-    shorten_and_store(post, keys, storage, base_dir)
-}
-
-fn shorten_and_store(
-    post: Arc<Post>,
-    keys: &[String],
-    storage: &PostStorage,
-    base_dir: &str,
-) -> Arc<Post> {
-    let post = if keys.iter().any(|key| key == &post.id) {
-        match next_short_id(&post.title, keys, storage, base_dir).filter(|id| !keys.contains(id)) {
-            Some(short_id) => {
-                let mut upgraded = (*post).clone();
-                upgraded.id = short_id;
-                Arc::new(upgraded)
-            }
-            None => post,
-        }
-    } else {
-        post
-    };
-    store_public_note(Arc::clone(&post), keys, storage, base_dir).unwrap_or(post)
-}
-
-fn store_public_note(
-    post: Arc<Post>,
-    keys: &[String],
-    storage: &PostStorage,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    persist_public_note_files(&post, keys, base_dir).ok()?;
-    remember_post(storage, Arc::clone(&post), keys);
-    Some(post)
-}
-
-fn remember_post(storage: &PostStorage, post: Arc<Post>, keys: &[String]) {
-    let mut cache = storage.write().unwrap();
-    cache.insert(post.id.clone(), Arc::clone(&post));
-    for key in keys {
-        if key != &post.id {
-            cache.insert(key.clone(), Arc::clone(&post));
-        }
-    }
-}
-
 const MAX_PUBLIC_FETCHES: usize = 8;
 static PUBLIC_FETCHES: AtomicUsize = AtomicUsize::new(0);
 
@@ -2101,294 +1736,6 @@ fn release_public_fetch(counter: &AtomicUsize) {
 
 struct PublicFetchBusy;
 
-async fn fetch_public(
-    hints: &[String],
-    kind: Option<u32>,
-    cache_id: Option<String>,
-    nostr_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    fetch: impl FnOnce(Vec<String>, Duration) -> Option<crate::nostr::FetchedNote> + Send + 'static,
-) -> Result<Option<Arc<Post>>, PublicFetchBusy> {
-    if !may_fetch_public_kind(kind) {
-        return Ok(None);
-    }
-    let relays = relays_for_public_fetch(hints, &config.nostr.relays);
-    if relays.is_empty() {
-        return Ok(None);
-    }
-    let Some(_slot) = PublicFetchSlot::acquire() else {
-        return Err(PublicFetchBusy);
-    };
-    let timeout = relay_timeout(config);
-    let fetched = match rocket::tokio::task::spawn_blocking(move || fetch(relays, timeout)).await {
-        Ok(note) => note,
-        Err(_) => return Ok(None),
-    };
-    Ok(fetched.and_then(|note| {
-        let cache_id = cache_id.unwrap_or_else(|| note.id_hex.clone());
-        post_from_public_note(note, storage, config, &cache_id, nostr_id, ".")
-    }))
-}
-
-async fn render_post(
-    post_id: &str,
-    storage: &State<PostStorage>,
-    config: &State<Config>,
-    nojs: bool,
-) -> Result<ViewPage, ViewErr> {
-    let decoded = crate::nostr::decode_nevent(post_id);
-    let naddr = if decoded.is_none() {
-        crate::nostr::decode_naddr(post_id)
-    } else {
-        None
-    };
-    let leftover_id = decoded.as_ref().map(|nevent| nevent.event_id_hex.clone());
-    let naddr_id = naddr.as_ref().map(crate::nostr::naddr_cache_id);
-    let is_nostr_path = leftover_id.is_some() || naddr_id.is_some();
-    let is_raw_request = !is_nostr_path && post_id.ends_with(".md");
-    let file_id = leftover_id
-        .as_deref()
-        .or(naddr_id.as_deref())
-        .unwrap_or_else(|| post_id.strip_suffix(".md").unwrap_or(post_id));
-
-    // Reject identifiers that could escape the content directory before any
-    // filesystem access takes place. See `is_valid_post_id`.
-    if !is_valid_post_id(file_id) {
-        return Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(not_found_html())),
-        ));
-    }
-
-    if is_raw_request {
-        return match crate::save::read_post_file_in_dir(file_id, ".") {
-            Some(raw_bytes) => Ok(ViewPage::Page(rocket::Either::Right(content::RawText(
-                raw_bytes,
-            )))),
-            None => Err((
-                Status::NotFound,
-                rocket::Either::Left(content::RawText("Page not found".to_string())),
-            )),
-        };
-    }
-
-    if !is_nostr_path && is_static_page(file_id) {
-        return match serve_static_page(file_id, config, nojs) {
-            Ok(html) => Ok(ViewPage::Page(rocket::Either::Left(html))),
-            Err((status, body)) => Err((status, rocket::Either::Right(body))),
-        };
-    }
-
-    let cached = {
-        let posts = storage.read().unwrap();
-        posts.lookup(file_id, nojs, file_id)
-    };
-    if let Some(hit) = cached {
-        let live = crate::save::post_file_exists_in_dir(&hit.post.id, ".");
-        let leftover = is_nostr_path && hit.post.id == file_id;
-        if live && !leftover {
-            hit.note_access();
-            let post = if is_nostr_path {
-                with_nostr_id(Arc::clone(&hit.post), post_id)
-            } else {
-                Arc::clone(&hit.post)
-            };
-            if post.nostr_id != hit.post.nostr_id {
-                remember_post(storage, Arc::clone(&post), &[]);
-            }
-            if let Some(href) = short_view_href(nojs, &post.id, post_id) {
-                return Ok(ViewPage::Redirect(rocket::response::Redirect::to(href)));
-            }
-            if post.nostr_id == hit.post.nostr_id {
-                if let Some(html) = hit.html {
-                    return Ok(ViewPage::Page(rocket::Either::Left(content::RawHtml(
-                        html.to_string(),
-                    ))));
-                }
-            }
-            return view_post_page(storage, file_id, &post, nojs, post_id);
-        }
-    }
-
-    let kind = decoded
-        .as_ref()
-        .and_then(|nevent| nevent.kind)
-        .or_else(|| naddr.as_ref().map(|naddr| naddr.kind));
-    let local = load_post_from_disk(file_id, storage, config, ".");
-    if let Some(html) = refuse_unopened_wrap(kind, local.is_some()) {
-        return Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(html)),
-        ));
-    }
-    let fetched = if let Some(post) = local {
-        let post = if is_nostr_path && may_fetch_public_kind(kind) {
-            ensure_short_link(post, &[file_id.to_string()], post_id, storage, config, ".")
-        } else {
-            post
-        };
-        Ok(Some(post))
-    } else if let Some(nevent) = &decoded {
-        let event_id = nevent.event_id_hex.clone();
-        fetch_public(
-            &nevent.relays,
-            nevent.kind,
-            None,
-            post_id,
-            storage,
-            config,
-            move |relays, timeout| crate::nostr::fetch_public_note(&relays, &event_id, timeout),
-        )
-        .await
-    } else if let Some(naddr) = &naddr {
-        let hints = naddr.relays.clone();
-        let kind = Some(naddr.kind);
-        let cache_id = crate::nostr::naddr_cache_id(naddr);
-        let naddr = naddr.clone();
-        fetch_public(
-            &hints,
-            kind,
-            Some(cache_id),
-            post_id,
-            storage,
-            config,
-            move |relays, timeout| crate::nostr::fetch_public_addr(&relays, &naddr, timeout),
-        )
-        .await
-    } else {
-        Ok(None)
-    };
-    let post = match fetched {
-        Ok(post) => post,
-        Err(PublicFetchBusy) => {
-            return Err((
-                Status::ServiceUnavailable,
-                rocket::Either::Left(content::RawText("Service unavailable".to_string())),
-            ));
-        }
-    };
-
-    match post {
-        Some(post) => view_post_page(storage, file_id, &post, nojs, post_id),
-        None => Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(not_found_html())),
-        )),
-    }
-}
-
-fn view_post_page(
-    storage: &State<PostStorage>,
-    file_id: &str,
-    post: &Post,
-    nojs: bool,
-    requested: &str,
-) -> Result<ViewPage, ViewErr> {
-    if let Some(href) = short_view_href(nojs, &post.id, requested) {
-        return Ok(ViewPage::Redirect(rocket::response::Redirect::to(href)));
-    }
-    serve_article(storage, file_id, post, nojs, &post.id).map(ViewPage::Page)
-}
-
-fn load_post_from_disk(
-    file_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-) -> Option<Arc<Post>> {
-    load_post_from_disk_at(file_id, storage, config, base_dir, 0)
-}
-
-fn load_post_from_disk_at(
-    file_id: &str,
-    storage: &PostStorage,
-    config: &Config,
-    base_dir: &str,
-    depth: u8,
-) -> Option<Arc<Post>> {
-    let file_content = std::fs::read_to_string(crate::save::post_path(file_id, base_dir)).ok()?;
-    if depth == 0 {
-        if let Some(alias) = crate::save::alias_target(&file_content, file_id) {
-            let post = load_post_from_disk_at(&alias, storage, config, base_dir, 1)?;
-            remember_post(storage, Arc::clone(&post), &[file_id.to_string()]);
-            return Some(post);
-        }
-    }
-    let (title, author, created_at, raw_content) = parse_frontmatter(&file_content)?;
-    let nostr_id =
-        yaml_frontmatter_field(&file_content, "nostr:").filter(|id| is_nostr_identifier(id));
-    let post = Arc::new(Post {
-        id: file_id.to_string(),
-        title,
-        author,
-        content: nonograph_parser::render_markdown_with_config(
-            &raw_content,
-            &render_options(config),
-        ),
-        raw_content,
-        created_at,
-        nostr_id,
-    });
-    remember_post(storage, Arc::clone(&post), &[file_id.to_string()]);
-    Some(post)
-}
-
-fn serve_article(
-    storage: &State<PostStorage>,
-    file_id: &str,
-    post: &Post,
-    nojs: bool,
-    public_id: &str,
-) -> Result<
-    rocket::Either<content::RawHtml<String>, content::RawText<String>>,
-    (
-        Status,
-        rocket::Either<content::RawText<String>, content::RawHtml<String>>,
-    ),
-> {
-    match article_html(post, nojs, public_id) {
-        Ok(html) => {
-            storage.write().unwrap().remember_html(
-                file_id,
-                nojs,
-                public_id,
-                Arc::from(html.as_str()),
-            );
-            Ok(rocket::Either::Left(content::RawHtml(html)))
-        }
-        Err(error) => Ok(rocket::Either::Left(content::RawHtml(format!(
-            "Template error: {error}"
-        )))),
-    }
-}
-
-fn article_html(post: &Post, nojs: bool, public_id: &str) -> Result<String, String> {
-    let nostr_id = post
-        .nostr_id
-        .as_deref()
-        .filter(|id| is_nostr_identifier(id))
-        .unwrap_or("");
-    let mut context = article_context(
-        &post.title,
-        &post.author,
-        Some(post.created_at),
-        &format!("/{public_id}"),
-        &post_description(&post.raw_content),
-        nojs,
-        public_id,
-    );
-    context.insert("content".to_string(), post.content.clone());
-    let nostr_link = if nostr_id.is_empty() {
-        String::new()
-    } else {
-        let id = nonograph_parser::html_attr_escape(nostr_id);
-        format!("<a href=\"/{id}\" class=\"nostr-id\">{id}</a>")
-    };
-    context.insert("nostr_link".to_string(), nostr_link);
-    template::shared().render("post", &context)
-}
-
 fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
     format!(
         r#"<!doctype html>
@@ -2415,14 +1762,6 @@ fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
     {body}
 </body>
 </html>"#
-    )
-}
-
-pub(crate) fn wrap_refused_html() -> String {
-    centered_notice(
-        "Open this in the extension",
-        "Open this in the extension",
-        "<p>This is a private note. This site does not decrypt it.</p>\n    <p><a href=\"/\">Write Your Own</a></p>",
     )
 }
 

@@ -22,7 +22,7 @@ make down      # Stop
 make clean     # Completely remove container
 ```
 
-Content is stored at `~/nonograph/content`. The about, legal, markup, and api pages are copied there on startup when they are missing.
+`~/nonograph/content` holds optional copies of the about, legal, markup, and api pages. Those four are copied there on startup when they are missing. Published notes are not stored in this directory.
 
 Access: http://localhost:8009
 

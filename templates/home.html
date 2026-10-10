@@ -120,14 +120,10 @@
                         <h3>Formatting</h3>
                         <p class="format-with-slash">
                             Type <code>/</code> for a menu of formatting
-                            options, or use markdown directly. Add
-                            <code>.md</code> to any post URL to see the raw
-                            source.
+                            options, or use markdown directly.
                         </p>
                         <p class="format-markdown">
-                            Use markdown directly. Add
-                            <code>.md</code> to any post URL to see the raw
-                            source.
+                            Use markdown directly.
                         </p>
                     </div>
                 </div>
@@ -145,7 +141,7 @@
                 </p>
                 <form
                     action="{{form_action}}"
-                    method="post"
+                    method="{{form_method}}"
                     id="publishForm"
                     class="content"
                     data-relays="{{nostr_relays}}"
@@ -205,9 +201,6 @@
                         name="csrf_token"
                         value="{{csrf_token}}"
                     />
-                    <noscript>
-                        <input type="hidden" name="javascript_off" value="on" />
-                    </noscript>
                     {{relay_field}}
                 </form>
             </div>

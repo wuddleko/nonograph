@@ -14,7 +14,6 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 ammonia = "3.3"
 toml = "0.8"
-deunicode = "1.4"
 nonograph-parser = { path = "parser" }
 nonograph-nip44 = { path = "nip44" }
 reqwest = { version = "0.11", features = ["json"] }

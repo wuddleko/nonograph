@@ -7,7 +7,6 @@ use std::path::Path;
 pub struct Config {
     pub limits: Limits,
     pub server: Server,
-    pub cache: Cache,
     pub security: Security,
     pub theme: Theme,
     #[serde(default)]
@@ -32,12 +31,6 @@ pub struct Server {
 
 fn default_onion_hostname_file() -> String {
     "/var/lib/tor/hidden_service/hostname".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Cache {
-    pub max_cache_size_mb: usize,
-    pub cache_purge_interval_mins: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,10 +95,6 @@ impl Default for Config {
                 address: "127.0.0.1".to_string(),
                 onion_url: String::new(),
                 onion_hostname_file: default_onion_hostname_file(),
-            },
-            cache: Cache {
-                max_cache_size_mb: 128,
-                cache_purge_interval_mins: 60,
             },
             security: Security {
                 max_url_length: 4096,
@@ -225,7 +214,6 @@ impl Config {
                     "   Content limit: {} chars",
                     config.limits.content_max_length
                 );
-                println!("   Cache size: {} MB", config.cache.max_cache_size_mb);
                 config
             }
             Err(e) => {

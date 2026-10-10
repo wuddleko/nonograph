@@ -1,176 +1,71 @@
 ---
 title: API Documentation
-date: 2026-02-11
+date: 2026-10-10
 author: nonograph
 generator: nonograph v0.2.8
 ---
 
-Nonograph provides a simple HTTP API for programmatically publishing articles.
+Publishing does not write a file on this host. A note is sealed, then the ciphertext is sent to Nostr relays. The host does not keep a copy of the writing. The link you get carries the key.
 
-## Publishing a Post
-**Endpoint:** `POST /create`
+There are two ways in.
+
+## No JavaScript
+
+**Endpoint:** `POST /nojs/create`
 **Content-Type:** `application/x-www-form-urlencoded`
 
+The host seals the note and publishes it. The form on `/nojs` is this request.
+
 ### Parameters
-| Field | Type | Required | Max Length | Description |
-|-------|------|----------|------------|-------------|
-| `title` | string | Yes | 128 chars | Article title |
-| `content` | string | Yes | 32,000 chars | Article content in markdown |
-| `alias` | string | No | 32 chars | Alias name (optional) |
+| Field | Required | Description |
+|-------|----------|-------------|
+| `title` | Yes | Title. Trimmed. Default limit 128 characters. |
+| `content` | Yes | Markup. Not trimmed. Default limit 128,000 characters. |
+| `alias` | No | Optional name. Trimmed. Default limit 32 characters. |
+| `csrf_token` | When CSRF is on | Token from the form. |
+| `relay` | No | One extra public `wss://` relay. A private or local URL is rejected. |
+| `relay_box` | No | Same check as `relay`. The box wins when both are set. |
 
-### Example Request
-```bash
-curl -X POST http://localhost:8000/create \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "title=My API Article" \
-  -d "alias=API User" \
-  -d "content=This article was created via the API!
+### Success
+**Status:** `303` redirect to `/s/{locator}/{event-id}#key`
 
-## Features
+The key is the URL fragment. The host does not store it. A relay you added is included as `?r=`.
 
-- **Bold text** and *italic text*
-- [Links](https://example.com) open in new tabs
-- Code blocks with syntax highlighting
+### Failure
+The form is rendered again with an error. Common codes: `title_required`, `content_required`, `title_too_long`, `content_too_long`, `alias_too_long`, `csrf_token_invalid`, `relay_invalid`, `nostr_publish_failed`.
 
-\`\`\`python
-def hello_world():
-    print('Hello from the API!')
-\`\`\`
+## JavaScript
 
-| Feature | Status |
-|---------|--------|
-| API | ✓ Working |
-| Markdown | ✓ Supported |"
-```
+The browser seals the note, then posts the sealed event.
 
-### Successful Response
-**Status:** `302 Found`
-**Location:** `/{post-id}`
+**Endpoint:** `POST /nostr/publish`
+**Content-Type:** `application/json`
 
-The API redirects to the published article URL. Extract the post ID from the Location header.
-
-### Error Responses
-**Status:** `302 Found` (redirect to home with error parameter)
-
-| Error Parameter | Description |
-|----------------|-------------|
-| `?error=title_required` | Title is empty |
-| `?error=content_required` | Content is empty |
-| `?error=title_too_long` | Title exceeds 128 characters |
-| `?error=content_too_long` | Content exceeds 32,000 characters |
-| `?error=alias_too_long` | Alias exceeds 32 characters |
-| `?error=no_available_slots` | No available post ID slots (rare) |
-
-## Post URLs
-Published posts are accessible at: `/{post-id}`
-
-Post IDs are generated from the title and date: `title-slug-mm-dd-yyyy`
-
-## Raw Markdown Access
-Access the original markdown by appending `.md`: `/{post-id}.md`
-
-## Supported Content
-All standard Nonograph markdown features are supported:
-
-- **Text formatting:** bold, italic, underline, strikethrough, superscript
-- **Links:** `[text](url)` and `[bare-url]`
-- **Code blocks:** Fenced blocks with 180+ language support
-- **Tables:** GitHub-style markdown tables
-- **Media:** Auto-embedded images and videos from URLs
-- **Secret text:** `#hidden text#` - click to reveal
-
-## Rate Limiting
-No rate limiting is currently implemented. Please use responsibly.
-
-## Examples
-### Python
-
-```python
-import requests
-
-data = {
-    'title': 'API Test Article',
-    'alias': 'Python Script',
-    'content': '''# Hello from Python!
-
-This article was created programmatically.
-
-## Code Example
-
-\`\`\`python
-import requests
-print("API publishing works!")
-\`\`\`
-
-[Visit the docs](https://example.com)'''
+```json
+{
+  "event": {},
+  "relays": ["wss://relay.example"],
+  "csrf_token": ""
 }
-
-response = requests.post('http://localhost:8000/create', data=data)
-if response.status_code == 200:
-    post_url = response.url
-    print(f"Published: {post_url}")
 ```
 
-### JavaScript (Node.js)
-```javascript
-const axios = require('axios');
+`event` must already be a sealed note (kind 30323) with a valid signature and stamp. This endpoint does not accept plaintext. `relays` are extra public relays; the instance relays come from `Config.toml`. Private relay URLs are dropped.
 
-const data = new URLSearchParams({
-    title: 'API Test Article',
-    alias: 'Node.js Script',
-    content: `# Hello from JavaScript!
-
-This article was created with Node.js.
-
-## Features
-- API integration
-- Markdown support
-- [External links](https://nodejs.org)`
-});
-
-axios.post('http://localhost:8000/create', data)
-    .then(response => {
-        console.log('Published:', response.request.res.responseUrl);
-    })
-    .catch(error => {
-        console.error('Error:', error.response?.status);
-    });
+### Success
+**Status:** `200`
+```json
+{ "locator": "0123456789abcdef0123", "accepted": ["wss://relay.example"] }
 ```
 
-### Shell Script
-```bash
-#!/bin/bash
+`locator` is empty when no public relay accepted the note.
 
-TITLE="Daily Report $(date +%Y-%m-%d)"
-ALIAS="Automation"
-CONTENT="# Daily System Report
+### Failure
+| Status | When |
+|--------|------|
+| `400` | CSRF failed, the event is not a sealed note, or no public relay remains |
+| `503` | The publish slot is busy, or the publish task failed |
 
-Generated at: $(date)
+## Reading
+A sealed note opens at `/s/{locator}/{event-id}` with the key in the fragment. `/nojs/s/...` is the same page without scripts. The host fetches the ciphertext from relays and does not keep it.
 
-## Status
-- System: ✓ Online
-- Services: ✓ Running
-
-## Metrics
-| Metric | Value |
-|--------|-------|
-| CPU | 15% |
-| Memory | 2.1GB |
-
-[Dashboard](https://monitoring.example.com)"
-
-curl -X POST http://localhost:8000/create \
-  --data-urlencode "title=$TITLE" \
-  --data-urlencode "alias=$ALIAS" \
-  --data-urlencode "content=$CONTENT" \
-  --location \
-  --silent \
-  --write-out "Published: %{url_effective}\n"
-```
-
-## Notes
-- Posts are stored as markdown files and cached in memory
-- No authentication required - posts are public once published
-- Content is sanitized for security but preserves intended formatting
-- Images and videos must be hosted externally - only URLs are stored
-- Post IDs are generated deterministically from title and date
+The site pages `/about`, `/legal`, `/api`, and `/markup` are the only pages stored here. Their no-JS addresses are `/nojs/about` and the same for the other three.

@@ -29,9 +29,9 @@ https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
 ## Nostr（欢迎更多实例）
 
-在编辑器中点击 **On Nostr**，笔记在浏览器内签名并发送到该实例 `Config.toml` 里配置的 relay。分享的是 Nostr 链接，而不是托管在本服务器上的页面。
+发布时在浏览器里密封笔记（没有 JavaScript 时由主机密封），再把密文发到该实例 `Config.toml` 里配置的 relay。分享的是带密钥的密封链接。主机不保留正文。
 
-我们需要更多人运行支持此功能的实例。请选择确实接受公开长文（kind 30023）的 relay；只读或失效的 relay 会让按钮看起来坏了。若你已在运营 Nonograph，请配置 `[nostr].relays` 并部署，欢迎通过 PR 把实例加入下表（公网与/或 onion）。
+我们需要更多人运行支持此功能的实例。请选择接受密封笔记（kind 30323）的 relay；只读或失效的 relay 会让发布看起来坏了。若你已在运营 Nonograph，请配置 `[nostr].relays` 并部署，欢迎通过 PR 把实例加入下表（公网与/或 onion）。
 
 | 运行状态 | 位置 | 公网 | Onion |
 |--------|------|------|-------|
@@ -56,7 +56,7 @@ https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
 ## 部署
 
-已发布页面保存在 `~/nonograph/content`。Tor 密钥目录为 `~/nonograph/onion`。**On Nostr** 的默认 relay 由服务器上的 `Config.toml` 中 `[nostr].relays` 决定（访客可在浏览器中添加更多 relay，仅保存在其本机）。
+`~/nonograph/content` 只用来放关于、法律、接口、标记这四个站点页面的可选副本，已发布的笔记不写在这里。Tor 密钥目录为 `~/nonograph/onion`。默认 relay 由服务器上的 `Config.toml` 中 `[nostr].relays` 决定（访客可在浏览器中添加更多 relay，仅保存在其本机）。
 
 ### Docker 镜像（快速）
 

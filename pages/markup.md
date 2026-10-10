@@ -7,7 +7,7 @@ generator: nonograph v0.2.8
 
 Nonograph supports a lot of concise markup options to make pages fun and expressive. It's a dialect of markdown focused on speed and literal input.
 
-You can append `.md` to any page to get the raw markdown. Great for copying styles that you like from others pages!
+What you type is ordinary markup. A published note is sealed, and this site does not keep a copy you can open as a raw file.
 
 ## Text Formatting
 ```md
@@ -93,7 +93,7 @@ This has a footnote[^1] and another[^2].
 This has an inline footnote^[The footnote text goes here].
 ```
 
-Like the markup you see in someone else's page? Append ".md" to the end of their URL to get the raw markdown!
+The same markup you type here is what the page renders.
 
 ## Links
 ```md
@@ -244,8 +244,8 @@ ada, apache, apex, arduino/ino, asm/assembly, asciidoc/adoc, awk, bash/sh/shell,
 ```md
 // This is a comment
 ```
-Comments start with `// ` at the beginning of a line. They appear in the .md version but are hidden from the HTML output. Anyone can append `.md` to any URL and see the comments, so don't leave sensitive things there!
-// You can see this only from the .md version!
+Comments start with `// ` at the beginning of a line. They are left out of the page. They are still part of the text you wrote, so don't put secrets in them.
+// This line is omitted from the page.
 
 ## Secret Text
 ```md

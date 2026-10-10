@@ -26,13 +26,6 @@ address = "127.0.0.1"
 onion_url = ""
 onion_hostname_file = "/var/lib/tor/hidden_service/hostname"
 
-[cache]
-# Maximum cache size in MB
-max_cache_size_mb = 128
-
-# How often to check for deleted posts and remove them from cache (minutes)
-cache_purge_interval_mins = 60
-
 [security]
 # Maximum URL length for link processing
 max_url_length = 4096

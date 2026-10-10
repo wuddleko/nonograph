@@ -3,33 +3,24 @@ extern crate rocket;
 
 mod access_log;
 mod archiver;
-pub(crate) mod cache;
 pub(crate) mod config;
 pub(crate) mod csrf;
 pub(crate) mod nostr;
 mod pages;
-pub(crate) mod publish;
 pub(crate) mod relays;
-pub(crate) mod save;
 pub(crate) mod seal;
 pub(crate) mod template;
 pub(crate) mod tor_circuits;
 
-pub(crate) use cache::{Post, PostCache, PostStorage};
-
 use config::Config;
 use nonograph_parser as parser;
-use std::thread;
 
 use chrono::{DateTime, Utc};
-use deunicode::deunicode;
-use rand::{thread_rng, Rng};
 use rocket::{
     fairing::{Fairing, Info, Kind},
     http::{Header, Status},
     Request, Response,
 };
-use std::sync::Arc;
 
 struct OnionLocationFairing {
     onion_url: String,
@@ -140,146 +131,6 @@ fn content_security_policy() -> String {
         .to_string()
 }
 
-/// Maximum length of a post identifier, matching typical filesystem limits on
-/// a single path component.
-const MAX_POST_ID_LEN: usize = 255;
-const UNGUESSABLE_BYTES: usize = 4;
-pub(crate) const UNGUESSABLE_HEX_LEN: usize = UNGUESSABLE_BYTES * 2;
-
-/// Returns `true` if `id` is a well-formed post identifier.
-///
-/// A valid identifier is a non-empty, length-bounded slug composed only of
-/// ASCII letters, digits, hyphens, and underscores. Every identifier the
-/// application produces satisfies this: [`generate_post_id_in_dir`] emits
-/// `[a-z0-9-]`, the static pages are lowercase words, and the Telegraph
-/// archiver yields `[A-Za-z0-9_-]` slugs.
-///
-/// This is the trust boundary for untrusted path input. Because `.`, `/`, and
-/// `\` are all rejected, a value that passes this check cannot express a
-/// path-traversal sequence such as `../`, so it can be safely interpolated
-/// into a `content/{id}.md` path.
-pub(crate) fn is_valid_post_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_POST_ID_LEN
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-pub(crate) fn is_nostr_identifier(id: &str) -> bool {
-    let rest = id
-        .strip_prefix("nevent1")
-        .or_else(|| id.strip_prefix("naddr1"));
-    let Some(rest) = rest else {
-        return false;
-    };
-    !rest.is_empty() && id.len() <= 8192 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
-}
-
-/// 4 random bytes, hex-encoded. Enough that a title is not a usable guess,
-/// short enough that the public link stays compact: `{slug}-{8 hex}`.
-pub(crate) fn generate_unguessable_segment() -> String {
-    let mut rng = thread_rng();
-    (0..UNGUESSABLE_BYTES)
-        .map(|_| format!("{:02x}", rng.gen::<u8>()))
-        .collect()
-}
-
-fn assemble_post_id(slug: &str, random: &str, index: usize) -> String {
-    if index == 0 {
-        format!("{slug}-{random}")
-    } else {
-        format!("{slug}-{random}-{index}")
-    }
-}
-
-fn id_is_taken(storage: &PostStorage, post_id: &str, base_dir: &str) -> bool {
-    storage.read().unwrap().contains_key(post_id)
-        || save::post_file_exists_in_dir(post_id, base_dir)
-}
-
-pub(crate) fn generate_post_id_in_dir(
-    title: &str,
-    storage: &PostStorage,
-    base_dir: &str,
-    random: &str,
-) -> Result<String, String> {
-    // Transliterate ALL characters to ASCII equivalents (safe for all input)
-    let transliterated_title = deunicode(title);
-
-    // Create URL-safe slug from transliterated title
-    let title_slug: String = transliterated_title
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter_map(|c| {
-            if c.is_alphanumeric() {
-                Some(c)
-            } else if c.is_whitespace() || c == '-' || c == '_' {
-                Some('-')
-            } else {
-                None
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<&str>>()
-        .join("-");
-
-    // Leave room for "-{random}" and a collision suffix up to "-999".
-    let max_slug_length = 250 - 1 - UNGUESSABLE_HEX_LEN - 4;
-    let final_slug = if title_slug.len() > max_slug_length {
-        let truncate_to = max_slug_length.saturating_sub(4); // Reserve space for "-etc"
-        if truncate_to > 0 {
-            // Find the last complete word that fits
-            let truncated = &title_slug[..truncate_to];
-            let last_dash = truncated.rfind('-').unwrap_or(truncated.len());
-            format!("{}-etc", &title_slug[..last_dash])
-        } else {
-            "etc".to_string()
-        }
-    } else {
-        title_slug
-    };
-
-    if final_slug.is_empty() {
-        // Use "na-" + 4 random characters only for completely empty titles
-        let mut rng = thread_rng();
-        let chars: String = (0..4)
-            .map(|_| {
-                let chars = b"abcdefghijklmnopqrstuvwxyz0123456789";
-                chars[rng.gen_range(0..chars.len())] as char
-            })
-            .collect();
-
-        let fallback_slug = format!("na-{}", chars);
-
-        for i in 0..1000 {
-            let post_id = assemble_post_id(&fallback_slug, random, i);
-
-            if !id_is_taken(storage, &post_id, base_dir) {
-                return Ok(post_id);
-            }
-        }
-
-        return Err(
-            "All slots for this title and date are taken. Please choose another title.".to_string(),
-        );
-    }
-
-    // Try to find an available slot (0-999)
-    for i in 0..1000 {
-        let post_id = assemble_post_id(&final_slug, random, i);
-
-        if !id_is_taken(storage, &post_id, base_dir) {
-            return Ok(post_id);
-        }
-    }
-
-    Err("All slots for this title and date are taken. Please choose another title.".to_string())
-}
-
 fn render_options(config: &Config) -> parser::RenderOptions {
     parser::RenderOptions {
         max_url_length: config.security.max_url_length,
@@ -339,19 +190,6 @@ fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTim
     Some((title, author, created_at, raw_content.to_string()))
 }
 
-pub(crate) fn yaml_frontmatter_field(file_content: &str, key: &str) -> Option<String> {
-    let (frontmatter_block, _) = yaml_frontmatter_block(file_content)?;
-    for line in frontmatter_block.lines() {
-        if let Some(value) = line.trim().strip_prefix(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
 fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateTime<Utc>, String)> {
     let lines: Vec<&str> = file_content.splitn(4, '\n').collect();
     if lines.len() < 4 {
@@ -377,13 +215,6 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
     let raw_content = lines[3].to_string();
 
     Some((title, author, created_at, raw_content))
-}
-
-fn start_cache_purge_worker(storage: PostStorage, interval_mins: u64) {
-    thread::spawn(move || loop {
-        thread::sleep(std::time::Duration::from_secs(interval_mins * 60));
-        cache::purge_missing(&storage);
-    });
 }
 
 #[rocket::main]
@@ -487,9 +318,6 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         .limit("data-form", config.form_data_limit_bytes().bytes())
         .limit("string", config.form_data_limit_bytes().bytes());
 
-    let storage = PostCache::shared(config.cache.max_cache_size_mb);
-    start_cache_purge_worker(Arc::clone(&storage), config.cache.cache_purge_interval_mins);
-
     match config.socks_addr() {
         Ok(Some(addr)) => {
             crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Proxy(addr));
@@ -528,27 +356,24 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         })
         .attach(SecurityHeadersFairing)
         .attach(access_log::LocationLog)
-        .manage(storage)
         .manage(config)
         .mount(
             "/",
             routes![
                 pages::index,
-                pages::create_post,
                 pages::nostr_publish,
                 pages::tor_circuits,
                 pages::assign_tor_circuits,
                 pages::sealed_view,
                 pages::sealed_open,
-                pages::view_post,
                 pages::markup_page,
                 pages::legal_page,
                 pages::about_page,
                 pages::api_page,
                 pages::robots_txt,
                 pages::nojs_index,
+                pages::nojs_static_page,
                 pages::nojs_sealed_view,
-                pages::nojs_view_post,
                 pages::nojs_create_post,
                 pages::nojs_add_relay,
                 pages::parser_js,

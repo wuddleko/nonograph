@@ -7,19 +7,19 @@ generator: nonograph v0.2.8
 
 ## What This Service Does
 
-This service allows you to publish text content formatted with markdown. We store only the text you write - we do not host any images, videos, or other files. When you include images or videos in your posts, you're linking to files hosted elsewhere on the internet. We simply format your text and make it readable on a webpage.
+This service lets you publish text formatted with markup. The note is sealed and sent to Nostr relays. This host does not keep a copy of the writing. We do not host images, videos, or other files. When you include images or videos, you are linking to files hosted somewhere else.
 
-This service has no user accounts or registration system - anyone can publish anonymously. Your published content is completely public. Anyone who has the link to your post can read it. There are no privacy settings or private posts on this service.
+There are no accounts. Anyone with the link, including the key in it, can open the note. There is no private mode and no edit or delete after it is published.
 
 ## Privacy and Data Collection
 **For People Who Publish Content:**
-We store only the words you write. Specifically, we store the text content you choose to publish, the timestamp when you published it, and any alias name you optionally provide. We do not track your IP address, use cookies for tracking, collect analytics, or gather any other personal information about you. We do not store or have access to any images, videos, or other media files you might link to in your posts.
+With JavaScript, your browser seals the note and this host sends the ciphertext to relays. Without JavaScript, this host seals it and then sends the ciphertext. Either way the host does not keep the writing, the title, or the alias. The key stays in the link. We do not use cookies for tracking or run analytics. We do not store images, videos, or other media you link to.
 
 **For People Who Read Content:**
-We collect nothing from readers. While the server receives your request to serve the page, no IP addresses, cookies, tracking, analytics, or identifying information is stored or logged. Your request only informs an in-memory cache that keeps frequently accessed pages saved in memory faster response times. The cache system never writes to disk and doesn't store any specifics.
+Opening a note asks relays for the ciphertext. The host does not keep that ciphertext. The process can write a request log. A seal key that appears in a logged URL is redacted. The four site pages (about, legal, api, markup) are cached in memory. That cache is not a copy of published notes.
 
 **JavaScript-free Option:**
-For additional privacy, you can access any page through our JavaScript-free endpoint by adding `/nojs/` to the beginning of any address. For example, `domain.onion/nojs` for the home page or `domain.onion/nojs/your-post-id` for individual posts. This strips all client-side JavaScript on the server side before serving the webpage.
+The home page without scripts is `/nojs`. The four site pages are `/nojs/about`, `/nojs/legal`, `/nojs/api`, and `/nojs/markup`. A sealed note without scripts is `/nojs/s/...`. Those pages are rendered without client-side JavaScript.
 
 ## Important: Service Privacy Is Not Anonymity
 This service protects your privacy from us, but cannot protect your anonymity from others. Your writing creates a unique "fingerprint" through topics, style, word choices, idioms, sentence patterns, cultural references, and experiences. Additionally, metadata from files or websites you link to may contain identifying information. The service is not a magic bullet for anonymity - you are responsible for your own operational security.
@@ -41,15 +41,15 @@ You are responsible for everything you publish. You must have the right to publi
 Neither age nor suitibility for age-specific audiences is checked. No ID surveillance.
 
 ## How We Handle Your Data
-Your content is stored as simple text files on our server. We take reasonable steps to keep these files secure, but we cannot guarantee perfect security or that your content will be preserved forever. Your content will remain available indefinitely unless we need to remove it for legal reasons or service maintenance. You can always get your content back in its original markdown format by adding ".md" to the end of any post's URL.
+The published note lives on the relays that accepted it, as ciphertext. This host does not keep a file of it, and there is no `.md` address for it. Relays can drop a note. We cannot promise it stays available, and we cannot edit or delete it after it is accepted.
 
-Since we only host text and not media files, we're not responsible when images or videos you've linked to become unavailable, change, or contain problematic content. Those files are controlled by whoever hosts them, not by us.
+Since we do not host media files, we are not responsible when images or videos you linked become unavailable, change, or contain problematic content. Those files are controlled by whoever hosts them.
 
 ## Service Limitations
 We provide this service "as-is" without any guarantees. We don't promise that the service will always work, that your content will be preserved forever, or that we won't need to shut down or change the service. We are not responsible for any problems that arise from your use of this service.
 
 ## Legal Matters
-You keep ownership of the content you create, but by publishing it here, you give us permission to store and display it. In response to valid legal processes, we can only provide the raw text content you've published - no IP addresses, user data, logs, or tracking information exists for us to share. We don't have access to any information you don't write and publish.
+You keep ownership of what you write. Publishing sends a sealed copy to relays; it does not give this host a stored copy of the text. A valid legal request to this host cannot produce the note, because the host does not have it. The ciphertext is on the relays. The key is in the link. The process may have a request log, and a seal key in that log is redacted. We do not have an account database.
 
 If we receive valid legal demands to remove content that violates applicable law, we may comply after careful review. However, we will resist removal requests based solely on content being objectionable or offensive. We will ignore demands that appear false, abusive, or attempt to censor legal speech.
 

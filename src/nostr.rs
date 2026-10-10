@@ -7,40 +7,23 @@ use std::time::{Duration, Instant};
 
 use socket2::{Domain, SockAddr, Socket, Type};
 
-use bech32::primitives::decode::CheckedHrpstring;
+#[cfg(test)]
 use bech32::{Bech32, Hrp};
 use rand::{thread_rng, Rng};
 use secp256k1::schnorr::Signature;
 use secp256k1::{Keypair, Message, XOnlyPublicKey, SECP256K1};
-use sha2::{Digest, Sha256};
 use tungstenite::client::IntoClientRequest;
 
+#[cfg(test)]
 pub const KIND_LONG_FORM: u32 = 30023;
-const KIND_SEAL: u32 = 13;
-pub const KIND_GIFT_WRAP: u32 = 1059;
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
 const SEALED_EVENT_OVERHEAD: usize = 8192;
 const SEALED_FRAME_OVERHEAD: usize = 1024;
-const TWO_DAYS_SECS: i64 = 2 * 24 * 60 * 60;
 
 pub struct SignedNote {
     pub id: [u8; 32],
     pub pubkey: [u8; 32],
     pub event_json: String,
-}
-
-pub struct Nevent {
-    pub event_id_hex: String,
-    pub relays: Vec<String>,
-    pub kind: Option<u32>,
-}
-
-#[derive(Clone)]
-pub struct Naddr {
-    pub identifier: String,
-    pub pubkey: [u8; 32],
-    pub kind: u32,
-    pub relays: Vec<String>,
 }
 
 #[derive(Default)]
@@ -93,217 +76,6 @@ pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> Signed
     )
 }
 
-#[derive(Debug)]
-pub struct WrapError;
-
-pub struct WrappedNote {
-    pub id: [u8; 32],
-    pub pubkey: [u8; 32],
-    pub event_json: String,
-    pub recipient_secret: [u8; 32],
-}
-
-impl WrappedNote {
-    pub fn id_hex(&self) -> String {
-        hex_encode(&self.id)
-    }
-
-    pub fn signed_note(&self) -> SignedNote {
-        SignedNote {
-            id: self.id,
-            pubkey: self.pubkey,
-            event_json: self.event_json.clone(),
-        }
-    }
-}
-
-pub struct OpenedNote {
-    pub title: String,
-    pub author: String,
-    pub content: String,
-    pub created_at: i64,
-}
-
-pub fn wrap_note(
-    title: &str,
-    author: &str,
-    content: &str,
-    created_at: i64,
-) -> Result<WrappedNote, WrapError> {
-    let author_key = Keypair::new(SECP256K1, &mut thread_rng());
-    let recipient_key = Keypair::new(SECP256K1, &mut thread_rng());
-    let wrap_key = Keypair::new(SECP256K1, &mut thread_rng());
-    let recipient_secret = recipient_key.secret_bytes();
-    let recipient_pubkey = recipient_key.x_only_public_key().0.serialize();
-
-    let rumor = rumor_json(
-        &author_key,
-        created_at,
-        KIND_LONG_FORM,
-        &long_form_tags(title, author, created_at),
-        content,
-    );
-    let seal_content = nip44_encrypt(&rumor, &author_key.secret_bytes(), &recipient_pubkey)?;
-    let seal = signed_event(
-        &author_key,
-        random_past(now_secs()),
-        KIND_SEAL,
-        &[],
-        &seal_content,
-    );
-    let wrap_content = nip44_encrypt(
-        &seal.event_json,
-        &wrap_key.secret_bytes(),
-        &recipient_pubkey,
-    )?;
-    let wrap = signed_event(
-        &wrap_key,
-        random_past(now_secs()),
-        KIND_GIFT_WRAP,
-        &[vec!["p".to_string(), hex_encode(&recipient_pubkey)]],
-        &wrap_content,
-    );
-    Ok(WrappedNote {
-        id: wrap.id,
-        pubkey: wrap.pubkey,
-        event_json: wrap.event_json,
-        recipient_secret,
-    })
-}
-
-pub fn open_wrapped_note(
-    event_json: &str,
-    recipient_secret: &[u8; 32],
-) -> Result<OpenedNote, WrapError> {
-    let wrap: serde_json::Value = serde_json::from_str(event_json).map_err(|_| WrapError)?;
-    let wrap_event = verify_signed(&wrap)?;
-    if wrap_event.kind != KIND_GIFT_WRAP {
-        return Err(WrapError);
-    }
-    let recipient_pubkey = xonly_pubkey(recipient_secret)?;
-    let tagged = wrap_event
-        .tags
-        .iter()
-        .find(|tag| tag.first().map(String::as_str) == Some("p"))
-        .and_then(|tag| tag.get(1))
-        .and_then(|hex| decode_fixed_hex::<32>(hex))
-        .ok_or(WrapError)?;
-    if tagged != recipient_pubkey {
-        return Err(WrapError);
-    }
-    let seal_json = nip44_decrypt(&wrap_event.content, recipient_secret, &wrap_event.pubkey)?;
-    let seal: serde_json::Value = serde_json::from_str(&seal_json).map_err(|_| WrapError)?;
-    let seal_event = verify_signed(&seal)?;
-    if seal_event.kind != KIND_SEAL || !seal_event.tags.is_empty() {
-        return Err(WrapError);
-    }
-    let rumor_json = nip44_decrypt(&seal_event.content, recipient_secret, &seal_event.pubkey)?;
-    let rumor: serde_json::Value = serde_json::from_str(&rumor_json).map_err(|_| WrapError)?;
-    if rumor.get("sig").is_some() {
-        return Err(WrapError);
-    }
-    let rumor_event = verify_unsigned_id(&rumor)?;
-    if rumor_event.kind != KIND_LONG_FORM || rumor_event.pubkey != seal_event.pubkey {
-        return Err(WrapError);
-    }
-    let (title, author, created_at) = note_fields(&rumor_event.tags, rumor_event.created_at);
-    Ok(OpenedNote {
-        title,
-        author,
-        content: rumor_event.content,
-        created_at,
-    })
-}
-
-pub fn encode_nevent(id: &[u8; 32], relays: &[String], pubkey: &[u8; 32], kind: u32) -> String {
-    let mut data = Vec::new();
-    push_tlv(&mut data, 0, id);
-    push_relay_tlvs(&mut data, relays);
-    push_tlv(&mut data, 2, pubkey);
-    push_tlv(&mut data, 3, &kind.to_be_bytes());
-    encode_bech32("nevent", &data)
-}
-
-pub fn decode_nevent(value: &str) -> Option<Nevent> {
-    let mut event_id = None;
-    let mut relays = Vec::new();
-    let mut kind = None;
-    for (tag, bytes) in nip19_tlv(value, "nevent")? {
-        match tag {
-            0 if bytes.len() == 32 => event_id = Some(hex_encode(&bytes)),
-            1 => relays.push(String::from_utf8(bytes).ok()?),
-            3 if bytes.len() == 4 => {
-                kind = Some(u32::from_be_bytes(bytes.try_into().ok()?));
-            }
-            _ => {}
-        }
-    }
-    Some(Nevent {
-        event_id_hex: event_id?,
-        relays,
-        kind,
-    })
-}
-
-pub fn encode_naddr(identifier: &str, relays: &[String], pubkey: &[u8; 32], kind: u32) -> String {
-    let ident = identifier.as_bytes();
-    let mut data = Vec::new();
-    if ident.len() <= 255 {
-        push_tlv(&mut data, 0, ident);
-    }
-    push_relay_tlvs(&mut data, relays);
-    push_tlv(&mut data, 2, pubkey);
-    push_tlv(&mut data, 3, &kind.to_be_bytes());
-    encode_bech32("naddr", &data)
-}
-
-pub fn decode_naddr(value: &str) -> Option<Naddr> {
-    let mut identifier = None;
-    let mut relays = Vec::new();
-    let mut pubkey = None;
-    let mut kind = None;
-    for (tag, bytes) in nip19_tlv(value, "naddr")? {
-        match tag {
-            0 => identifier = Some(String::from_utf8(bytes).ok()?),
-            1 => relays.push(String::from_utf8(bytes).ok()?),
-            2 if bytes.len() == 32 => pubkey = Some(bytes.try_into().ok()?),
-            3 if bytes.len() == 4 => {
-                kind = Some(u32::from_be_bytes(bytes.try_into().ok()?));
-            }
-            _ => {}
-        }
-    }
-    Some(Naddr {
-        identifier: identifier?,
-        pubkey: pubkey?,
-        kind: kind?,
-        relays,
-    })
-}
-
-pub fn naddr_cache_id(naddr: &Naddr) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(naddr.pubkey);
-    hasher.update(naddr.kind.to_be_bytes());
-    hasher.update(naddr.identifier.as_bytes());
-    hex_encode(&hasher.finalize())
-}
-
-pub fn encode_nsec(secret: &[u8; 32]) -> String {
-    encode_bech32("nsec", secret)
-}
-
-pub fn decode_nsec(value: &str) -> Option<[u8; 32]> {
-    if !value.starts_with("nsec1") {
-        return None;
-    }
-    let parsed = CheckedHrpstring::new::<Bech32>(value).ok()?;
-    if parsed.hrp().as_str() != "nsec" {
-        return None;
-    }
-    parsed.byte_iter().collect::<Vec<u8>>().try_into().ok()
-}
-
 #[derive(Clone, Copy)]
 pub enum RelaySocks {
     Direct,
@@ -323,37 +95,6 @@ fn relay_socks() -> RelaySocks {
 
 pub(crate) fn relays_use_proxy() -> bool {
     matches!(relay_socks(), RelaySocks::Proxy(_))
-}
-
-#[cfg(test)]
-pub fn public_note_from_json(
-    value: &serde_json::Value,
-    title_max: usize,
-    alias_max: usize,
-    content_max: usize,
-) -> Option<SignedNote> {
-    let parsed = verified_long_form(value)?;
-    if parsed.content.len() > content_max {
-        return None;
-    }
-    let (title, author, _) = note_fields(&parsed.tags, parsed.created_at);
-    if title.len() > title_max || author.len() > alias_max {
-        return None;
-    }
-    let sig = parsed.sig?;
-    Some(SignedNote {
-        id: parsed.id,
-        pubkey: parsed.pubkey,
-        event_json: event_wire(
-            &hex_encode(&parsed.id),
-            &parsed.pubkey_hex,
-            parsed.created_at,
-            parsed.kind,
-            &parsed.tags,
-            &parsed.content,
-            Some(&hex_encode(&sig)),
-        ),
-    })
 }
 
 pub fn sealed_note_from_json(
@@ -1500,47 +1241,6 @@ fn send_event(
     }
 }
 
-pub fn fetch_note(
-    relays: &[String],
-    event_id_hex: &str,
-    timeout: Duration,
-    recipient_secret: Option<[u8; 32]>,
-) -> Option<FetchedNote> {
-    fetch_from_relays(
-        relays,
-        RelayQuery::Id {
-            event_id_hex: event_id_hex.to_string(),
-            recipient_secret,
-        },
-        timeout,
-        false,
-    )
-}
-
-pub fn fetch_public_note(
-    relays: &[String],
-    event_id_hex: &str,
-    timeout: Duration,
-) -> Option<FetchedNote> {
-    fetch_from_relays(
-        relays,
-        RelayQuery::Id {
-            event_id_hex: event_id_hex.to_string(),
-            recipient_secret: None,
-        },
-        timeout,
-        true,
-    )
-}
-
-pub fn fetch_public_addr(
-    relays: &[String],
-    naddr: &Naddr,
-    timeout: Duration,
-) -> Option<FetchedNote> {
-    fetch_from_relays(relays, RelayQuery::Addr(naddr.clone()), timeout, true)
-}
-
 pub fn fetch_sealed(
     relays: &[String],
     event_id_hex: &str,
@@ -1568,11 +1268,6 @@ pub fn fetch_sealed(
 
 #[derive(Clone)]
 enum RelayQuery {
-    Id {
-        event_id_hex: String,
-        recipient_secret: Option<[u8; 32]>,
-    },
-    Addr(Naddr),
     Seal {
         event_id_hex: String,
         locator: String,
@@ -1587,16 +1282,6 @@ fn fetch_from_relays(
     public_only: bool,
 ) -> Option<FetchedNote> {
     match &query {
-        RelayQuery::Id { event_id_hex, .. } => {
-            if decode_fixed_hex::<32>(event_id_hex).is_none() {
-                return None;
-            }
-        }
-        RelayQuery::Addr(naddr) => {
-            if naddr.kind != KIND_LONG_FORM || naddr.identifier.len() > 255 {
-                return None;
-            }
-        }
         RelayQuery::Seal {
             event_id_hex,
             locator,
@@ -1677,19 +1362,6 @@ fn take_first_note(
 
 fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
     match query {
-        RelayQuery::Id { event_id_hex, .. } => {
-            format!(r#"["REQ","{sub_id}",{{"ids":["{event_id_hex}"]}}]"#)
-        }
-        RelayQuery::Addr(naddr) => serde_json::json!([
-            "REQ",
-            sub_id,
-            {
-                "authors": [hex_encode(&naddr.pubkey)],
-                "kinds": [naddr.kind],
-                "#d": [naddr.identifier],
-            }
-        ])
-        .to_string(),
         RelayQuery::Seal { event_id_hex, .. } => serde_json::json!([
             "REQ",
             sub_id,
@@ -1709,9 +1381,8 @@ fn fetch_from_relay(
     public_only: bool,
 ) -> Result<Option<FetchedNote>, String> {
     let mut socket = connect_relay(relay, deadline, Some(cancel), public_only, relay_socks())?;
-    if let RelayQuery::Seal { payload_max, .. } = query {
-        limit_sealed_socket(&mut socket, *payload_max);
-    }
+    let RelayQuery::Seal { payload_max, .. } = query;
+    limit_sealed_socket(&mut socket, *payload_max);
     let sub_id = random_hex(8);
     let payload = req_payload(&sub_id, query);
     arm_stream(
@@ -1722,40 +1393,25 @@ fn fetch_from_relay(
         .send(tungstenite::Message::Text(payload.into()))
         .map_err(|error| error.to_string())?;
 
-    let newest_until_eose = matches!(query, RelayQuery::Addr(_));
-    let mut best = None;
-    let mut best_at = i64::MIN;
     loop {
         let incoming = match read_incoming(&mut socket, deadline, Some(cancel)) {
             Ok(incoming) => incoming,
-            Err(error) if error == RELAY_TIMEOUT && newest_until_eose => return Ok(best),
             Err(error) => return Err(error),
         };
         match incoming {
             Incoming::Closed => {
-                return if newest_until_eose && best.is_some() {
-                    Ok(best)
-                } else {
-                    Err("relay closed the connection".to_string())
-                };
+                return Err("relay closed the connection".to_string());
             }
             Incoming::Text(text) => {
-                if let RelayQuery::Seal { payload_max, .. } = query {
-                    if text.len() > sealed_frame_max(*payload_max) {
-                        continue;
-                    }
+                let RelayQuery::Seal { payload_max, .. } = query;
+                if text.len() > sealed_frame_max(*payload_max) {
+                    continue;
                 }
-                if let Some((created_at, note)) = note_for_query(&text, query) {
-                    if !newest_until_eose {
-                        return Ok(Some(note));
-                    }
-                    if created_at >= best_at {
-                        best_at = created_at;
-                        best = Some(note);
-                    }
+                if let Some((_created_at, note)) = note_for_query(&text, query) {
+                    return Ok(Some(note));
                 }
                 if relay_has_no_event(&text, &sub_id) {
-                    return Ok(best);
+                    return Ok(None);
                 }
             }
         }
@@ -1764,12 +1420,6 @@ fn fetch_from_relay(
 
 fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote)> {
     match query {
-        RelayQuery::Id {
-            event_id_hex,
-            recipient_secret,
-        } => note_from_relay_message(message, event_id_hex, recipient_secret.as_ref())
-            .map(|note| (0, note)),
-        RelayQuery::Addr(naddr) => addr_note_from_relay_message(message, naddr),
         RelayQuery::Seal {
             event_id_hex,
             locator,
@@ -1789,55 +1439,6 @@ fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote
     }
 }
 
-fn note_from_relay_message(
-    message: &str,
-    event_id_hex: &str,
-    recipient_secret: Option<&[u8; 32]>,
-) -> Option<FetchedNote> {
-    fetched_from_event(
-        &event_from_relay_message(message)?,
-        event_id_hex,
-        recipient_secret,
-    )
-}
-
-fn event_from_relay_message(message: &str) -> Option<serde_json::Value> {
-    let value: serde_json::Value = serde_json::from_str(message).ok()?;
-    let items = value.as_array()?;
-    if items.first()?.as_str()? != "EVENT" {
-        return None;
-    }
-    items.get(2).cloned()
-}
-
-fn fetched_from_event(
-    value: &serde_json::Value,
-    expected_id_hex: &str,
-    recipient_secret: Option<&[u8; 32]>,
-) -> Option<FetchedNote> {
-    let kind = json_kind(value)?;
-    if kind == KIND_LONG_FORM {
-        return note_from_value(value, expected_id_hex);
-    }
-    if kind != KIND_GIFT_WRAP {
-        return None;
-    }
-    let secret = recipient_secret?;
-    let id = decode_fixed_hex::<32>(value.get("id")?.as_str()?)?;
-    if decode_fixed_hex::<32>(expected_id_hex)? != id {
-        return None;
-    }
-    let opened = open_wrapped_note(&value.to_string(), secret).ok()?;
-    Some(FetchedNote {
-        id_hex: hex_encode(&id),
-        title: opened.title,
-        author: opened.author,
-        content: opened.content,
-        created_at: opened.created_at,
-        ..FetchedNote::default()
-    })
-}
-
 fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
         return false;
@@ -1852,18 +1453,6 @@ fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
         return false;
     }
     items.get(1).and_then(|item| item.as_str()) == Some(sub_id)
-}
-
-fn note_from_value(value: &serde_json::Value, expected_id_hex: &str) -> Option<FetchedNote> {
-    let parsed = verified_long_form(value)?;
-    if decode_fixed_hex::<32>(expected_id_hex)? != parsed.id {
-        return None;
-    }
-    Some(fetched_from_parsed(parsed))
-}
-
-fn addr_note_from_relay_message(message: &str, naddr: &Naddr) -> Option<(i64, FetchedNote)> {
-    fetched_public_addr(&event_from_relay_message(message)?, naddr)
 }
 
 fn sealed_from_relay_message(
@@ -1927,57 +1516,6 @@ pub(crate) fn sealed_event_id(event_id: &str) -> bool {
         && event_id
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn fetched_public_addr(value: &serde_json::Value, naddr: &Naddr) -> Option<(i64, FetchedNote)> {
-    if naddr.kind != KIND_LONG_FORM {
-        return None;
-    }
-    let parsed = verified_long_form(value)?;
-    if parsed.pubkey != naddr.pubkey {
-        return None;
-    }
-    if tag_value(&parsed.tags, "d").as_deref() != Some(naddr.identifier.as_str()) {
-        return None;
-    }
-    let created_at = parsed.created_at;
-    Some((created_at, fetched_from_parsed(parsed)))
-}
-
-fn verified_long_form(value: &serde_json::Value) -> Option<ParsedEvent> {
-    let parsed = parse_event(value)?;
-    if parsed.kind != KIND_LONG_FORM || !check_id(&parsed) || !verify_sig(&parsed) {
-        return None;
-    }
-    Some(parsed)
-}
-
-fn fetched_from_parsed(parsed: ParsedEvent) -> FetchedNote {
-    let (title, author, created_at) = note_fields(&parsed.tags, parsed.created_at);
-    FetchedNote {
-        id_hex: hex_encode(&parsed.id),
-        title,
-        author,
-        content: parsed.content,
-        created_at,
-        pubkey: parsed.pubkey,
-        identifier: tag_value(&parsed.tags, "d").unwrap_or_default(),
-    }
-}
-
-fn tag_value(tags: &[Vec<String>], name: &str) -> Option<String> {
-    tags.iter()
-        .find(|tag| tag.first().map(String::as_str) == Some(name))
-        .and_then(|tag| tag.get(1).cloned())
-}
-
-fn note_fields(tags: &[Vec<String>], event_created_at: i64) -> (String, String, i64) {
-    let title = tag_value(tags, "title").unwrap_or_else(|| "Untitled".to_string());
-    let author = tag_value(tags, "author").unwrap_or_default();
-    let created_at = tag_value(tags, "published_at")
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(event_created_at);
-    (title, author, created_at)
 }
 
 pub(crate) fn decode_fixed_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
@@ -2123,49 +1661,7 @@ fn public_relay_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>,
     }
 }
 
-fn push_tlv(out: &mut Vec<u8>, tag: u8, value: &[u8]) {
-    out.push(tag);
-    out.push(value.len() as u8);
-    out.extend_from_slice(value);
-}
-
-fn push_relay_tlvs(out: &mut Vec<u8>, relays: &[String]) {
-    for relay in relays {
-        if valid_relay_url(relay) {
-            push_tlv(out, 1, relay.as_bytes());
-        }
-    }
-}
-
-fn encode_bech32(hrp: &str, data: &[u8]) -> String {
-    let hrp = Hrp::parse(hrp).expect("known hrp");
-    bech32::encode::<Bech32>(hrp, data).expect("payload fits in a bech32 string")
-}
-
-fn nip19_tlv(value: &str, hrp: &str) -> Option<Vec<(u8, Vec<u8>)>> {
-    if !value.starts_with(hrp) || value.as_bytes().get(hrp.len()) != Some(&b'1') {
-        return None;
-    }
-    let parsed = CheckedHrpstring::new::<Bech32>(value).ok()?;
-    if parsed.hrp().as_str() != hrp {
-        return None;
-    }
-    let data: Vec<u8> = parsed.byte_iter().collect();
-    let mut fields = Vec::new();
-    let mut index = 0;
-    while index + 2 <= data.len() {
-        let tag = data[index];
-        let len = data[index + 1] as usize;
-        index += 2;
-        if index + len > data.len() {
-            return None;
-        }
-        fields.push((tag, data[index..index + len].to_vec()));
-        index += len;
-    }
-    (index == data.len()).then_some(fields)
-}
-
+#[cfg(test)]
 fn long_form_tags(title: &str, author: &str, created_at: i64) -> Vec<Vec<String>> {
     let mut tags = vec![
         vec!["d".to_string(), random_hex(16)],
@@ -2203,26 +1699,6 @@ pub(crate) fn signed_event(
         pubkey,
         event_json,
     }
-}
-
-fn rumor_json(
-    keypair: &Keypair,
-    created_at: i64,
-    kind: u32,
-    tags: &[Vec<String>],
-    content: &str,
-) -> String {
-    let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
-    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, tags, content);
-    event_wire(
-        &hex_encode(&id),
-        &pubkey_hex,
-        created_at,
-        kind,
-        tags,
-        content,
-        None,
-    )
 }
 
 fn event_wire(
@@ -2312,16 +1788,6 @@ fn event_tags(value: &serde_json::Value) -> Option<Vec<Vec<String>>> {
         .collect()
 }
 
-fn check_id(parsed: &ParsedEvent) -> bool {
-    nonograph_nip44::event_id(
-        &parsed.pubkey_hex,
-        parsed.created_at,
-        parsed.kind,
-        &parsed.tags,
-        &parsed.content,
-    ) == parsed.id
-}
-
 fn verify_sig(parsed: &ParsedEvent) -> bool {
     let Some(sig) = parsed.sig else {
         return false;
@@ -2337,61 +1803,11 @@ fn verify_sig(parsed: &ParsedEvent) -> bool {
         .is_ok()
 }
 
-fn verify_signed(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
-    let parsed = parse_event(value).ok_or(WrapError)?;
-    if check_id(&parsed) && verify_sig(&parsed) {
-        Ok(parsed)
-    } else {
-        Err(WrapError)
-    }
-}
-
-fn verify_unsigned_id(value: &serde_json::Value) -> Result<ParsedEvent, WrapError> {
-    let parsed = parse_event(value).ok_or(WrapError)?;
-    if check_id(&parsed) {
-        Ok(parsed)
-    } else {
-        Err(WrapError)
-    }
-}
-
 pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn random_past(now: i64) -> i64 {
-    now.saturating_sub(thread_rng().gen_range(0..=TWO_DAYS_SECS))
-}
-
-fn nip44_encrypt(
-    plaintext: &str,
-    private_key: &[u8; 32],
-    public_key: &[u8; 32],
-) -> Result<String, WrapError> {
-    let conversation =
-        nonograph_nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
-    let mut nonce = [0u8; 32];
-    thread_rng().fill(&mut nonce);
-    nonograph_nip44::encrypt(plaintext, &conversation, &nonce).map_err(|_| WrapError)
-}
-
-fn nip44_decrypt(
-    payload: &str,
-    private_key: &[u8; 32],
-    public_key: &[u8; 32],
-) -> Result<String, WrapError> {
-    let conversation =
-        nonograph_nip44::conversation_key(private_key, public_key).map_err(|_| WrapError)?;
-    nonograph_nip44::decrypt(payload, &conversation).map_err(|_| WrapError)
-}
-
-fn xonly_pubkey(secret: &[u8; 32]) -> Result<[u8; 32], WrapError> {
-    let secret_key = secp256k1::SecretKey::from_slice(secret).map_err(|_| WrapError)?;
-    let keypair = Keypair::from_secret_key(SECP256K1, &secret_key);
-    Ok(keypair.x_only_public_key().0.serialize())
 }
 
 fn random_hex(bytes: usize) -> String {

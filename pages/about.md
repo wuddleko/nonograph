@@ -22,7 +22,7 @@ Nonograph is a clean, simple publishing tool built in Rust with a focus on simpl
 - **Instant publishing** - Posts go live immediately
 - **Clean typography** - Beautiful serif fonts for reading
 - **Minimal markup** - Just the essentials for formatting
-- **Flat file storage** - No database complexity
+- **Sealed notes** - The host does not keep a copy of what you publish
 - **Anonymous by design** - Privacy-first approach
 
 **Technical Details**
@@ -32,7 +32,7 @@ Built with modern Rust using:
 - Custom template engine for speed
 - Ammonia for security and XSS prevention
 - Unicode-aware markdown parser
-- Flat file storage in markdown format
+- Sealed notes published to relays; this host does not store them
 
 **Design Principles**
 
