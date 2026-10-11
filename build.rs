@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
@@ -69,13 +68,6 @@ fn install_bundle(js: &Path, wasm: &Path, out_dir: &Path) {
         .unwrap_or_else(|error| panic!("copy {js:?}: {error}"));
     std::fs::copy(wasm, out_dir.join(PAGE_WASM_NAME))
         .unwrap_or_else(|error| panic!("copy {wasm:?}: {error}"));
-    write_asset_version(out_dir);
-}
-
-fn write_asset_version(out_dir: &Path) {
-    let version = asset_version(&out_dir.join(PAGE_JS_NAME), &out_dir.join(PAGE_WASM_NAME));
-    std::fs::write(out_dir.join("parser_asset_version.txt"), version)
-        .expect("write parser asset version");
 }
 
 fn build_page_wasm(manifest_dir: &Path, out_dir: &Path) -> Result<(), String> {
@@ -119,22 +111,7 @@ fn build_page_wasm(manifest_dir: &Path, out_dir: &Path) -> Result<(), String> {
         .map_err(|error| format!("cache page js: {error}"))?;
     std::fs::copy(out_dir.join(PAGE_WASM_NAME), pkg_dir.join(PAGE_WASM_NAME))
         .map_err(|error| format!("cache page wasm: {error}"))?;
-    write_asset_version(out_dir);
     Ok(())
-}
-
-fn asset_version(js_path: &Path, wasm_path: &Path) -> String {
-    let js = std::fs::read(js_path).expect("read generated page js");
-    let wasm = std::fs::read(wasm_path).expect("read generated page wasm");
-    let mut hasher = Sha256::new();
-    hasher.update(js);
-    hasher.update(wasm);
-    let digest = hasher.finalize();
-    let mut version = String::with_capacity(16);
-    for byte in digest.iter().take(8) {
-        version.push_str(&format!("{byte:02x}"));
-    }
-    version
 }
 
 fn cargo_command() -> Command {

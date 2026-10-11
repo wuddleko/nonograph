@@ -1671,11 +1671,10 @@ fn test_markdown_tables() {
         "| Left | Center | Right |\n|:-----|:------:|------:|\n| L1   |   C1   |    R1 |";
     let aligned_result = render_markdown(aligned_table);
 
-    assert!(aligned_result.contains("text-align: center"));
-    assert!(aligned_result.contains("text-align: right"));
+    assert!(!aligned_result.contains("text-align"));
     assert!(aligned_result.contains("<td>L1</td>"));
-    assert!(aligned_result.contains("<td style=\"text-align: center\">C1</td>"));
-    assert!(aligned_result.contains("<td style=\"text-align: right\">R1</td>"));
+    assert!(aligned_result.contains("<td>C1</td>"));
+    assert!(aligned_result.contains("<td>R1</td>"));
 }
 
 #[test]
@@ -2088,7 +2087,7 @@ fn test_ssrf_protection() {
         "http://[fe80::1]/",
     ];
 
-    for dangerous_url in dangerous_urls {
+    for dangerous_url in &dangerous_urls {
         let content = format!("![test]({})", dangerous_url);
         let result = render_markdown(&content);
 
@@ -2098,7 +2097,34 @@ fn test_ssrf_protection() {
             "Dangerous URL {} was not blocked",
             dangerous_url
         );
+
+        let linked = format!("[text]({})", dangerous_url);
+        let link_result = render_markdown(&linked);
+        assert!(
+            !link_result.contains(&format!("href=\"{}\"", dangerous_url)),
+            "Dangerous link {} was not blocked",
+            dangerous_url
+        );
+        if dangerous_url.contains("://") && !dangerous_url.contains('<') {
+            assert!(
+                link_result.contains(&linked),
+                "Blocked link {} should stay as text",
+                dangerous_url
+            );
+        }
     }
+
+    let safe_link = render_markdown("[text](https://example.com/page)");
+    assert!(safe_link.contains("<a href=\"https://example.com/page\""));
+    let relative = render_markdown("[about](/about)");
+    assert!(relative.contains("href=\"/about\""));
+    let anchor = render_markdown("[section](#section)");
+    assert!(anchor.contains("href=\"#section\""));
+    let bare = render_markdown("[http://127.0.0.1/secret]");
+    assert!(!bare.contains("href=\"http://127.0.0.1/secret\""));
+    assert!(bare.contains("[http://127.0.0.1/secret]"));
+    let bare_https = render_markdown("[https://example.com/bare]");
+    assert!(bare_https.contains("href=\"https://example.com/bare\""));
 
     // Test that safe URLs are allowed
     let safe_urls = vec![

@@ -285,6 +285,9 @@ fn try_consume_link(
         if let Some(paren_end) = find_ascii_until_newline(bytes, bracket_end + 2, b')') {
             let link_text = &text[i + 1..bracket_end];
             let link_url = &text[bracket_end + 2..paren_end];
+            if !is_safe_url(link_url) {
+                return None;
+            }
             if !link_text.is_empty()
                 && !link_url.is_empty()
                 && link_url.len() <= config.max_url_length
@@ -295,7 +298,10 @@ fn try_consume_link(
         }
     }
     let link_url = &text[i + 1..bracket_end];
-    if link_url.len() <= config.max_url_length && link_url.starts_with("http") {
+    if link_url.len() <= config.max_url_length
+        && link_url.starts_with("http")
+        && is_safe_url(link_url)
+    {
         push_anchor(result, link_url, link_url, config.external_link_security);
         return Some(bracket_end + 1);
     }
@@ -448,13 +454,11 @@ fn html_cleaner() -> &'static ammonia::Builder<'static> {
                 "rect",
                 "path",
             ])
-            .add_tag_attributes("video", &["controls", "style"])
+            .add_tag_attributes("video", &["controls"])
             .add_tag_attributes("source", &["src", "type"])
-            .add_tag_attributes("img", &["src", "alt", "style"])
-            .add_tag_attributes("code", &["class", "data-line-count", "style"])
-            .add_tag_attributes("span", &["class", "style"])
-            .add_tag_attributes("th", &["style"])
-            .add_tag_attributes("td", &["style"])
+            .add_tag_attributes("img", &["src", "alt"])
+            .add_tag_attributes("code", &["class", "data-line-count"])
+            .add_tag_attributes("span", &["class"])
             .add_tag_attributes("a", &["href", "target", "id", "class"])
             .add_tag_attributes("div", &["class"])
             .add_tag_attributes("hr", &["class"])

@@ -1022,11 +1022,6 @@ pub async fn nostr_publish(
     }
 }
 
-fn static_page_cache() -> &'static Mutex<HashMap<String, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 fn is_static_page(name: &str) -> bool {
     STATIC_PAGES.contains(&name)
 }
@@ -1091,23 +1086,8 @@ fn serve_static_page(
     config: &Config,
     nojs: bool,
 ) -> Result<content::RawHtml<String>, (Status, content::RawHtml<String>)> {
-    let key = if nojs {
-        format!("nojs:{page_name}")
-    } else {
-        page_name.to_string()
-    };
-    if let Some(html) = static_page_cache().lock().unwrap().get(&key).cloned() {
-        return Ok(content::RawHtml(html));
-    }
     match build_static_page(page_name, config, nojs) {
-        BuiltPage::Ready(html) => {
-            static_page_cache()
-                .lock()
-                .unwrap()
-                .insert(key, html.clone());
-            Ok(content::RawHtml(html))
-        }
-        BuiltPage::Invalid(html) => Ok(content::RawHtml(html)),
+        BuiltPage::Ready(html) | BuiltPage::Invalid(html) => Ok(content::RawHtml(html)),
         BuiltPage::Missing => Err((Status::NotFound, content::RawHtml(not_found_html()))),
     }
 }
@@ -1205,7 +1185,6 @@ fn fill_page_chrome(context: &mut HashMap<String, String>, nojs: bool, public_id
         "fallback_css".to_string(),
         post_fallback_css(nojs, &version),
     );
-    context.insert("nostr_link".to_string(), String::new());
 }
 
 type ViewErr = (
@@ -1836,8 +1815,6 @@ fn try_acquire_public_fetch(counter: &AtomicUsize, max: usize) -> bool {
 fn release_public_fetch(counter: &AtomicUsize) {
     counter.fetch_sub(1, Ordering::Release);
 }
-
-struct PublicFetchBusy;
 
 fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
     format!(

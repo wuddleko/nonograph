@@ -2,7 +2,6 @@
 extern crate rocket;
 
 mod access_log;
-mod archiver;
 pub(crate) mod config;
 pub(crate) mod csrf;
 pub(crate) mod nostr;
@@ -219,33 +218,7 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
 
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() > 1 && args[1] == "archive" {
-        if args.len() < 3 {
-            eprintln!("Nonograph: Usage: cargo run archive <telegraph_url>");
-            std::process::exit(1);
-        }
-
-        let url = &args[2];
-        let archiver = archiver::TelegraphArchiver::new();
-
-        match archiver.archive_url(url).await {
-            Ok(nonograph_url) => {
-                println!("Nonograph: Successfully archived Telegraph page!");
-                println!("Nonograph: View at: http://localhost:8009{}", nonograph_url);
-            }
-            Err(e) => {
-                eprintln!("Nonograph: Error archiving page: {}", e);
-                std::process::exit(1);
-            }
-        }
-
-        return Ok(());
-    }
-
-    // Default behavior - launch web server. Install first so Rocket's
-    // request line cannot print a sealed note's k.
+    // Install first so Rocket's request line cannot print a sealed note's k.
     access_log::install();
     let _rocket = rocket().launch().await?;
     Ok(())

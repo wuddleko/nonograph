@@ -2376,7 +2376,7 @@ fn nostr_id_is_copied_from_the_footer() {
     assert!(source.contains("ctrlKey"));
     assert!(source.contains("copied"));
     let html = include_str!("../templates/post.html");
-    assert!(html.contains("{{nostr_link}}"));
+    assert!(!html.contains("{{nostr_link}}"));
 }
 
 #[test]
@@ -3068,7 +3068,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     assert!(blocking.contains("spawn_blocking"));
     assert!(blocking.contains("create_location(&moved, &config_owned, &csrf_cookie)"));
     let nostr = pages.find("pub async fn nostr_publish(").unwrap();
-    let after_nostr = pages.find("fn static_page_cache(").unwrap();
+    let after_nostr = pages.find("fn is_static_page(").unwrap();
     assert!(!pages[nostr..after_nostr].contains("save_post_to_file"));
 
     let mut config = crate::config::Config::default();
