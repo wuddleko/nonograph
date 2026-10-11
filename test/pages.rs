@@ -67,7 +67,7 @@ fn robots_txt_is_the_file() {
 #[test]
 fn nojs_home_omits_scripts() {
     let config = crate::config::Config::default();
-    let nojs = home_context(&config, true, None);
+    let nojs = home_context(&config, true, None, None);
     assert_eq!(nojs.get("form_action").unwrap(), "/nojs/create");
     assert!(nojs.get("scripts").unwrap().is_empty());
     let field = nojs.get("content_field").unwrap();
@@ -78,7 +78,7 @@ fn nojs_home_omits_scripts() {
     )));
     assert!(!field.contains("writemark-editor"));
 
-    let js = home_context(&config, false, None);
+    let js = home_context(&config, false, None, None);
     assert_eq!(js.get("form_action").unwrap(), "/nojs");
     assert_eq!(js.get("form_method").unwrap(), "get");
     assert_eq!(nojs.get("form_method").unwrap(), "post");
@@ -95,6 +95,204 @@ fn nojs_home_omits_scripts() {
         .get("content_field")
         .unwrap()
         .contains("<textarea name=\"content\""));
+}
+
+#[test]
+fn the_home_form_stores_one_csrf_token_in_the_cookie_and_the_field() {
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount(
+                "/",
+                routes![
+                    super::index,
+                    super::nojs_index,
+                    super::nojs_create_post,
+                    super::nojs_add_relay,
+                    super::assign_tor_circuits,
+                ],
+            ),
+    )
+    .unwrap();
+
+    let first = client.get("/").dispatch();
+    assert_eq!(first.status(), Status::Ok);
+    let header = first.headers().get_one("Set-Cookie").unwrap().to_string();
+    assert!(header.starts_with("nonograph_csrf="));
+    assert!(header.contains("HttpOnly"));
+    assert!(header.contains("SameSite=Lax"));
+    assert!(header.contains("Path=/"));
+    assert!(header.contains("Max-Age=86400"));
+    assert!(!header.contains("Secure"));
+    let token = first
+        .cookies()
+        .get(crate::csrf::COOKIE_NAME)
+        .unwrap()
+        .value()
+        .to_string();
+    assert!(crate::csrf::is_valid_csrf_token(&token));
+    let body = first.into_string().unwrap();
+    assert!(body.contains(&format!("value=\"{token}\"")));
+
+    let again = client.get("/nojs").dispatch();
+    assert_eq!(again.status(), Status::Ok);
+    assert!(again.headers().get_one("Set-Cookie").is_none());
+    let again_body = again.into_string().unwrap();
+    assert!(again_body.contains(&format!("value=\"{token}\"")));
+
+    let kept = client
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body("title=Hello&content=Body&alias=&csrf_token=not-a-token")
+        .dispatch();
+    assert_eq!(kept.status(), Status::Ok);
+    assert!(kept.headers().get_one("Set-Cookie").is_none());
+    let kept_body = kept.into_string().unwrap();
+    assert!(kept_body.contains("The publish form expired. Try again."));
+    assert!(kept_body.contains(&format!("value=\"{token}\"")));
+    assert!(!kept_body.contains("not-a-token"));
+
+    let foreign = crate::csrf::generate_csrf_token_with_timestamp();
+    let foreign_post = client
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body(format!(
+            "title=Hello&content=Body&alias=&csrf_token={foreign}"
+        ))
+        .dispatch();
+    assert_eq!(foreign_post.status(), Status::Ok);
+    assert!(foreign_post.headers().get_one("Set-Cookie").is_none());
+    let foreign_body = foreign_post.into_string().unwrap();
+    assert!(foreign_body.contains("The publish form expired. Try again."));
+    assert!(foreign_body.contains(&format!("value=\"{token}\"")));
+    assert!(!foreign_body.contains(&foreign));
+
+    let passed = client
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body(format!("title=&content=&alias=&csrf_token={token}"))
+        .dispatch();
+    assert_eq!(passed.status(), Status::Ok);
+    let passed_body = passed.into_string().unwrap();
+    assert!(passed_body.contains("A title is required."));
+    assert!(!passed_body.contains("The publish form expired. Try again."));
+    assert!(passed_body.contains(&format!("value=\"{token}\"")));
+
+    let added = client
+        .post("/nojs/relay")
+        .header(ContentType::Form)
+        .body(format!(
+            "title=Hello&content=Body&alias=&relay_box=wss://csrf-check.example&csrf_token={token}"
+        ))
+        .dispatch();
+    assert_eq!(added.status(), Status::Ok);
+    let added_body = added.into_string().unwrap();
+    assert!(added_body.contains("data-relay=\"wss://csrf-check.example\""));
+    assert!(!added_body.contains("The publish form expired. Try again."));
+
+    let refused = client
+        .post("/nojs/relay")
+        .header(ContentType::Form)
+        .body(format!(
+            "title=Hello&content=Body&alias=&relay_box=wss://csrf-other.example&csrf_token={foreign}"
+        ))
+        .dispatch();
+    assert_eq!(refused.status(), Status::Ok);
+    let refused_body = refused.into_string().unwrap();
+    assert!(refused_body.contains("The publish form expired. Try again."));
+    assert!(!refused_body.contains("data-relay=\"wss://csrf-other.example\""));
+
+    let circuits = client
+        .post("/tor-circuits")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"relays":[],"csrf_token":"{token}"}}"#))
+        .dispatch();
+    assert_eq!(circuits.status(), Status::NoContent);
+    let circuits_foreign = client
+        .post("/tor-circuits")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"relays":[],"csrf_token":"{foreign}"}}"#))
+        .dispatch();
+    assert_eq!(circuits_foreign.status(), Status::BadRequest);
+
+    let bare = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount(
+                "/",
+                routes![super::nojs_create_post, super::assign_tor_circuits],
+            ),
+    )
+    .unwrap();
+    let minted = crate::csrf::generate_csrf_token_with_timestamp();
+    let missing = bare
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body(format!(
+            "title=Hello&content=Body&alias=&csrf_token={minted}"
+        ))
+        .dispatch();
+    assert_eq!(missing.status(), Status::Ok);
+    assert!(missing
+        .into_string()
+        .unwrap()
+        .contains("The publish form expired. Try again."));
+    let missing_circuits = bare
+        .post("/tor-circuits")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"relays":[],"csrf_token":"{minted}"}}"#))
+        .dispatch();
+    assert_eq!(missing_circuits.status(), Status::BadRequest);
+
+    let fresh = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount("/", routes![super::index]),
+    )
+    .unwrap();
+    let replaced = fresh
+        .get("/")
+        .cookie(("nonograph_csrf", "not-a-token"))
+        .dispatch();
+    let replaced_header = replaced.headers().get_one("Set-Cookie").unwrap();
+    assert!(replaced_header.contains("HttpOnly"));
+    assert!(!replaced_header.contains("Secure"));
+    let fresh = replaced
+        .cookies()
+        .get(crate::csrf::COOKIE_NAME)
+        .unwrap()
+        .value()
+        .to_string();
+    assert_ne!(fresh, token);
+    assert!(crate::csrf::is_valid_csrf_token(&fresh));
+    let replaced_body = replaced.into_string().unwrap();
+    assert!(replaced_body.contains(&format!("value=\"{fresh}\"")));
+    assert!(!replaced_body.contains("not-a-token"));
+
+    let mut off = crate::config::Config::default();
+    off.security.csrf_protection_enabled = false;
+    let open = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(off)
+            .mount("/", routes![super::index, super::nojs_create_post]),
+    )
+    .unwrap();
+    let plain = open.get("/").dispatch();
+    assert_eq!(plain.status(), Status::Ok);
+    assert!(plain.headers().get_one("Set-Cookie").is_none());
+    let plain_body = plain.into_string().unwrap();
+    assert!(plain_body.contains("name=\"csrf_token\""));
+    assert!(plain_body.contains("value=\"\""));
+    let open_post = open
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body("title=&content=&alias=&csrf_token=")
+        .dispatch();
+    assert_eq!(open_post.status(), Status::Ok);
+    assert!(open_post.headers().get_one("Set-Cookie").is_none());
+    let open_body = open_post.into_string().unwrap();
+    assert!(open_body.contains("A title is required."));
+    assert!(!open_body.contains("The publish form expired. Try again."));
 }
 
 #[test]
@@ -126,7 +324,7 @@ fn rendered_home_switches_the_content_field() {
     let nojs = engine
         .render(
             "home",
-            &home_context(&config, true, Some("content_required")),
+            &home_context(&config, true, Some("content_required"), None),
         )
         .unwrap();
     assert!(nojs.contains("<textarea name=\"content\""));
@@ -139,7 +337,7 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs.contains("256,000"));
 
     let js = engine
-        .render("home", &home_context(&config, false, None))
+        .render("home", &home_context(&config, false, None, None))
         .unwrap();
     assert!(js.contains("<writemark-editor"));
     assert!(!js.contains("<textarea name=\"content\""));
@@ -252,7 +450,7 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
     let config = crate::config::Config::default();
     let engine = crate::template::TemplateEngine::new("templates");
     let nojs = engine
-        .render("home", &home_context(&config, true, None))
+        .render("home", &home_context(&config, true, None, None))
         .unwrap();
     assert!(nojs.contains("action=\"/nojs/create\""));
     assert_eq!(
@@ -289,7 +487,7 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
     assert!(!nojs.contains("addEventListener"));
 
     let js = engine
-        .render("home", &home_context(&config, false, None))
+        .render("home", &home_context(&config, false, None, None))
         .unwrap();
     let js_add = tag_after(
         &js,
@@ -324,7 +522,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
         relay_box: "  wss://damus.io  ".to_string(),
         relay_remove: false,
     };
-    let html = render_nojs_draft(&config, &form).0;
+    let html = render_nojs_draft(&config, &form, None, "").0;
     let form_html = publish_form(&html);
     let sidebar = &html[html.find("class=\"sidebar-relays\"").unwrap()..];
     assert!(sidebar.contains("<li data-relay=\"wss://damus.io\">"));
@@ -345,7 +543,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     form.content.clear();
     form.relay.clear();
     form.relay_box = "wss://relay.damus.io".to_string();
-    let bare = render_nojs_draft(&config, &form).0;
+    let bare = render_nojs_draft(&config, &form, None, "").0;
     assert!(bare.contains("<li data-relay=\"wss://relay.damus.io\">"));
     assert!(publish_form(&bare)
         .contains("<input type=\"hidden\" name=\"relay\" value=\"wss://relay.damus.io\" />"));
@@ -356,7 +554,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     form.content = "# ici\n\nhey".to_string();
     form.relay = "wss://relay.damus.io".to_string();
     form.relay_box = "wss://nos.lol".to_string();
-    let replaced = render_nojs_draft(&config, &form).0;
+    let replaced = render_nojs_draft(&config, &form, None, "").0;
     assert!(replaced.contains("<li data-relay=\"wss://nos.lol\">"));
     assert!(!replaced.contains("data-relay=\"wss://relay.damus.io\""));
     assert!(publish_form(&replaced)
@@ -365,7 +563,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
 
     form.relay = "wss://nos.lol".to_string();
     form.relay_box = "wss://127.0.0.1".to_string();
-    let rejected = render_nojs_draft(&config, &form).0;
+    let rejected = render_nojs_draft(&config, &form, None, "").0;
     let rejected_sidebar = &rejected[rejected.find("class=\"sidebar-relays\"").unwrap()..];
     assert_eq!(
         relay_field_error(&rejected),
@@ -378,7 +576,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     assert!(!rejected_sidebar.contains("<li data-relay=\"wss://127.0.0.1\">"));
 
     form.relay_box = "wss://relay.primal.net".to_string();
-    let configured = render_nojs_draft(&config, &form).0;
+    let configured = render_nojs_draft(&config, &form, None, "").0;
     let configured_sidebar = &configured[configured.find("class=\"sidebar-relays\"").unwrap()..];
     assert_eq!(
         relay_field_error(&configured),
@@ -389,7 +587,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     assert!(configured_sidebar.contains("<li data-relay=\"wss://nos.lol\">"));
 
     form.relay_box = "wss://Relay.Primal.net/".to_string();
-    let spelled = render_nojs_draft(&config, &form).0;
+    let spelled = render_nojs_draft(&config, &form, None, "").0;
     assert_eq!(
         relay_field_error(&spelled),
         "That relay is already configured on this site."
@@ -400,7 +598,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
 
     form.relay.clear();
     form.relay_box = "wss://Damus.io/".to_string();
-    let canonical = render_nojs_draft(&config, &form).0;
+    let canonical = render_nojs_draft(&config, &form, None, "").0;
     assert!(publish_form(&canonical)
         .contains("<input type=\"hidden\" name=\"relay\" value=\"wss://damus.io\" />"));
     assert!(canonical.contains("<li data-relay=\"wss://damus.io\">"));
@@ -408,14 +606,14 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     form.relay = "wss://nos.lol".to_string();
 
     form.relay_box.clear();
-    let empty = render_nojs_draft(&config, &form).0;
+    let empty = render_nojs_draft(&config, &form, None, "").0;
     assert_eq!(relay_field_error(&empty), "Enter a relay URL.");
     assert_eq!(form_error_text(&empty), "");
     assert!(empty.contains("# ici"));
     assert!(empty.contains("<li data-relay=\"wss://nos.lol\">"));
 
     form.relay_remove = true;
-    let removed = render_nojs_draft(&config, &form).0;
+    let removed = render_nojs_draft(&config, &form, None, "").0;
     let removed_sidebar = &removed[removed.find("class=\"sidebar-relays\"").unwrap()..];
     assert!(removed_sidebar.contains("relay-list-user\" hidden"));
     assert!(publish_form(&removed).contains("<input type=\"hidden\" name=\"relay\" value=\"\" />"));
@@ -427,7 +625,7 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     form.relay_box = "wss://damus.io".to_string();
     form.relay_remove = false;
     form.csrf_token = "not-a-token".to_string();
-    let expired = render_nojs_draft(&config, &form).0;
+    let expired = render_nojs_draft(&config, &form, None, "").0;
     let expired_sidebar = &expired[expired.find("class=\"sidebar-relays\"").unwrap()..];
     assert!(expired.contains("The publish form expired. Try again."));
     assert!(expired.contains("# ici"));
@@ -1339,19 +1537,24 @@ fn nojs_create_keeps_csrf_and_validates_the_trimmed_fields_and_raw_body() {
     };
 
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=csrf_token_invalid");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.csrf_token = crate::csrf::generate_csrf_token_with_timestamp();
+    let other = crate::csrf::generate_csrf_token_with_timestamp();
+    let href = create_location(&form, &config, &other);
+    assert_eq!(href, "/nojs?error=csrf_token_invalid");
+    let href = create_location(&form, &config, "");
+    assert_eq!(href, "/nojs?error=csrf_token_invalid");
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, &form.csrf_token);
     assert_eq!(href, "/nojs?error=content_required");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.content = format!(" {} ", "y".repeat(config.limits.content_max_length));
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, &form.csrf_token);
     assert_eq!(href, "/nojs?error=content_too_long");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -1359,7 +1562,7 @@ fn nojs_create_keeps_csrf_and_validates_the_trimmed_fields_and_raw_body() {
     config.nostr.timeout_secs = 1;
     config.nostr.relays = vec!["wss://nojs-seal.invalid".to_string()];
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, &form.csrf_token);
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
@@ -1392,7 +1595,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
 
     set_nojs_test_accepted(Some(vec![instance.clone()]));
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert!(query.is_empty(), "{href}");
@@ -1429,7 +1632,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
     rejected.relay = "wss://hint.example".to_string();
     set_nojs_test_accepted(Some(vec!["wss://hint.example".to_string()]));
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&rejected, &config);
+    let href = create_location(&rejected, &config, "");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert!(crate::nostr::sealed_locator(&locator), "{href}");
@@ -1468,7 +1671,7 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
     set_nojs_test_accepted(Some(vec![instance]));
     set_nojs_test_fetch(NojsTestFetch::Capture);
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert!(query.is_empty(), "{href}");
@@ -1590,7 +1793,7 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
     set_nojs_test_accepted(Some(vec!["wss://hint.example".to_string()]));
     set_nojs_test_fetch(NojsTestFetch::Capture);
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
@@ -1652,7 +1855,7 @@ fn nojs_publish_failure_keeps_the_draft() {
         relay_remove: false,
     };
 
-    let expired = nojs_publish_failure_page(&config, &form, "csrf_token_invalid").0;
+    let expired = nojs_publish_failure_page(&config, &form, "csrf_token_invalid", None).0;
     assert!(expired.contains("The publish form expired. Try again."));
     assert!(expired.contains("Hello &lt;World&gt;"));
     assert!(expired.contains("  # ici  "));
@@ -1668,7 +1871,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     blank.relay.clear();
     blank.relay_box.clear();
     blank.content = " \n ".to_string();
-    let empty = nojs_publish_failure_page(&config, &blank, "content_required").0;
+    let empty = nojs_publish_failure_page(&config, &blank, "content_required", None).0;
     assert!(empty.contains("Write something before publishing."));
     assert!(empty.contains("Hello &lt;World&gt;"));
     assert!(empty.contains(" \n "));
@@ -1677,7 +1880,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     let mut local = form.clone();
     local.relay.clear();
     local.relay_box = "wss://127.0.0.1".to_string();
-    let rejected = nojs_publish_failure_page(&config, &local, "relay_invalid").0;
+    let rejected = nojs_publish_failure_page(&config, &local, "relay_invalid", None).0;
     assert_eq!(
         relay_field_error(&rejected),
         "Use a public wss:// relay URL."
@@ -1693,7 +1896,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     let mut configured = form.clone();
     configured.relay.clear();
     configured.relay_box = "wss://relay.primal.net".to_string();
-    let known = nojs_publish_failure_page(&config, &configured, "nostr_publish_failed").0;
+    let known = nojs_publish_failure_page(&config, &configured, "nostr_publish_failed", None).0;
     assert!(known.contains("Publishing failed. Try again."));
     assert!(relay_url_input_after(&known, "sidebar-relays")
         .contains("value=\"wss://relay.primal.net\""));
@@ -1702,7 +1905,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     let mut both = form.clone();
     both.relay = "wss://relay.damus.io".to_string();
     both.relay_box = "wss://127.0.0.1".to_string();
-    let kept = nojs_publish_failure_page(&config, &both, "relay_invalid").0;
+    let kept = nojs_publish_failure_page(&config, &both, "relay_invalid", None).0;
     assert!(
         kept.contains("<input type=\"hidden\" name=\"relay\" value=\"wss://relay.damus.io\" />")
     );
@@ -1714,7 +1917,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     let mut poisoned = form.clone();
     poisoned.relay = "wss://127.0.0.1".to_string();
     poisoned.relay_box = "   ".to_string();
-    let dropped = nojs_publish_failure_page(&config, &poisoned, "title_required").0;
+    let dropped = nojs_publish_failure_page(&config, &poisoned, "title_required", None).0;
     assert!(dropped.contains("A title is required."));
     assert_eq!(relay_field_error(&dropped), "");
     assert!(dropped.contains("<input type=\"hidden\" name=\"relay\" value=\"\" />"));
@@ -1729,7 +1932,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     assert!(nojs_error_code("/nojs?error=").is_none());
     assert!(nojs_error_code("/?error=title_required").is_none());
 
-    let too_long = nojs_publish_failure_page(&config, &form, "content_too_long").0;
+    let too_long = nojs_publish_failure_page(&config, &form, "content_too_long", None).0;
     assert!(too_long.contains("The post is too long."));
     assert!(too_long.contains("Hello &lt;World&gt;"));
     assert!(too_long.contains("  # ici  "));
@@ -1764,7 +1967,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
     assert!(published.payload.len() > form.content.len());
     assert!(published.payload.len() <= cap);
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     set_nojs_test_accepted(None);
     assert!(href.starts_with("/s/"), "{href}");
@@ -1788,7 +1991,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
         Err(error) => panic!("{error}"),
         Ok(_) => panic!("expected content_too_long"),
     }
-    let page = nojs_publish_failure_page(&config, &over, "content_too_long").0;
+    let page = nojs_publish_failure_page(&config, &over, "content_too_long", None).0;
     assert!(page.contains("The post is too long."));
     assert!(page.contains("Hello &lt;World&gt;"));
     assert!(page.contains(&"b".repeat(64)));
@@ -1807,7 +2010,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
     };
     assert!(controls.content.len() <= wide.limits.content_max_length);
     assert_nojs_error(&controls, &wide, "content_too_long");
-    let kept = nojs_publish_failure_page(&wide, &controls, "content_too_long").0;
+    let kept = nojs_publish_failure_page(&wide, &controls, "content_too_long", None).0;
     assert!(kept.contains("The post is too long."));
     assert!(kept.contains("value=\"T\"") || kept.contains(">T</textarea>"));
     assert!(kept.contains(&controls.content));
@@ -1815,7 +2018,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
 
 fn assert_nojs_error(form: &NewPost, config: &crate::config::Config, error: &str) {
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(form, config);
+    let href = create_location(form, config, "");
     assert_eq!(href, format!("/nojs?error={error}"));
     assert!(href.starts_with("/nojs?error="), "{href}");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
@@ -1833,13 +2036,27 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
         relays: vec!["wss://127.0.0.1".to_string()],
         csrf_token: String::new(),
     };
-    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config).unwrap();
+    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config, "").unwrap();
     assert_eq!(parsed.id, note.id);
     assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
     assert_eq!(locator, "0123456789abcdef0123");
 
     config.security.csrf_protection_enabled = true;
-    assert!(note_and_relays_for_publish(&body, &config).is_none());
+    assert!(note_and_relays_for_publish(&body, &config, "").is_none());
+    let token = crate::csrf::generate_csrf_token_with_timestamp();
+    let mut paired = body;
+    paired.csrf_token = token.clone();
+    assert!(note_and_relays_for_publish(&paired, &config, "").is_none());
+    assert!(note_and_relays_for_publish(
+        &paired,
+        &config,
+        &crate::csrf::generate_csrf_token_with_timestamp(),
+    )
+    .is_none());
+    let (parsed, relays, locator) = note_and_relays_for_publish(&paired, &config, &token).unwrap();
+    assert_eq!(parsed.id, note.id);
+    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(locator, "0123456789abcdef0123");
 }
 
 #[test]
@@ -1854,7 +2071,7 @@ fn nostr_publish_refuses_a_clear_long_form_note() {
         relays: vec!["wss://127.0.0.1".to_string()],
         csrf_token: String::new(),
     };
-    assert!(note_and_relays_for_publish(&body, &config).is_none());
+    assert!(note_and_relays_for_publish(&body, &config, "").is_none());
 }
 
 #[test]
@@ -1869,7 +2086,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
         relays: vec!["wss://127.0.0.1".to_string()],
         csrf_token: String::new(),
     };
-    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config).unwrap();
+    let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config, "").unwrap();
     assert_eq!(parsed.id, note.id);
     assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
     assert_eq!(locator, "0123456789abcdef0123");
@@ -1890,8 +2107,8 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
         relays: vec!["wss://127.0.0.1".to_string()],
         csrf_token: String::new(),
     };
-    assert!(note_and_relays_for_publish(&long_body, &config).is_none());
-    assert!(note_and_relays_for_publish(&body, &config).is_some());
+    assert!(note_and_relays_for_publish(&long_body, &config, "").is_none());
+    assert!(note_and_relays_for_publish(&body, &config, "").is_some());
 }
 
 #[test]
@@ -1950,6 +2167,8 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     let body = &pages[start..];
     let body = &body[..body.find("\n#[get(\"/s/<locator>").unwrap()];
     assert!(body.contains("publish_result(locator, accepted)"));
+    assert!(body.contains("note_and_relays_for_publish(&body, &config, &csrf_cookie)"));
+    assert!(body.contains("request_csrf_cookie(cookies)"));
 }
 
 #[test]
@@ -1972,7 +2191,7 @@ fn nostr_publish_sends_site_relays_and_the_added_relays_that_fit() {
         relays,
         csrf_token: String::new(),
     };
-    let (_, chosen, _) = note_and_relays_for_publish(&body, &config).unwrap();
+    let (_, chosen, _) = note_and_relays_for_publish(&body, &config, "").unwrap();
     assert_eq!(
         chosen,
         vec![
@@ -2002,19 +2221,23 @@ fn tor_circuit_post_uses_the_publish_csrf_token() {
         csrf_token: String::new(),
     };
     config.security.csrf_protection_enabled = true;
-    assert!(relays_for_circuit_pass(&missing, &config).is_none());
+    assert!(relays_for_circuit_pass(&missing, &config, "").is_none());
 
+    let token = crate::csrf::generate_csrf_token_with_timestamp();
     let accepted = TorCircuitsBody {
         relays: relays.clone(),
-        csrf_token: crate::csrf::generate_csrf_token_with_timestamp(),
+        csrf_token: token.clone(),
     };
+    assert!(relays_for_circuit_pass(&accepted, &config, "").is_none());
+    let other = crate::csrf::generate_csrf_token_with_timestamp();
+    assert!(relays_for_circuit_pass(&accepted, &config, &other).is_none());
     assert_eq!(
-        relays_for_circuit_pass(&accepted, &config).as_deref(),
+        relays_for_circuit_pass(&accepted, &config, &token).as_deref(),
         Some(relays.as_slice())
     );
     config.security.csrf_protection_enabled = false;
     assert_eq!(
-        relays_for_circuit_pass(&missing, &config).as_deref(),
+        relays_for_circuit_pass(&missing, &config, "").as_deref(),
         Some(relays.as_slice())
     );
 }
@@ -2439,7 +2662,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
 #[test]
 fn homepage_js_gets_the_instance_public_relays() {
     let config = crate::config::Config::default();
-    let js = home_context(&config, false, None);
+    let js = home_context(&config, false, None, None);
     let relays: Vec<String> = serde_json::from_str(js.get("nostr_relays").unwrap()).unwrap();
     assert_eq!(
         relays,
@@ -2471,15 +2694,15 @@ fn homepage_js_gets_the_instance_public_relays() {
 
     let mut slow = config.clone();
     slow.nostr.timeout_secs = 20;
-    let longer = home_context(&slow, false, None);
+    let longer = home_context(&slow, false, None, None);
     assert_eq!(longer.get("nostr_timeout_ms").unwrap(), "20000");
 
     let mut private = config.clone();
     private.nostr.relays = vec!["wss://127.0.0.1".to_string()];
-    let hidden = home_context(&private, false, None);
+    let hidden = home_context(&private, false, None, None);
     assert_eq!(hidden.get("nostr_relays").unwrap(), "[]");
 
-    let nojs = home_context(&config, true, None);
+    let nojs = home_context(&config, true, None, None);
     assert!(nojs.get("scripts").unwrap().is_empty());
     assert!(nojs.get("nostr_relays").is_some());
 }
@@ -2509,7 +2732,7 @@ fn nojs_create_trims_the_title_and_alias_and_keeps_the_body() {
     config.nostr.timeout_secs = 1;
     config.nostr.relays = vec!["wss://nojs-seal.invalid".to_string()];
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2518,14 +2741,14 @@ fn nojs_create_trims_the_title_and_alias_and_keeps_the_body() {
     padded.alias = "Ada".to_string();
     padded.content = "hi".to_string();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&padded, &config);
+    let href = create_location(&padded, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     padded.title = "Hello".to_string();
     padded.alias = format!(" {} ", "a".repeat(config.limits.alias_max_length));
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&padded, &config);
+    let href = create_location(&padded, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
@@ -2549,14 +2772,14 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     assert_eq!(nojs_chosen_relay(&form), "");
 
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.relay = "   ".to_string();
     assert_eq!(nojs_chosen_relay(&form), "");
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2565,13 +2788,13 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     assert_eq!(nojs_chosen_relay(&form), "wss://relay.damus.io");
     form.relay_box = "wss://127.0.0.1".to_string();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=relay_invalid");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.content = " \n ".to_string();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=content_required");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2579,7 +2802,7 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     form.content = "hi".to_string();
     form.csrf_token = "not-a-token".to_string();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=csrf_token_invalid");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2590,14 +2813,14 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     form.relay.clear();
     form.relay_box.clear();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.relay = "wss://nojs-seal.invalid".to_string();
     config.nostr.relays = vec!["wss://127.0.0.1".to_string()];
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2605,7 +2828,7 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     form.relay_box = "wss://127.0.0.1".to_string();
     assert_eq!(nojs_chosen_relay(&form), "wss://127.0.0.1");
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=relay_invalid");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2624,7 +2847,7 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     form.relay = "wss://127.0.0.1".to_string();
     form.relay_box.clear();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
@@ -2701,13 +2924,13 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
         relay_remove: false,
     };
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.content = " \n ".to_string();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=content_required");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2716,20 +2939,20 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
     form.relay_box.clear();
     assert_eq!(nojs_chosen_relay(&form), "");
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.relay = "wss://nojs-seal.invalid".to_string();
     config.nostr.timeout_secs = 1;
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
     form.relay.clear();
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
@@ -2764,7 +2987,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     let nojs = pages.find("pub async fn nojs_create_post(").unwrap();
     let blocking = &pages[nojs..pages.find("pub struct NostrPublishBody").unwrap()];
     assert!(blocking.contains("spawn_blocking"));
-    assert!(blocking.contains("create_location(&moved, &config_owned)"));
+    assert!(blocking.contains("create_location(&moved, &config_owned, &csrf_cookie)"));
     let nostr = pages.find("pub async fn nostr_publish(").unwrap();
     let after_nostr = pages.find("fn static_page_cache(").unwrap();
     assert!(!pages[nostr..after_nostr].contains("save_post_to_file"));
@@ -2839,7 +3062,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     );
 
     let temp = tempfile::tempdir().unwrap();
-    let href = create_location(&form, &config);
+    let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2847,7 +3070,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     let temp = tempfile::tempdir().unwrap();
     let mut rejected = form.clone();
     rejected.content = " \n ".to_string();
-    let href = create_location(&rejected, &config);
+    let href = create_location(&rejected, &config, "");
     assert_eq!(href, "/nojs?error=content_required");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 
@@ -2906,7 +3129,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         };
         config.nostr.relays = vec!["wss://127.0.0.1".to_string()];
         let blocked = tempfile::tempdir().unwrap();
-        let href = create_location(&form, &config);
+        let href = create_location(&form, &config, "");
         assert_eq!(href, "/nojs?error=nostr_publish_failed");
         assert!(std::fs::read_dir(blocked.path().join("content")).is_err());
         assert!(nojs_publish_slot().is_err());
@@ -2920,7 +3143,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         }
         let _reset_accepted = ResetAccepted;
         set_nojs_test_accepted(Some(vec!["wss://relay.primal.net".to_string()]));
-        let href = create_location(&form, &config);
+        let href = create_location(&form, &config, "");
         assert_eq!(href, "/nojs?error=nostr_publish_failed");
         assert!(
             nojs_publish_slot().is_err(),
@@ -2928,7 +3151,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         );
 
         held.pop();
-        let href = create_location(&form, &config);
+        let href = create_location(&form, &config, "");
         assert!(href.starts_with("/s/"), "{href}");
         let released = nojs_publish_slot().expect("publish released the reader slot");
         drop(released);

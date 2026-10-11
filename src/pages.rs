@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rocket::http::{ContentType, Header, Status};
+use rocket::http::{ContentType, CookieJar, Header, SameSite, Status};
 use rocket::response::content;
 use rocket::response::Responder;
 use rocket::serde::json::Json;
@@ -268,8 +268,15 @@ fn format_count(value: usize) -> String {
     grouped.chars().rev().collect()
 }
 
-fn home_context(config: &Config, nojs: bool, error: Option<&str>) -> HashMap<String, String> {
-    home_form_context(config, nojs, error, "", "", "", "", "", false, false)
+fn home_context(
+    config: &Config,
+    nojs: bool,
+    error: Option<&str>,
+    cookies: Option<&CookieJar<'_>>,
+) -> HashMap<String, String> {
+    home_form_context(
+        config, nojs, error, "", "", "", "", "", false, false, cookies,
+    )
 }
 
 fn home_form_context(
@@ -283,6 +290,7 @@ fn home_form_context(
     typed: &str,
     list_relay: bool,
     surface_relay_error: bool,
+    cookies: Option<&CookieJar<'_>>,
 ) -> HashMap<String, String> {
     let mut context = HashMap::new();
     let max_length = config.limits.content_max_length.to_string();
@@ -332,12 +340,10 @@ fn home_form_context(
     } else {
         home_error_message(Some(relay_error))
     };
-    let csrf_token = if config.security.csrf_protection_enabled {
-        csrf::generate_csrf_token_with_timestamp()
-    } else {
-        String::new()
-    };
-    context.insert("csrf_token".to_string(), csrf_token);
+    context.insert(
+        "csrf_token".to_string(),
+        form_csrf_token(config, cookies),
+    );
     context.insert(
         "form_action".to_string(),
         if nojs { "/nojs/create" } else { "/nojs" }.to_string(),
@@ -391,8 +397,13 @@ fn about_durability(nojs: bool) -> &'static str {
     }
 }
 
-fn render_home(config: &Config, nojs: bool, error: Option<&str>) -> content::RawHtml<String> {
-    let context = home_context(config, nojs, error);
+fn render_home(
+    config: &Config,
+    nojs: bool,
+    error: Option<&str>,
+    cookies: &CookieJar<'_>,
+) -> content::RawHtml<String> {
+    let context = home_context(config, nojs, error, Some(cookies));
     match template::shared().render("home", &context) {
         Ok(html) => content::RawHtml(html),
         Err(error) => content::RawHtml(format!("Template error: {error}")),
@@ -400,13 +411,21 @@ fn render_home(config: &Config, nojs: bool, error: Option<&str>) -> content::Raw
 }
 
 #[get("/?<error>")]
-pub fn index(error: Option<&str>, config: &State<Config>) -> content::RawHtml<String> {
-    render_home(config, false, error)
+pub fn index(
+    error: Option<&str>,
+    config: &State<Config>,
+    cookies: &CookieJar<'_>,
+) -> content::RawHtml<String> {
+    render_home(config, false, error, cookies)
 }
 
 #[get("/nojs?<error>")]
-pub fn nojs_index(error: Option<&str>, config: &State<Config>) -> content::RawHtml<String> {
-    render_home(config, true, error)
+pub fn nojs_index(
+    error: Option<&str>,
+    config: &State<Config>,
+    cookies: &CookieJar<'_>,
+) -> content::RawHtml<String> {
+    render_home(config, true, error, cookies)
 }
 
 #[derive(Clone, FromForm)]
@@ -423,17 +442,51 @@ pub(crate) struct NewPost {
     relay_remove: bool,
 }
 
-fn csrf_failure(config: &Config, token: &str) -> Option<&'static str> {
-    if config.security.csrf_protection_enabled && !csrf::is_valid_csrf_token(token) {
+fn csrf_cookie(token: &str) -> rocket::http::Cookie<'static> {
+    rocket::http::Cookie::build((csrf::COOKIE_NAME, token.to_owned()))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .secure(false)
+        .max_age(rocket::time::Duration::seconds(csrf::TOKEN_TTL_SECS as i64))
+        .into()
+}
+
+fn form_csrf_token(config: &Config, cookies: Option<&CookieJar<'_>>) -> String {
+    if !config.security.csrf_protection_enabled {
+        return String::new();
+    }
+    let existing = cookies.and_then(|jar| {
+        jar.get(csrf::COOKIE_NAME)
+            .map(|cookie| cookie.value().to_string())
+    });
+    let (token, set_cookie) = csrf::token_for_form(existing.as_deref());
+    if set_cookie {
+        if let Some(jar) = cookies {
+            jar.add(csrf_cookie(&token));
+        }
+    }
+    token
+}
+
+fn request_csrf_cookie(cookies: &CookieJar<'_>) -> String {
+    cookies
+        .get(csrf::COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .unwrap_or_default()
+}
+
+fn csrf_failure(config: &Config, field: &str, cookie: &str) -> Option<&'static str> {
+    if config.security.csrf_protection_enabled && !csrf::accepts_submission(field, cookie) {
         Some("csrf_token_invalid")
     } else {
         None
     }
 }
 
-pub(crate) fn create_location(form: &NewPost, config: &Config) -> String {
+pub(crate) fn create_location(form: &NewPost, config: &Config, csrf_cookie: &str) -> String {
     let home = "/nojs";
-    if let Some(error) = csrf_failure(config, &form.csrf_token) {
+    if let Some(error) = csrf_failure(config, &form.csrf_token, csrf_cookie) {
         return format!("{home}?error={error}");
     }
 
@@ -670,8 +723,9 @@ fn nojs_relay_add_status(
     relay: &str,
     csrf_token: &str,
     config: &Config,
+    csrf_cookie: &str,
 ) -> (Option<&'static str>, bool) {
-    if let Some(error) = csrf_failure(config, csrf_token) {
+    if let Some(error) = csrf_failure(config, csrf_token, csrf_cookie) {
         return (Some(error), false);
     }
     if relay.is_empty() {
@@ -695,6 +749,7 @@ fn render_nojs_form(
     error: Option<&str>,
     list_relay: bool,
     surface_relay_error: bool,
+    cookies: Option<&CookieJar<'_>>,
 ) -> content::RawHtml<String> {
     let saved = crate::nostr::canonical_public_relay(form.relay.trim()).unwrap_or_default();
     let context = home_form_context(
@@ -708,6 +763,7 @@ fn render_nojs_form(
         form.relay_box.trim(),
         list_relay,
         surface_relay_error,
+        cookies,
     );
     match template::shared().render("home", &context) {
         Ok(html) => content::RawHtml(html),
@@ -715,28 +771,35 @@ fn render_nojs_form(
     }
 }
 
-fn render_nojs_draft(config: &Config, form: &NewPost) -> content::RawHtml<String> {
+fn render_nojs_draft(
+    config: &Config,
+    form: &NewPost,
+    cookies: Option<&CookieJar<'_>>,
+    csrf_cookie: &str,
+) -> content::RawHtml<String> {
     let mut form = form.clone();
-    if let Some(error) = csrf_failure(config, &form.csrf_token) {
+    if let Some(error) = csrf_failure(config, &form.csrf_token, csrf_cookie) {
         return render_nojs_form(
             config,
             &form,
             Some(error),
             nojs_lists_extra_relay(form.relay.trim(), config),
             false,
+            cookies,
         );
     }
     if form.relay_remove {
         form.relay.clear();
-        return render_nojs_form(config, &form, None, false, false);
+        return render_nojs_form(config, &form, None, false, false, cookies);
     }
     form.relay_box = form.relay_box.trim().to_string();
-    let (error, accept) = nojs_relay_add_status(&form.relay_box, &form.csrf_token, config);
+    let (error, accept) =
+        nojs_relay_add_status(&form.relay_box, &form.csrf_token, config, csrf_cookie);
     if accept {
         form.relay = crate::nostr::canonical_public_relay(&form.relay_box)
             .unwrap_or_else(|| form.relay_box.clone());
         form.relay_box.clear();
-        return render_nojs_form(config, &form, None, true, false);
+        return render_nojs_form(config, &form, None, true, false, cookies);
     }
     render_nojs_form(
         config,
@@ -744,6 +807,7 @@ fn render_nojs_draft(config: &Config, form: &NewPost) -> content::RawHtml<String
         error,
         nojs_lists_extra_relay(form.relay.trim(), config),
         false,
+        cookies,
     )
 }
 
@@ -768,6 +832,7 @@ fn nojs_publish_failure_page(
     config: &Config,
     form: &NewPost,
     error: &str,
+    cookies: Option<&CookieJar<'_>>,
 ) -> content::RawHtml<String> {
     render_nojs_form(
         config,
@@ -775,6 +840,7 @@ fn nojs_publish_failure_page(
         Some(error),
         nojs_lists_extra_relay(form.relay.trim(), config),
         true,
+        cookies,
     )
 }
 
@@ -782,20 +848,24 @@ fn nojs_publish_failure_page(
 pub fn nojs_add_relay(
     form: rocket::form::Form<NewPost>,
     config: &State<Config>,
+    cookies: &CookieJar<'_>,
 ) -> content::RawHtml<String> {
-    render_nojs_draft(config, &form)
+    let csrf_cookie = request_csrf_cookie(cookies);
+    render_nojs_draft(config, &form, Some(cookies), &csrf_cookie)
 }
 
 #[post("/nojs/create", data = "<form>")]
 pub async fn nojs_create_post(
     form: rocket::form::Form<NewPost>,
     config: &State<Config>,
+    cookies: &CookieJar<'_>,
 ) -> rocket::Either<rocket::response::Redirect, content::RawHtml<String>> {
     let form = form.into_inner();
     let config_owned = config.inner().clone();
     let moved = form.clone();
+    let csrf_cookie = request_csrf_cookie(cookies);
     let location = match rocket::tokio::task::spawn_blocking(move || {
-        create_location(&moved, &config_owned)
+        create_location(&moved, &config_owned, &csrf_cookie)
     })
     .await
     {
@@ -805,11 +875,17 @@ pub async fn nojs_create_post(
                 config,
                 &form,
                 "nostr_publish_failed",
+                Some(cookies),
             ));
         }
     };
     if let Some(error) = nojs_error_code(&location) {
-        rocket::Either::Right(nojs_publish_failure_page(config, &form, error))
+        rocket::Either::Right(nojs_publish_failure_page(
+            config,
+            &form,
+            error,
+            Some(cookies),
+        ))
     } else {
         rocket::Either::Left(rocket::response::Redirect::to(location))
     }
@@ -833,8 +909,9 @@ pub struct NostrPublishResult {
 pub(crate) fn note_and_relays_for_publish(
     body: &NostrPublishBody,
     config: &Config,
+    csrf_cookie: &str,
 ) -> Option<(crate::nostr::SignedNote, Vec<String>, String)> {
-    if csrf_failure(config, &body.csrf_token).is_some() {
+    if csrf_failure(config, &body.csrf_token, csrf_cookie).is_some() {
         return None;
     }
     let (note, locator) = crate::nostr::sealed_note_from_json(
@@ -882,17 +959,23 @@ pub(crate) struct TorCircuitsBody {
 pub(crate) fn relays_for_circuit_pass(
     body: &TorCircuitsBody,
     config: &Config,
+    csrf_cookie: &str,
 ) -> Option<Vec<String>> {
-    if csrf_failure(config, &body.csrf_token).is_some() {
+    if csrf_failure(config, &body.csrf_token, csrf_cookie).is_some() {
         return None;
     }
     Some(body.relays.clone())
 }
 
 #[post("/tor-circuits", data = "<body>")]
-pub fn assign_tor_circuits(body: Json<TorCircuitsBody>, config: &State<Config>) -> Status {
+pub fn assign_tor_circuits(
+    body: Json<TorCircuitsBody>,
+    config: &State<Config>,
+    cookies: &CookieJar<'_>,
+) -> Status {
     let config = config.inner();
-    let Some(relays) = relays_for_circuit_pass(&body, config) else {
+    let csrf_cookie = request_csrf_cookie(cookies);
+    let Some(relays) = relays_for_circuit_pass(&body, config, &csrf_cookie) else {
         return Status::BadRequest;
     };
     let timeout = relay_timeout(config);
@@ -904,14 +987,16 @@ pub fn assign_tor_circuits(body: Json<TorCircuitsBody>, config: &State<Config>) 
 pub async fn nostr_publish(
     body: Json<NostrPublishBody>,
     config: &State<Config>,
+    cookies: &CookieJar<'_>,
 ) -> Result<Json<NostrPublishResult>, Status> {
     let config = config.inner().clone();
     let body = body.into_inner();
+    let csrf_cookie = request_csrf_cookie(cookies);
     let Some(_slot) = PublicFetchSlot::acquire() else {
         return Err(Status::ServiceUnavailable);
     };
     match rocket::tokio::task::spawn_blocking(move || {
-        let (note, relays, locator) = note_and_relays_for_publish(&body, &config)?;
+        let (note, relays, locator) = note_and_relays_for_publish(&body, &config, &csrf_cookie)?;
         let timeout = relay_timeout(&config);
         let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
         Some(publish_result(locator, accepted))

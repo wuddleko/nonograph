@@ -1,8 +1,14 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hmac::{Hmac, Mac};
 use rand::RngCore;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+pub const COOKIE_NAME: &str = "nonograph_csrf";
+pub const TOKEN_TTL_SECS: u64 = 86_400;
 
 pub fn generate_csrf_token_with_timestamp() -> String {
     let timestamp = SystemTime::now()
@@ -38,7 +44,20 @@ pub fn is_valid_csrf_token(token: &str) -> bool {
         .as_secs();
     current_time
         .checked_sub(timestamp)
-        .is_some_and(|age| age < 86400)
+        .is_some_and(|age| age < TOKEN_TTL_SECS)
+}
+
+/// Token to put in the form. The bool is true when the response must set the cookie.
+pub fn token_for_form(existing: Option<&str>) -> (String, bool) {
+    match existing {
+        Some(token) if is_valid_csrf_token(token) => (token.to_string(), false),
+        _ => (generate_csrf_token_with_timestamp(), true),
+    }
+}
+
+/// The form field and the cookie have to be the same unexpired token.
+pub fn accepts_submission(field: &str, cookie: &str) -> bool {
+    mac_matches(field, cookie) && is_valid_csrf_token(field)
 }
 
 fn csrf_key() -> &'static [u8; 32] {
@@ -51,20 +70,9 @@ fn csrf_key() -> &'static [u8; 32] {
 }
 
 fn csrf_mac(data: &str) -> String {
-    let key = csrf_key();
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for (index, byte) in key.iter().enumerate() {
-        ipad[index] ^= byte;
-        opad[index] ^= byte;
-    }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    inner.update(data.as_bytes());
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner.finalize());
-    hex_encode(&outer.finalize())
+    let mut mac = HmacSha256::new_from_slice(csrf_key()).expect("sha256 accepts this key");
+    mac.update(data.as_bytes());
+    hex_encode(&mac.finalize().into_bytes())
 }
 
 fn mac_matches(provided: &str, expected: &str) -> bool {
