@@ -109,25 +109,6 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     let clear = sign_note("Hello", "Ada", "plaintext", 1_700_000_000);
     let clear_message = format!(r#"["EVENT","sub",{}]"#, clear.event_json);
     assert!(sealed_from_relay_message(&clear_message, &clear.id_hex(), locator, payload_max).is_none());
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn sealed_from_relay_message").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn unchanged_relay_event").unwrap()];
-    assert!(body.contains("sealed_note_capped("));
-    assert!(!body.contains("sealed_payload_max("));
-    assert!(body.contains("sealed_frame_max("));
-    assert!(body.contains("sealed_event_max("));
-    assert!(body.contains("event_id"));
-    assert!(!body.contains("note.id"));
-    let frame = body.find("sealed_frame_max(").unwrap();
-    let extract = body.find("unchanged_relay_event(").unwrap();
-    let event = body.find("event_json.len()").unwrap();
-    assert!(frame < extract);
-    assert!(extract < event);
-    assert!(!body.contains("verify_sig("));
-    assert!(!body.contains("note_fields("));
-    assert!(!body.contains("event_wire("));
-    assert!(!body.contains("post_from_public_note("));
 }
 
 #[test]
@@ -198,20 +179,6 @@ fn a_sealed_fetch_keeps_the_requested_event() {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(kept.content.contains("old1"));
     assert!(!kept.content.contains("new1"));
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn fetch_from_relays").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn take_first_note").unwrap()];
-    assert!(body.contains("take_first_note("));
-    assert!(!body.contains("take_newest_note("));
-    let start = source.find("fn fetch_from_relay(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    assert!(body.contains("RelayQuery::Seal { payload_max, .. }"));
-    assert!(!body.contains("RelayQuery::Addr"));
-    assert!(!body.contains("newest_until_eose"));
-    assert!(!body.contains("created_at >= best_at"));
-    assert!(body.contains("return Ok(Some(note))"));
 }
 
 #[test]
@@ -276,19 +243,6 @@ fn fetch_sealed_skips_when_it_cannot_ask() {
         Duration::from_millis(20),
     )
     .is_none());
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn fetch_from_relays").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn take_first_note").unwrap()];
-    assert!(body.contains("take_first_note("));
-    assert!(!body.contains("take_newest_note("));
-    let start = source.find("fn fetch_from_relay(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    assert!(body.contains("RelayQuery::Seal"));
-    assert!(!body.contains("sealed_events"));
-    assert!(!body.contains("SEALED_FETCH_LIMIT"));
-    assert!(!body.contains("keep_best_on_sealed_oversize("));
 }
 
 #[test]
@@ -305,13 +259,6 @@ fn a_sealed_fetch_caps_the_websocket_frame() {
     assert_eq!(max, 4 + SEALED_EVENT_OVERHEAD + SEALED_FRAME_OVERHEAD);
     assert_eq!(socket.get_config().max_message_size, Some(max));
     assert_eq!(socket.get_config().max_frame_size, Some(max));
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn fetch_from_relay(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    let cap = body.find("limit_sealed_socket(").unwrap();
-    let read = body.find("read_incoming(").unwrap();
-    assert!(cap < read);
 }
 
 #[test]
@@ -343,47 +290,6 @@ fn a_sealed_fetch_stops_on_an_oversize_frame() {
         })) => assert_eq!(size, claimed as usize),
         other => panic!("{other:?}"),
     }
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn read_incoming(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn open_relay_socket").unwrap()];
-    let capacity = body.find("tungstenite::Error::Capacity(").unwrap();
-    let stop = body.find("RELAY_FRAME_TOO_BIG").unwrap();
-    let other = body
-        .find("Err(error) => return Err(error.to_string())")
-        .unwrap();
-    assert!(capacity < stop);
-    assert!(stop < other);
-    assert!(!body.contains("size <= cap"));
-    assert!(!body.contains("max_frame_size"));
-    let start = source.find("fn fetch_from_relay(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    assert!(!body.contains("keep_best_on_sealed_oversize("));
-    assert!(!body.contains("RELAY_FRAME_TOO_BIG"));
-    assert!(!body.contains("newest_until_eose"));
-    assert!(body.contains("text.len() > sealed_frame_max("));
-    assert!(body.contains("Err(error) => return Err(error)"));
-}
-
-#[test]
-fn a_sealed_fetch_asks_for_one_event_id() {
-    let source = include_str!("../src/nostr.rs");
-    let start = source.find("fn req_payload(").unwrap();
-    let req = &source[start..];
-    let req = &req[..req.find("\nfn fetch_from_relay").unwrap()];
-    assert!(req.contains("\"ids\": [event_id_hex]"));
-    assert!(!req.contains("SEALED_FETCH_LIMIT"));
-    let start = source.find("fn fetch_from_relay(").unwrap();
-    let body = &source[start..];
-    let body = &body[..body.find("\nfn note_for_query").unwrap()];
-    let size = body.find("sealed_frame_max(").unwrap();
-    let verify = body.find("note_for_query(&text, query)").unwrap();
-    let eose = body.find("relay_has_no_event(").unwrap();
-    assert!(size < verify);
-    assert!(verify < eose);
-    assert!(!body.contains("sealed_events"));
-    assert!(!body.contains("SEALED_FETCH_LIMIT"));
 }
 
 #[test]

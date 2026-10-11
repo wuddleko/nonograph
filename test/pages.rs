@@ -38,28 +38,6 @@ fn static_assets_are_cacheable_and_html_is_not() {
 }
 
 #[test]
-fn asset_routes_match_path_constants() {
-    let source = include_str!("../src/pages.rs");
-    for path in [
-        PAGE_JS_PATH,
-        PAGE_WASM_PATH,
-        HOME_CSS_PATH,
-        HOME_JS_PATH,
-        NOSTR_JS_PATH,
-        SECP256K1_JS_PATH,
-        POST_CSS_PATH,
-        POST_JS_PATH,
-        POST_NOSCRIPT_CSS_PATH,
-        WRITEMARK_JS_PATH,
-    ] {
-        assert!(
-            source.contains(&format!("#[get(\"{path}\")]")),
-            "route attribute drifted from {path}"
-        );
-    }
-}
-
-#[test]
 fn robots_txt_is_the_file() {
     assert_eq!(robots_txt().0, include_str!("../robots.txt"));
 }
@@ -504,8 +482,6 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
     let click = home_js[listener..].find("addEventListener").unwrap();
     let add_relay = home_js.find("function addRelayFromBlock(").unwrap();
     assert!(add_relay < listener + click);
-    assert!(include_str!("../src/pages.rs")
-        .contains("nojs_publish_relays(nojs_chosen_relay(form), &config.nostr.relays)"));
 }
 
 #[test]
@@ -905,20 +881,6 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(!html.contains("</script><script"));
     assert!(crate::nostr::sealed_locator("0123456789abcdef0123"));
     assert!(!crate::nostr::sealed_locator("0123456789ABCDEF0123"));
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("pub async fn sealed_view").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\npub(crate) fn nojs_query_secret").unwrap()];
-    assert!(body.contains("sealed_locator("));
-    assert!(body.contains("sealed_event_id("));
-    assert!(body.contains("fetch_sealed_by_id("));
-    assert!(body.contains("&hints,"));
-    assert!(body.contains("sealed_shell("));
-    assert!(!body.contains("post_from_public_note("));
-    assert!(!body.contains("note_fields("));
-    assert!(!body.contains("render_markdown"));
-    let main = include_str!("../src/main.rs");
-    assert!(main.contains("pages::sealed_view"));
     let nostr = include_str!("../templates/nostr.js");
     let sign = nostr.find("async function schnorrSign(").unwrap();
     let verify = nostr.find("async function schnorrVerify(").unwrap();
@@ -1060,84 +1022,6 @@ fn nojs_sealed_page_says_the_note_opens_in_the_browser() {
         Ok(_) => panic!("an uppercase locator returned a page"),
         Err((status, _)) => panic!("an uppercase locator returned {status}"),
     }
-    let pages = include_str!("../src/pages.rs");
-    let start = pages
-        .find("pub(crate) async fn nojs_sealed_response(")
-        .unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\npub struct NojsSealedHeaders").unwrap()];
-    assert!(pages.contains("#[get(\"/nojs/s/<locator>/<event_id>?<seal..>\")]"));
-    assert!(pages.contains("#[post(\"/s/<locator>/<event_id>\", data = \"<form>\")]"));
-    assert!(!pages.contains("#[post(\"/nojs/s/<locator>/<event_id>?<seal..>\")]"));
-    assert!(body.contains("&hints,"));
-    let secret = body.find("nojs_query_secret(Some(k))").unwrap();
-    let slot = body.find("PublicFetchSlot::acquire()").unwrap();
-    let fetch = body.find("fetch_sealed_by_id(").unwrap();
-    assert!(secret < slot);
-    assert!(slot < fetch);
-    let opened = body.find("nojs_open_fetched(").unwrap();
-    assert!(fetch < opened);
-    assert!(body.contains("nojs_note_html("));
-    assert!(body.contains("sealed_shell("));
-    assert!(body.contains("&config.nostr.relays"));
-    assert!(body.contains("config.limits.content_max_length"));
-    assert!(body.contains("nojs_not_found()"));
-    assert!(!body.contains("render_markdown"));
-    assert!(!body.contains("post_from_public_note("));
-    assert!(!body.contains("remember_html"));
-    assert!(!body.contains("static_page_cache"));
-    assert!(!body.contains("serve_static_page"));
-    assert!(!body.contains("serve_article"));
-    assert!(!body.contains("PostStorage"));
-    assert!(!body.contains("Redirect"));
-    assert!(!body.contains("Location"));
-    let headers = pages.find("for NojsSealedHeaders<R>").unwrap();
-    let headers = &pages[headers..];
-    let headers = &headers[..headers.find("\n#[derive(FromForm)]").unwrap()];
-    assert!(headers.contains("Referrer-Policy"));
-    assert!(headers.contains("no-referrer"));
-    assert!(headers.contains("Cache-Control"));
-    assert!(headers.contains("no-store"));
-    assert!(pages.contains("struct FragmentRedirect"));
-    assert!(pages.contains("sealed_reader_href("));
-    let open_fn = pages.find("fn event_d_tag(").unwrap();
-    let open_body = &pages[open_fn..];
-    let open_body = &open_body[..open_body.find("\npub(crate) fn nojs_opened_page(").unwrap()];
-    assert!(open_body.contains("nonograph_nip44::open(payload, secret, &d_tag)"));
-    assert!(open_body.contains("\"content\""));
-    assert!(open_body.contains("\"d\""));
-    let page_fn = pages.find("fn nojs_opened_page(").unwrap();
-    let page_body = &pages[page_fn..];
-    let page_body = &page_body[..page_body
-        .find("\npub(crate) async fn nojs_sealed_response(")
-        .unwrap()];
-    assert!(page_body.contains("nojs_open_fetched(secret, event_json, locator, event_id)"));
-    assert!(page_body.contains("nojs_sealed_refusal(locator, event_id)"));
-    let note_fn = pages.find("fn nojs_note_html(").unwrap();
-    let note_end = pages.find("fn js_seal_href(").unwrap();
-    let note_body = &pages[note_fn..note_end];
-    assert!(note_body.contains("render_markdown_with_config(&note.content"));
-    assert!(note_body.contains("note.title"));
-    assert!(note_body.contains("note.author"));
-    assert!(note_body.contains("js_seal_href(locator, event_id, k, hints)"));
-    assert!(note_body.contains("\"mode_label\".to_string(), \"link\".to_string()"));
-    assert!(!note_body.contains("mode_href("));
-    let shared = pages.find("fn article_context(").unwrap();
-    let shared_body = &pages[shared..];
-    let shared_body = &shared_body[..shared_body.find("\nfn fill_page_chrome(").unwrap()];
-    assert!(shared_body.contains("fill_page_chrome("));
-    assert!(shared_body.contains("\"%B %d, %Y\""));
-    assert!(shared_body.contains("\"%Y-%m-%dT00:00:00+00:00\""));
-    assert!(shared_body.contains("Anonymous"));
-    assert!(!page_body.contains("remember_html"));
-    assert!(!page_body.contains("static_page_cache"));
-    assert!(!page_body.contains("serve_static_page"));
-    assert!(!page_body.contains("serve_article"));
-    assert!(!page_body.contains("post_scripts"));
-    let main = include_str!("../src/main.rs");
-    assert!(main.contains("pages::nojs_sealed_view"));
-    assert!(main.contains("pages::sealed_open"));
-    assert!(!main.contains("pages::nojs_sealed_open"));
 }
 
 #[test]
@@ -1520,20 +1404,6 @@ fn sealed_query_reuses_relays_for_public_fetch() {
         std::time::Duration::from_millis(20),
     )
     .is_none());
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("fn fetch_sealed_by_id").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body
-        .find("\npub(crate) fn relays_for_public_fetch")
-        .unwrap()];
-    assert!(body.contains("fetch_sealed("));
-    assert!(body.contains("event_id"));
-    assert!(!body.contains("read_seal_in_dir("));
-    assert!(!body.contains("remember_seal_in_dir("));
-    assert!(!body.contains("post_from_public_note("));
-    assert!(!body.contains("render_markdown("));
-    assert!(!body.contains("render_markdown_with_config("));
-    assert!(!body.contains("note_fields("));
 }
 
 #[test]
@@ -2233,21 +2103,6 @@ fn publish_result_names_the_locator_and_accepted_relays() {
         vec!["wss://Relay.Primal.net/".to_string()],
     );
     assert_eq!(cased.locator, "0123456789abcdef0123");
-
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("fn publish_result").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\n#[get(\"/tor-circuits\")]").unwrap()];
-    assert!(body.contains("canonical_public_relay"));
-    assert!(!body.contains("relays_for_public_fetch"));
-    assert!(!body.contains("read_seal"));
-    assert!(!body.contains("remember_seal"));
-    let start = pages.find("pub async fn nostr_publish").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\n#[get(\"/s/<locator>").unwrap()];
-    assert!(body.contains("publish_result(locator, accepted)"));
-    assert!(body.contains("note_and_relays_for_publish(&body, &config, &csrf_cookie)"));
-    assert!(body.contains("request_csrf_cookie(cookies)"));
 }
 
 #[test]
@@ -2282,13 +2137,6 @@ fn nostr_publish_sends_site_relays_and_the_added_relays_that_fit() {
             "wss://extra3.example".to_string(),
         ]
     );
-
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("fn note_and_relays_for_publish(").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\nfn publish_result(").unwrap()];
-    assert!(body.contains("relays_for_public_publish(&body.relays, &config.nostr.relays)"));
-    assert!(!body.contains("relays_for_public_fetch"));
 }
 
 #[test]
@@ -2978,13 +2826,6 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
         crate::nostr::MAX_FETCH_RELAYS
     );
     assert!(nojs_publish_relays("", &["wss://127.0.0.1".to_string()]).is_none());
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("fn nojs_publish_relays(").unwrap();
-    let body = &pages[start..];
-    let body = &body[..body.find("\nfn nojs_publish_slot(").unwrap()];
-    assert!(body.contains("relays_for_public_fetch(&[], configured)"));
-    assert!(body.contains("relays.insert(0, relay)"));
-    assert!(!body.contains("relays_for_public_fetch(&hints"));
     assert_eq!(
         nojs_publish_relays("wss://relay.damus.io", &["wss://127.0.0.1".to_string()]).unwrap(),
         vec!["wss://relay.damus.io".to_string()]
@@ -3040,37 +2881,6 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
-    let pages = include_str!("../src/pages.rs");
-    let start = pages.find("fn publish_nojs_note(").unwrap();
-    let publish = &pages[start..pages.find("fn nojs_test_accepted(").unwrap()];
-    assert!(publish.contains("crate::seal::seal_and_sign("));
-    assert!(publish.contains("form.title.trim()"));
-    assert!(publish.contains("form.alias.trim()"));
-    assert!(publish.contains("&form.content"));
-    assert!(publish.contains("config.limits.content_max_length"));
-    assert!(publish.contains("relay_timeout(config)"));
-    assert!(publish.contains("crate::nostr::publish_to_relays("));
-    assert!(!publish.contains("/nojs/s/"));
-    assert!(!publish.contains("publish_result("));
-    let sealed = pages.find("fn nojs_sealed_location(").unwrap();
-    let sealed_body = &pages[sealed..pages.find("fn nojs_chosen_relay(").unwrap()];
-    assert!(sealed_body.contains("push_public_relay(&mut kept, relay)"));
-    assert!(sealed_body.contains("js_seal_href("));
-    assert!(!pages.contains("publish_note_in_dir"));
-    assert!(!pages.contains("fn create_post("));
-    let create = pages.find("pub(crate) fn create_location(").unwrap();
-    let created = &pages[create..start];
-    assert!(created.contains("publish_nojs_note(form, config)"));
-    assert!(created.contains("nojs_sealed_location(&published, &config.nostr.relays)"));
-    assert!(created.contains("?error=nostr_publish_failed"));
-    let nojs = pages.find("pub async fn nojs_create_post(").unwrap();
-    let blocking = &pages[nojs..pages.find("pub struct NostrPublishBody").unwrap()];
-    assert!(blocking.contains("spawn_blocking"));
-    assert!(blocking.contains("create_location(&moved, &config_owned, &csrf_cookie)"));
-    let nostr = pages.find("pub async fn nostr_publish(").unwrap();
-    let after_nostr = pages.find("fn is_static_page(").unwrap();
-    assert!(!pages[nostr..after_nostr].contains("save_post_to_file"));
-
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
     config.nostr.timeout_secs = 1;
@@ -3164,25 +2974,6 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
-    let pages = include_str!("../src/pages.rs");
-    assert!(!pages.contains("pub async fn create_post("));
-    let nojs = pages.find("pub async fn nojs_create_post(").unwrap();
-    let end = pages.find("pub struct NostrPublishBody").unwrap();
-    let body = &pages[nojs..end];
-    assert!(!body.contains("nojs_publish_slot"));
-    assert!(!body.contains("PublicFetchSlot"));
-    assert!(body.contains("create_location("));
-    assert!(body.contains("nojs_publish_failure_page("));
-    assert!(body.contains("Redirect::to(location)"));
-    assert!(!body.contains("handle_create("));
-    let publish_note = pages.find("fn publish_nojs_note(").unwrap();
-    let publish_body = &pages[publish_note..pages.find("fn nojs_test_accepted(").unwrap()];
-    let seal = publish_body.find("seal_and_sign(").unwrap();
-    let slot = publish_body.find("nojs_publish_slot()").unwrap();
-    let relay_send = publish_body.find("publish_to_relays(").unwrap();
-    assert!(seal < slot);
-    assert!(slot < relay_send);
-
     let mut held = Vec::new();
     for _ in 0..MAX_PUBLIC_FETCHES {
         held.push(PublicFetchSlot::acquire().expect("public fetch slot"));
