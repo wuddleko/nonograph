@@ -12,7 +12,10 @@ fn static_assets_are_cacheable_and_html_is_not() {
         POST_CSS_PATH,
         POST_JS_PATH,
         POST_NOSCRIPT_CSS_PATH,
+        HOME_NOSCRIPT_CSS_PATH,
         WRITEMARK_JS_PATH,
+        WRITEMARK_CSS_PATH,
+        NOTICE_CSS_PATH,
     ] {
         assert_eq!(
             cache_control_for_path(path),
@@ -44,7 +47,9 @@ fn robots_txt_is_the_file() {
 
 #[test]
 fn nojs_home_omits_scripts() {
-    let config = crate::config::Config::default();
+    let mut config = crate::config::Config::default();
+    config.theme.syntax_highlighting = "ocean\"dark".to_string();
+    config.security.external_link_security = false;
     let nojs = home_context(&config, true, None, None);
     assert_eq!(nojs.get("form_action").unwrap(), "/nojs/create");
     assert!(nojs.get("scripts").unwrap().is_empty());
@@ -63,12 +68,26 @@ fn nojs_home_omits_scripts() {
     let scripts = js.get("scripts").unwrap();
     assert!(scripts.contains("/writemark.js?v="));
     assert!(scripts.contains("/home.js?v="));
-    assert!(!scripts.contains("nonograph_page"));
-    assert!(!scripts.contains(".wasm"));
-    assert!(js
-        .get("content_field")
-        .unwrap()
-        .contains("<writemark-editor"));
+    let field = js.get("content_field").unwrap();
+    assert!(field.contains("<writemark-editor"));
+    assert!(field.contains("data-syntax-theme=\"ocean&quot;dark\""));
+    assert!(field.contains("data-max-url-length=\"4096\""));
+    assert!(field.contains("data-external-links=\"false\""));
+    assert!(!nojs.get("content_field").unwrap().contains("data-syntax-theme"));
+    let writemark = include_str!("../templates/writemark.js");
+    let load = writemark.find("async function loadPageModule(").unwrap();
+    let load_end = writemark[load..]
+        .find("\nclass WritemarkEditorElement")
+        .map(|offset| load + offset)
+        .unwrap();
+    let loader = &writemark[load..load_end];
+    assert!(loader.contains("./page/nonograph_page.js"));
+    assert!(loader.contains("./page/nonograph_page_bg.wasm"));
+    assert!(loader.contains("module.default({ module_or_path: wasm })"));
+    assert!(writemark.contains("new URL(\"./writemark.css\", import.meta.url)"));
+    assert!(writemark.contains("spacer.style.blockSize"));
+    assert!(!writemark.contains("<style"));
+    assert!(!writemark.contains("style=\"block-size:"));
     assert!(!js
         .get("content_field")
         .unwrap()
@@ -861,7 +880,8 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(!head.contains(secret));
     assert!(html.contains(secret));
     assert!(html.contains("\\u003c/script>"));
-    assert!(html.contains("id=\"sealed-event\""));
+    assert!(html.contains("<div id=\"sealed-event\" hidden>"));
+    assert!(!html.contains("<script type=\"application/json\""));
     assert!(html.contains("<script type=\"module\" src=\"/nostr.js?v="));
     assert!(html.contains("id=\"sealed-copy\">Copy link</button>"));
     assert!(html.contains("id=\"sealed-open\""));
@@ -1144,6 +1164,8 @@ fn nojs_sealed_route_sets_no_referrer_and_no_store() {
     sealed_route_headers(&missing);
     let missing_body = missing.into_string().unwrap();
     assert_eq!(missing_body, not_found_html());
+    assert!(missing_body.contains("/notice.css?v="));
+    assert!(!missing_body.contains("<style"));
     assert!(!missing_body.contains("secret"));
 
     let refused = client
@@ -2585,8 +2607,16 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!html.contains("name=\"javascript_off\""));
     assert!(!html.contains("This page only saves a file on this host."));
     assert!(html.contains("<noscript>"));
+    assert!(!html.contains("<style"));
     assert!(!html.contains(".nojs-file-note {"));
-    assert!(html.contains("body:not(.nojs) .needs-js"));
+    let noscript = html.split("<noscript>").nth(1).unwrap();
+    assert!(noscript.contains("/home-noscript.css?v={{asset_version}}"));
+    assert!(!html.split("<noscript>").next().unwrap().contains("home-noscript.css"));
+    let noscript_css = include_str!("../templates/home-noscript.css");
+    assert!(noscript_css.contains(".nostr-publish"));
+    assert!(noscript_css.contains("display: none !important"));
+    assert!(noscript_css.contains("body:not(.nojs) .needs-js"));
+    assert!(noscript_css.contains("body:not(.nojs) button[type=\"submit\"][form=\"publishForm\"]"));
     let note = html.find("class=\"nojs-file-note\"").unwrap();
     let sidebar = html.find("class=\"sidebar\"").unwrap();
     assert!(note < sidebar);

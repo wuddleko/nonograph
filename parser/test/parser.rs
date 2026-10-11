@@ -1993,8 +1993,12 @@ fn editor_inline_json(samples: &[&str]) -> String {
         slice = &source[start..end],
         listed = listed,
     );
-    let path = std::env::temp_dir().join(format!("nonograph-inline-{}.js", std::process::id()));
-    std::fs::write(&path, &program).expect("write editor fixture");
+    run_javascript("nonograph-inline", &program)
+}
+
+fn run_javascript(prefix: &str, program: &str) -> String {
+    let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
+    std::fs::write(&path, program).expect("write editor fixture");
     let text = match std::process::Command::new("node").arg(&path).output() {
         Ok(output) if output.status.success() => String::from_utf8(output.stdout).unwrap(),
         _ => {
@@ -2013,6 +2017,135 @@ fn editor_inline_json(samples: &[&str]) -> String {
     };
     let _ = std::fs::remove_file(&path);
     text
+}
+
+fn renderer_samples() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("emphasis", "**bold** and *italic*"),
+        ("list", "- one\n- two"),
+        ("task", "- [ ] open\n- [x] done"),
+        ("quote", "> quoted"),
+        ("table", "| Left | Right |\n| :--- | ---: |\n| A | B |"),
+        ("fence", "```rust\nfn main() {}\n```"),
+        ("image", "![alt](https://example.com/image.png)"),
+        ("link", "[docs](https://example.com/page)"),
+        ("private-link", "[secret](http://127.0.0.1/secret)"),
+        ("comment", "visible\n// hidden note\nstill here"),
+    ]
+}
+
+fn writemark_render_markdown(samples: &[&str], rust_html: &[String]) -> Vec<String> {
+    let source = include_str!("../../templates/writemark.js");
+    let end = source
+        .find("\nfunction textFromMarkdown")
+        .expect("renderMarkdown ends before textFromMarkdown");
+    let listed = samples
+        .iter()
+        .map(|sample| json_string(sample))
+        .collect::<Vec<_>>()
+        .join(",");
+    let pairs = samples
+        .iter()
+        .zip(rust_html)
+        .map(|(sample, html)| format!("[{}, {}]", json_string(sample), json_string(html)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let program = format!(
+        "{slice}\nconst table = new Map([{pairs}]);\npageModule = {{ render_markdown(markdown, theme, maxUrl, external) {{ if (theme !== \"base16-ocean.dark\" || maxUrl !== 4096 || external !== true) return \"renderer-options-mismatch\"; const html = table.get(markdown); return html == null ? \"renderer-sample-mismatch\" : html; }} }};\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => renderMarkdown(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        slice = &source[..end],
+        pairs = pairs,
+        listed = listed,
+    );
+    parse_json_string_array(&run_javascript("nonograph-render", &program))
+}
+
+fn parse_json_string_array(text: &str) -> Vec<String> {
+    let mut chars = text.trim().chars().peekable();
+    assert_eq!(chars.next(), Some('['), "writemark json: {text}");
+    let mut values = Vec::new();
+    loop {
+        while matches!(chars.peek(), Some(',' | ' ' | '\n' | '\r' | '\t')) {
+            chars.next();
+        }
+        match chars.peek().copied() {
+            Some(']') => {
+                chars.next();
+                break;
+            }
+            Some('"') => {
+                chars.next();
+                values.push(parse_json_string(&mut chars));
+            }
+            other => panic!("writemark json at {other:?}: {text}"),
+        }
+    }
+    assert!(chars.next().is_none(), "trailing writemark json");
+    values
+}
+
+fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut out = String::new();
+    loop {
+        match chars.next() {
+            Some('"') => return out,
+            Some('\\') => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('b') => out.push('\u{0008}'),
+                Some('f') => out.push('\u{000c}'),
+                Some('u') => {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        hex.push(chars.next().expect("json unicode escape"));
+                    }
+                    let code = u32::from_str_radix(&hex, 16).expect("json unicode escape");
+                    out.push(char::from_u32(code).expect("json unicode scalar"));
+                }
+                other => panic!("bad json escape {other:?}"),
+            },
+            Some(c) => out.push(c),
+            None => panic!("unterminated json string"),
+        }
+    }
+}
+
+fn renderer_fixture_json() -> String {
+    let samples = renderer_samples();
+    let markdown: Vec<&str> = samples.iter().map(|(_, markdown)| *markdown).collect();
+    let rust_html: Vec<String> = markdown
+        .iter()
+        .map(|sample| render_markdown_with_config(sample, &RenderOptions::default()))
+        .collect();
+    let writemark = writemark_render_markdown(&markdown, &rust_html);
+    assert_eq!(writemark.len(), samples.len());
+    let mut out = String::from("[\n");
+    for (index, ((name, markdown), editor)) in samples.iter().zip(&writemark).enumerate() {
+        let rust_html = &rust_html[index];
+        assert_eq!(editor, rust_html, "{name}");
+        if index > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str("  {\n");
+        out.push_str(&format!("    \"name\": {},\n", json_string(name)));
+        out.push_str(&format!("    \"markdown\": {},\n", json_string(markdown)));
+        out.push_str(&format!("    \"rust\": {},\n", json_string(&rust_html)));
+        out.push_str(&format!("    \"writemark\": {}\n", json_string(editor)));
+        out.push_str("  }");
+    }
+    out.push_str("\n]\n");
+    out
+}
+
+#[test]
+fn renderer_outputs_stay_on_the_stored_pairs() {
+    assert_eq!(
+        include_str!("renderer-fixture.json"),
+        renderer_fixture_json()
+    );
 }
 
 #[test]

@@ -802,8 +802,13 @@ function tableAlignmentFromDelimiter(cellText) {
   if (left) return "left";
   return "";
 }
-function tableAlignmentStyle(alignment) {
-  return alignment ? ` style="text-align:${alignment}"` : "";
+function tableAlignmentClass(alignment) {
+  if (alignment === "center" || alignment === "right") return ` class="md-align-${alignment}"`;
+  return "";
+}
+function listDepthClass(depth) {
+  const level = Math.max(0, Math.min(32, Number(depth) || 0));
+  return `md-list-depth-${level}`;
 }
 function unescapeTableCellText(cellText) {
   return String(cellText ?? "").replace(/\\([\\|])/g, "$1");
@@ -1214,52 +1219,43 @@ function renderListFromBlocks(blocks, start, options) {
   return { html: `<${tag}${startAttribute}>${html}</${tag}>`, nextIndex: index };
 }
 
-function renderMarkdown(markdown, opts = {}) {
-  const extracted = extractReferenceDefinitions(markdown, opts.references);
-  const options = { ...DEFAULTS, ...opts, references: extracted.references };
-  const blocks = parseBlocks(extracted.markdown, options);
-  const out = [];
-  for (let i = 0; i < blocks.length; i += 1) {
-    const block = blocks[i];
-    if (block.type === "blank") continue;
-    if (block.type === "heading") { out.push(`<h${block.heading.level} id="${escapeAttribute(block.heading.id)}">${renderInlineMarkdown(block.heading.content, options)}</h${block.heading.level}>`); continue; }
-    if (block.type === "horizontal-rule") { out.push("<hr>"); continue; }
-    if (block.type === "blockquote") {
-      const quotes = [block];
-      let j = i + 1;
-      while (j < blocks.length && blocks[j].type === "blockquote") { quotes.push(blocks[j]); j += 1; }
-      const body = quotes.map(q => q.quote.content).join("\n");
-      out.push(`<blockquote>${renderMarkdown(body, options)}</blockquote>`);
-      i = j - 1;
-      continue;
-    }
-    if (isListBlock(block)) {
-      const rendered = renderListFromBlocks(blocks, i, options);
-      out.push(rendered.html);
-      i = rendered.nextIndex - 1;
-      continue;
-    }
-    if (block.type === "code-fence") {
-      const lang = block.language ? ` class="language-${escapeAttribute(block.language)}"` : "";
-      out.push(`<pre><code${lang}>${escapeHtml(block.codeLines.map(l => l.text).join("\n"))}</code></pre>`); continue;
-    }
-    if (block.type === "table") {
-      const header = block.header.cells;
-      const rows = block.rows;
-      const alignments = block.delimiter.cells.map(cell => tableAlignmentFromDelimiter(cell.text));
-      out.push(`<div class="md-table-wrap"><table><thead><tr>${header.map((c, i) => `<th${tableAlignmentStyle(alignments[i])}>${renderInlineMarkdown(unescapeTableCellText(c.text), options)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${header.map((_, i) => `<td${tableAlignmentStyle(alignments[i])}>${renderInlineMarkdown(unescapeTableCellText(r.cells[i]?.text ?? ""), options)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`); continue;
-    }
-    if (block.type === "paragraph") {
-      const paragraphs = [block];
-      let j = i + 1;
-      while (j < blocks.length && blocks[j].type === "paragraph") { paragraphs.push(blocks[j]); j += 1; }
-      out.push(`<p>${renderInlineMarkdown(paragraphs.map(p => p.line.text).join("\n"), options)}</p>`);
-      i = j - 1;
-      continue;
-    }
-    out.push(`<p>${renderInlineMarkdown(block.line.text, options)}</p>`);
+function displayOffsetToSourceOffset(source, display, displayOffset) {
+  const target = clamp(Number(displayOffset) || 0, 0, display.length);
+  let shown = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    if (shown === target) return i;
+    if (shown < display.length && source[i] === display[shown]) shown += 1;
   }
-  return out.join("\n");
+  return source.length;
+}
+function sourceOffsetToDisplayOffset(source, display, sourceOffset) {
+  const target = clamp(Number(sourceOffset) || 0, 0, source.length);
+  let shown = 0;
+  for (let i = 0; i < target; i += 1) {
+    if (shown < display.length && source[i] === display[shown]) shown += 1;
+  }
+  return Math.min(shown, display.length);
+}
+function sourceEditFromDisplay(source, oldDisplay, newDisplay) {
+  const change = diffTextChange(oldDisplay, newDisplay)[0];
+  if (!change) return { value: source, cursor: source.length };
+  const from = displayOffsetToSourceOffset(source, oldDisplay, change.from);
+  const to = displayOffsetToSourceOffset(source, oldDisplay, change.to);
+  const end = Math.max(from, to);
+  return {
+    value: source.slice(0, from) + change.insert + source.slice(end),
+    cursor: from + change.insert.length,
+  };
+}
+let pageModule = null;
+function renderMarkdown(markdown, opts = {}) {
+  const page = pageModule;
+  if (!page || typeof page.render_markdown !== "function") return "";
+  const theme = opts.syntaxTheme || "base16-ocean.dark";
+  const parsedLimit = Number(opts.maxUrl);
+  const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
+  const external = opts.external !== false;
+  return page.render_markdown(String(markdown ?? ""), String(theme), maxUrl, external);
 }
 function textFromMarkdown(markdown, opts = {}) {
   const extracted = extractReferenceDefinitions(markdown, opts.references);
@@ -1281,6 +1277,25 @@ function textFromMarkdown(markdown, opts = {}) {
     lines.push(inlineText(block.line.text));
   }
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function loadPageModule() {
+  if (pageModule) return pageModule;
+  if (!loadPageModule.pending) {
+    const js = new URL("./page/nonograph_page.js", import.meta.url);
+    const wasm = new URL("./page/nonograph_page_bg.wasm", import.meta.url);
+    loadPageModule.pending = import(js.href)
+      .then((module) => module.default({ module_or_path: wasm }).then(() => module))
+      .then((module) => {
+        pageModule = module;
+        return module;
+      })
+      .catch((error) => {
+        loadPageModule.pending = null;
+        throw error;
+      });
+  }
+  return loadPageModule.pending;
 }
 
 class WritemarkEditorElement extends HTMLElement {
@@ -1344,6 +1359,7 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   connectedCallback() {
+    this._ensurePageRenderer();
     if (!this._hasConnected) {
       this._upgradeProperties();
       this._renderShell();
@@ -1405,6 +1421,12 @@ class WritemarkEditorElement extends HTMLElement {
   set label(v) { v == null ? this.removeAttribute("label") : this.setAttribute("label", String(v)); }
   get placeholder() { return this.getAttribute("placeholder") ?? DEFAULTS.placeholder; }
   set placeholder(v) { v == null ? this.removeAttribute("placeholder") : this.setAttribute("placeholder", String(v)); }
+  get syntaxTheme() { return this.getAttribute("data-syntax-theme") || "base16-ocean.dark"; }
+  get maxUrlLength() {
+    const parsed = Number(this.getAttribute("data-max-url-length"));
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : 4096;
+  }
+  get externalLinks() { return this.getAttribute("data-external-links") !== "false"; }
   get mode() { const v = this.getAttribute("mode") ?? DEFAULTS.mode; return ["live", "source"].includes(v) ? v : DEFAULTS.mode; }
   set mode(v) { v == null ? this.removeAttribute("mode") : this.setAttribute("mode", String(v)); }
   get markdownFlavor() { const v = this.getAttribute("markdown-flavor") ?? DEFAULTS.markdownFlavor; return ["gfm", "commonmark"].includes(v) ? v : DEFAULTS.markdownFlavor; }
@@ -1479,202 +1501,10 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _renderShell() {
+    const stylesheet = new URL("./writemark.css", import.meta.url);
+    stylesheet.search = new URL(import.meta.url).search;
     this._shadow.innerHTML = `
-      <style>
-        :host {
-          color-scheme: light dark;
-          --md-editor-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          --md-editor-mono-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-          --md-editor-font-size: 15px;
-          --md-editor-line-height: 1.55;
-          --md-editor-bg: Canvas;
-          --md-editor-fg: CanvasText;
-          --md-editor-muted: color-mix(in srgb, CanvasText 55%, Canvas 45%);
-          --md-editor-token: color-mix(in srgb, CanvasText 42%, Canvas 58%);
-          --md-editor-border: color-mix(in srgb, CanvasText 22%, Canvas 78%);
-          --md-editor-border-focus: Highlight;
-          --md-editor-radius: 10px;
-          --md-editor-padding: 14px;
-          --md-editor-min-height: 220px;
-          --md-editor-max-height: none;
-          --md-editor-focus-ring: 0 0 0 3px color-mix(in srgb, Highlight 32%, transparent);
-          --md-editor-active-line-ring: none;
-          --md-editor-active-line-bg: transparent;
-          --md-editor-active-cell-ring: var(--md-editor-active-line-ring);
-          --md-editor-active-cell-bg: var(--md-editor-active-line-bg);
-          --md-editor-popup-bg: Canvas;
-          --md-editor-popup-fg: CanvasText;
-          --md-editor-popup-border: color-mix(in srgb, CanvasText 24%, Canvas 76%);
-          --md-editor-popup-shadow: 0 12px 30px rgb(0 0 0 / 0.16);
-          --md-editor-code-bg: color-mix(in srgb, CanvasText 8%, Canvas 92%);
-          --md-editor-code-header-bg: color-mix(in srgb, CanvasText 5%, Canvas 95%);
-          --md-editor-code-accent: color-mix(in srgb, CanvasText 45%, Canvas 55%);
-          --md-editor-danger: #b00020;
-          --md-editor-transition-duration: 140ms;
-          --md-editor-transition-ease: cubic-bezier(.2,.8,.2,1);
-          display: block;
-          font-family: var(--md-editor-font);
-          color: var(--md-editor-fg);
-        }
-        :host([hidden]) { display: none; }
-        .container { display: grid; gap: 8px; font-size: var(--md-editor-font-size); }
-        .label:empty { display: none; }
-        .label { font-weight: 650; color: var(--md-editor-fg); }
-        .workspace { display: grid; gap: 10px; }
-        .editor-shell { position: relative; min-width: 0; }
-        .live-editor, textarea {
-          box-sizing: border-box; inline-size: 100%; min-block-size: var(--md-editor-min-height); max-block-size: var(--md-editor-max-height);
-          border: 1px solid var(--md-editor-border); border-radius: var(--md-editor-radius); padding: var(--md-editor-padding);
-          background: var(--md-editor-bg); color: var(--md-editor-fg); line-height: var(--md-editor-line-height); overflow: auto;
-          transition: border-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease), background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease);
-        }
-        /* The live writing surface is a bare canvas: no frame, ever. */
-        .live-editor, .live-editor:focus, .live-editor:focus-within, .live-editor:hover { border: 0; outline: none; box-shadow: none; }
-        textarea:focus { outline: none; border-color: var(--md-editor-border-focus); box-shadow: var(--md-editor-focus-ring); }
-        .live-editor[aria-disabled="true"], textarea:disabled { opacity: 0.62; cursor: not-allowed; }
-        textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-font); font-size: var(--md-editor-font-size); tab-size: 2; }
-        :host([mode="source"]) .live-editor { display: none; }
-        :host([mode="source"]) textarea { display: block; }
-        .live-placeholder { color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
-        .md-empty-placeholder::before { content: attr(data-placeholder); position: absolute; color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
-        .md-virtual-spacer { display: block; pointer-events: none; user-select: none; inline-size: 1px; min-block-size: 0; }
-        .md-line { position: relative; min-block-size: calc(var(--md-editor-line-height, 1.55) * 1em); line-height: var(--md-editor-line-height, 1.55); white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; padding: 0; outline: none; transition: background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease); }
-        .md-line:focus, .md-task-source:focus, .md-code-line:focus { box-shadow: var(--md-editor-active-line-ring); background: var(--md-editor-active-line-bg); }
-        .md-cell:focus { box-shadow: var(--md-editor-active-cell-ring); background: var(--md-editor-active-cell-bg); }
-        /* Blank source lines stand in for the paragraph gap in the finished
-           output, so give them the same block size as a rendered paragraph
-           margin rather than a full text line. */
-        .md-line[data-kind="blank"] { min-block-size: var(--md-editor-paragraph-gap, 1.1em); }
-        .md-token { color: var(--md-editor-token); font-weight: 500; }
-        .md-url { color: var(--md-editor-muted); text-decoration: underline; }
-        .md-heading { font-family: var(--md-editor-font); font-weight: 760; line-height: 1.18; margin-block: 0.22em; }
-        .md-h1 { font-size: 2.0em; }
-        .md-h2 { font-size: 1.6em; }
-        .md-h3 { font-size: 1.35em; }
-        .md-h4 { font-size: 1.18em; }
-        .md-list { padding-inline-start: calc(var(--md-list-depth, 0) * 1.4em + 2px); }
-        .md-task-line { display: flex; align-items: baseline; gap: 0.35em; }
-        .md-task-line input { transform: translateY(0.12em); accent-color: var(--md-editor-checkbox-accent, #333); }
-        .md-task-source { flex: 1; min-width: 0; white-space: pre-wrap; outline: none; border-radius: 6px; }
-        .md-quote {
-          --md-quote-depth: 1;
-          border-radius: 0;
-          padding-inline-start: calc(var(--md-quote-depth) * 1em + 0.35em);
-          color: color-mix(in srgb, CanvasText 80%, Canvas 20%);
-          background-image: repeating-linear-gradient(to right, var(--md-editor-border) 0 4px, transparent 4px 1em);
-          background-position: left top;
-          background-repeat: no-repeat;
-          background-size: calc(var(--md-quote-depth) * 1em) 100%;
-        }
-        .md-quote:dir(rtl) {
-          background-image: repeating-linear-gradient(to left, var(--md-editor-border) 0 4px, transparent 4px 1em);
-          background-position: right top;
-        }
-        .md-quote-depth-2 { --md-quote-depth: 2; }
-        .md-quote-depth-3 { --md-quote-depth: 3; }
-        .md-quote-depth-4 { --md-quote-depth: 4; }
-        .md-quote-depth-5 { --md-quote-depth: 5; }
-        .md-quote-depth-6 { --md-quote-depth: 6; }
-        .md-quote-depth-7 { --md-quote-depth: 7; }
-        .md-quote-depth-8 { --md-quote-depth: 8; }
-        .md-quote-depth-9 { --md-quote-depth: 9; }
-        .md-quote-depth-10 { --md-quote-depth: 10; }
-        .md-quote-depth-11 { --md-quote-depth: 11; }
-        .md-quote-depth-12 { --md-quote-depth: 12; }
-        .md-quote-depth-13 { --md-quote-depth: 13; }
-        .md-quote-depth-14 { --md-quote-depth: 14; }
-        .md-quote-depth-15 { --md-quote-depth: 15; }
-        .md-quote-depth-16 { --md-quote-depth: 16; }
-        .md-quote + .md-quote { margin-block-start: 0; }
-        .md-hr-line { display: block; min-block-size: 1.35em; color: var(--md-editor-token); cursor: text; }
-        .md-hr-line::after { content: ""; display: block; border-block-start: 1px solid var(--md-editor-border); margin-block-start: 0.3em; }
-        /* Show the raw divider markers (e.g. ***) so the line stays editable. */
-        .md-hr-line .md-token { display: inline; }
-        /* Code blocks mirror the published post output (post.html): flat panel
-           with a header strip showing the language, monospace body at 14px/1.4.
-           No syntax highlighting and no copy/collapse controls in the editor. */
-        .md-code-block { margin-block: 20px; border: 1px solid var(--md-editor-border); border-radius: var(--md-editor-radius); background: var(--md-editor-code-bg); overflow: hidden; }
-        .md-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-block-size: 22px; padding: 1px 6px; border-block-end: 1px solid var(--md-editor-border); background: var(--md-editor-code-header-bg); color: var(--md-editor-code-accent); font-family: var(--md-editor-ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); font-size: 12px; line-height: 1.4; user-select: none; }
-        .md-code-label { position: relative; text-transform: uppercase; font-weight: 500; letter-spacing: 0.5px; outline: none; min-inline-size: 1ch; }
-        .md-code-language { display: none; }
-        .md-code-lines { padding: 6px 0 6px 12px; font-family: var(--md-editor-mono-font); font-size: 14px; line-height: 1.4; color: var(--md-editor-fg); white-space: pre; overflow-x: auto; }
-        .md-code-line { min-height: 1.4em; line-height: 1.4; outline: none; white-space: pre; border-radius: 0; }
-        .md-code-line:empty::before { content: "\\200b"; }
-        .md-code-fence { display: none; }
-        .md-table-block { overflow: auto; margin-block: 0.5em; }
-        .md-table { border-collapse: collapse; inline-size: 100%; table-layout: fixed; }
-        .md-table th, .md-table td { border: 1px solid var(--md-editor-border); padding: 6px 8px; vertical-align: top; }
-        .md-table th { background: color-mix(in srgb, CanvasText 7%, Canvas 93%); font-weight: 700; text-align: left; }
-        .md-cell { min-height: 1.35em; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
-        /* Hover controls (add/remove rows and columns): identically sized,
-           2px-corner tabs. The block adds no padding, so table spacing matches
-           the base rule (margin-block: 0.5em). Each tab is centered on a table
-           edge: column-delete on the top, row-add on the bottom, and column-add
-           and row-delete on the right (over the cells' right padding). Nothing
-           extends horizontally, so there is no scrollbar; overflow is shown so
-           the top/bottom tabs are not clipped. */
-        .md-has-controls { position: relative; overflow: visible; }
-        .md-has-controls .md-table th, .md-has-controls .md-table td { position: relative; }
-        .md-tbl-ctl { position: absolute; z-index: 3; box-sizing: border-box; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--md-editor-border); border-radius: 2px; background: var(--md-editor-code-bg, Canvas); color: var(--md-editor-fg); cursor: pointer; opacity: 0; transition: opacity 0.12s ease; user-select: none; }
-        .md-tbl-ctl svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-        .md-tbl-ctl:focus-visible { opacity: 1; outline: 2px solid var(--md-editor-accent, Highlight); outline-offset: 1px; }
-        [data-table-control="add-col"] { right: 0; top: 50%; transform: translateY(-50%); }
-        [data-table-control="add-row"] { left: 50%; bottom: 0; transform: translate(-50%, 50%); }
-        [data-table-control="del-col"] { left: 50%; top: 0; transform: translate(-50%, -50%); }
-        [data-table-control="del-row"] { right: 0; top: 50%; transform: translateY(-50%); }
-        .md-has-controls:hover [data-table-control^="add-"], .md-has-controls:focus-within [data-table-control^="add-"] { opacity: 0.5; }
-        .md-table th:hover [data-table-control="del-col"], .md-table tr:hover [data-table-control="del-row"] { opacity: 0.6; }
-        .md-has-controls .md-tbl-ctl:hover { opacity: 1; background: color-mix(in srgb, CanvasText 12%, Canvas 88%); }
-        .completion-popup { position: absolute; z-index: 20; min-inline-size: 240px; max-inline-size: min(420px, 90vw); max-block-size: min(320px, 50vh); overflow: auto; border: 1px solid var(--md-editor-popup-border); border-radius: var(--md-editor-radius); background: var(--md-editor-popup-bg); color: var(--md-editor-popup-fg); box-shadow: var(--md-editor-popup-shadow); padding: 4px; }
-        .completion-popup[hidden] { display: none; }
-        /* Floating selection toolbar (bubble menu) shown above a text selection.
-           Dark by default to match the site's Publish button, with white icons. */
-        .selection-toolbar { position: absolute; z-index: 25; display: flex; gap: 1px; padding: 3px; border-radius: var(--md-editor-toolbar-radius, 4px); background: var(--md-editor-toolbar-bg, #333); color: var(--md-editor-toolbar-fg, #fff); white-space: nowrap; transition: left var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)), top var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)); }
-        .selection-toolbar[hidden] { display: none; }
-        /* Don't animate the very first placement (avoids sliding in from a stale spot). */
-        .selection-toolbar[data-instant] { transition: none; }
-        @media (prefers-reduced-motion: reduce) { .selection-toolbar { transition: none; } }
-        .selection-toolbar button { display: inline-flex; align-items: center; justify-content: center; inline-size: 34px; block-size: 34px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
-        .selection-toolbar button:hover { background: var(--md-editor-toolbar-hover, rgba(255,255,255,0.16)); }
-        .selection-toolbar button:active { background: var(--md-editor-toolbar-active, rgba(255,255,255,0.28)); }
-        .selection-toolbar button svg { inline-size: 20px; block-size: 20px; display: block; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-        .selection-toolbar button svg [fill] { fill: currentColor; }
-        @keyframes md-editor-pop { from { opacity: 0; transform: translateY(-3px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
-        .completion-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
-        .completion-item[aria-selected="true"] { background: color-mix(in srgb, Highlight 18%, transparent); }
-        .completion-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.58; }
-        .completion-label { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 0.9em; } .completion-description { grid-column: 1 / -1; }
-        .validation { min-block-size: 1.2em; color: var(--md-editor-danger); font-size: 0.92em; } .validation:empty { display: none; }
-        .sr-only { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-
-        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; } }
-
-        /* Nonograph theme: make the live document and slash menu resemble the
-           published post output. Values track the editor's CSS custom properties
-           so the host can still retheme via --md-editor-*. */
-        .live-editor { caret-color: var(--md-editor-fg); }
-        .md-line strong, .md-task-source strong { font-weight: 600; }
-        .md-line em, .md-task-source em { font-style: italic; }
-        .md-line del, .md-task-source del { text-decoration: line-through; }
-        .md-line a, .md-task-source a { color: var(--md-editor-fg); text-decoration: underline; }
-        .md-line a:hover, .md-task-source a:hover { color: color-mix(in srgb, var(--md-editor-fg) 70%, #000 30%); }
-        .md-line code, .md-task-source code { background: var(--md-editor-code-bg); padding: 2px 6px; font-family: var(--md-editor-mono-font); font-size: 0.9em; }
-        .md-heading { font-weight: 600; color: var(--md-editor-fg); }
-        .md-h1 { font-size: 1.8em; }
-        .md-h2 { font-size: 1.5em; }
-        .md-h3 { font-size: 1.3em; }
-        .md-h4 { font-size: 1.15em; }
-        .md-quote { color: var(--md-editor-muted); background-image: none; border-inline-start: 2px solid var(--md-editor-border); padding-inline-start: 20px; }
-        .md-table th, .md-table td { border: 1px solid var(--md-editor-border); }
-        .md-table th { background: var(--md-editor-code-bg); font-weight: 600; }
-        /* Slash-command menu matches the site's earlier .editor-menu look. */
-        .completion-popup { border-radius: 4px; padding: 4px; min-inline-size: 200px; }
-        .completion-item { padding: 4px 12px; border-radius: 2px; font-family: var(--md-editor-ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); color: var(--md-editor-popup-fg); }
-        .completion-item[aria-selected="true"] { background: color-mix(in srgb, var(--md-editor-popup-fg) 12%, transparent); }
-        .completion-item:hover { background: color-mix(in srgb, var(--md-editor-popup-fg) 7%, transparent); }
-        .completion-label { font-weight: 500; font-size: 14px; }
-        .completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 12px; }
-      </style>
+      <link rel="stylesheet" href="${escapeAttribute(stylesheet.href)}" />
       <div class="container" part="container">
         <label class="label" part="label" id="${this._ids.label}" for="${this._ids.source}"></label>
         <div class="workspace">
@@ -1854,7 +1684,34 @@ class WritemarkEditorElement extends HTMLElement {
       sanitize: true,
       linkTarget: DEFAULTS.linkTarget,
       references: this._referenceDefinitions(),
+      syntaxTheme: this.syntaxTheme,
+      maxUrl: this.maxUrlLength,
+      external: this.externalLinks,
     };
+  }
+  _ensurePageRenderer() {
+    if (pageModule || this._pageLoad) return;
+    this._pageLoad = loadPageModule().then(() => {
+      if (this.isConnected) this._renderAll({ restoreSelection: true, force: true });
+    }).catch(() => {
+      this._pageLoad = null;
+    });
+  }
+  _pageHtml(markdown) {
+    const text = String(markdown ?? "");
+    const html = renderMarkdown(text, this._rendererOptions());
+    if (html) return html;
+    return text ? escapeHtml(text) : "<br>";
+  }
+  _textFromHtml(html) {
+    const template = document.createElement("template");
+    template.innerHTML = String(html ?? "");
+    return this._plainText(template.content);
+  }
+  _isEditingText(node) {
+    const parent = node?.parentElement;
+    if (!parent?.closest) return true;
+    return !parent.closest("button, .code-header, .line-numbers, svg");
   }
   _setValueInternal(next, opts = {}) {
     const previousValue = this._value;
@@ -2024,12 +1881,9 @@ class WritemarkEditorElement extends HTMLElement {
     }
     if (block.type === "code-fence") {
       node.dataset.language = String(block.language || "");
-      const editables = Array.from(node.querySelectorAll("[data-editable]"));
-      const virtualOffset = block.codeLines[0]?.start ?? (block.closing ? block.opening.newlineEnd : block.opening.end);
-      const lines = block.codeLines.length ? block.codeLines : [{ start: virtualOffset, end: virtualOffset }];
-      if (editables.length !== lines.length) return false;
-      editables.forEach((editable, index) => this._setEditableMetadata(editable, lines[index].start, lines[index].end, this._lineEditable(), "false"));
-      return true;
+      const editable = node.matches?.("[data-editable]") ? node : node.querySelector?.("[data-editable]");
+      if (!editable) return false;
+      return this._setEditableMetadata(editable, block.from, block.to, this._lineEditable(), "false");
     }
     if (block.type === "task-list-item") {
       const source = node.querySelector("[data-editable]");
@@ -2155,10 +2009,18 @@ class WritemarkEditorElement extends HTMLElement {
     if (!force && this._virtualState.active && start === this._virtualState.start && end === this._virtualState.end && total === this._virtualState.total) return;
     const topHeight = Math.round(start * lineHeight);
     const bottomHeight = Math.round((total - end) * lineHeight);
-    const top = `<div class="md-virtual-spacer" contenteditable="false" aria-hidden="true" style="block-size:${topHeight}px"></div>`;
-    const bottom = `<div class="md-virtual-spacer" contenteditable="false" aria-hidden="true" style="block-size:${bottomHeight}px"></div>`;
-    this._liveEditor.innerHTML = `${top}${blocks.slice(start, end).map(block => this._renderLiveBlock(block)).join("")}${bottom}`;
+    this._liveEditor.innerHTML = blocks.slice(start, end).map(block => this._renderLiveBlock(block)).join("");
+    this._liveEditor.prepend(this._virtualSpacer(topHeight));
+    this._liveEditor.append(this._virtualSpacer(bottomHeight));
     this._virtualState = { active: true, start, end, total, lineHeight };
+  }
+  _virtualSpacer(height) {
+    const spacer = document.createElement("div");
+    spacer.className = "md-virtual-spacer";
+    spacer.contentEditable = "false";
+    spacer.setAttribute("aria-hidden", "true");
+    spacer.style.blockSize = `${height}px`;
+    return spacer;
   }
   _isSourceOffsetRendered(offset) {
     if (!this._virtualState.active) return true;
@@ -2197,73 +2059,48 @@ class WritemarkEditorElement extends HTMLElement {
     if (block.type === "blank") {
       const placeholderAttrs = this._value.length === 0 ? `data-placeholder="${escapeAttribute(this.placeholder)}"` : "";
       const placeholderClass = this._value.length === 0 ? "md-empty-placeholder" : "";
-      return `<div ${lineAttrs(block.line, "blank", placeholderClass, placeholderAttrs)}>${block.line.text ? decorateInline(block.line.text, options) : "<br>"}</div>`;
+      return `<div ${lineAttrs(block.line, "blank", placeholderClass, placeholderAttrs)}>${block.line.text ? this._pageHtml(block.line.text) : "<br>"}</div>`;
     }
     if (block.type === "heading") {
       const afterAnchor = block.setext && block.newlineEnd === block.to
         ? `<div class="md-line md-setext-after" part="line" data-editable="virtual-setext-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After heading"><br></div>`
         : "";
-      const content = block.setext ? decorateInline(block.line.text, options) : this._renderHeadingLine(block.line.text, block.heading);
+      const content = this._pageHtml(this._value.slice(block.from, block.to));
       return `<div ${lineAttrs(block.line, "heading", `md-heading md-h${block.heading.level}`, `id="${escapeAttribute(block.heading.id)}"`)}>${content}</div>${afterAnchor}`;
     }
     if (block.type === "blockquote") {
       const depth = Math.max(1, Number(block.quote.depth) || 1);
       const visualDepth = Math.min(depth, 16);
-      const markerEnd = block.quote.fullContentStart ?? block.quote.contentStart;
-      const marker = `<span class="md-token">${escapeHtml(block.line.text.slice(0, markerEnd))}</span>`;
-      const content = decorateInline(block.line.text.slice(markerEnd), options);
-      return `<div ${lineAttrs(block.line, "blockquote", `md-quote md-quote-depth-${visualDepth}`, `data-quote-depth="${depth}"`)}>${marker}${content}</div>`;
+      return `<div ${lineAttrs(block.line, "blockquote", `md-quote md-quote-depth-${visualDepth}`, `data-quote-depth="${depth}"`)}>${this._pageHtml(block.line.text)}</div>`;
     }
     if (block.type === "horizontal-rule") {
-      // Keep the divider line editable and its source text visible so it can be
-      // typed/backspaced through (e.g. editing ****/*** while toggling bold).
-      return `<div ${lineAttrs(block.line, "horizontal-rule", "md-hr-line")} aria-label="Divider"><span class="md-token">${escapeHtml(block.line.text)}</span></div>`;
+      return `<div ${lineAttrs(block.line, "horizontal-rule", "md-hr-line")} aria-label="Divider">${this._pageHtml(block.line.text)}</div>`;
     }
     if (block.type === "task-list-item") {
       const list = block.list; const checkOffset = block.line.start + list.indent.length + `${list.marker} [`.length;
       const contentFrom = block.line.start + list.contentStart;
       const taskName = textFromMarkdown(list.content, options) || "task";
       const checkboxLabel = `${list.checked ? "Mark task incomplete" : "Mark task complete"}: ${taskName}`;
-      return `<div class="md-line md-task-line md-list" part="line" data-kind="task-list-item" data-from="${block.line.start}" data-to="${block.line.end}" style="--md-list-depth:${Math.floor(list.indent.length / Math.max(1, this.indentString.length))}"><input type="checkbox" part="checkbox" data-task-checkbox="true" data-check-offset="${checkOffset}" aria-label="${escapeAttribute(checkboxLabel)}" ${list.checked ? "checked" : ""} ${this.disabled || this.readonly ? "disabled" : ""}><span class="md-task-source" data-editable="line" data-from="${contentFrom}" data-to="${block.line.end}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${this._renderTaskLine(list)}</span></div>`;
+      const depthClass = listDepthClass(Math.floor(list.indent.length / Math.max(1, this.indentString.length)));
+      return `<div class="md-line md-task-line md-list ${depthClass}" part="line" data-kind="task-list-item" data-from="${block.line.start}" data-to="${block.line.end}"><input type="checkbox" part="checkbox" data-task-checkbox="true" data-check-offset="${checkOffset}" aria-label="${escapeAttribute(checkboxLabel)}" ${list.checked ? "checked" : ""} ${this.disabled || this.readonly ? "disabled" : ""}><span class="md-task-source" data-editable="line" data-from="${contentFrom}" data-to="${block.line.end}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${this._renderTaskLine(list)}</span></div>`;
     }
     if (block.type === "bullet-list-item" || block.type === "ordered-list-item") {
       const list = block.list; const depth = Math.floor(list.indent.length / Math.max(1, this.indentString.length));
-      return `<div ${lineAttrs(block.line, block.type, "md-list")} style="--md-list-depth:${depth}">${decorateInline(block.line.text, options)}</div>`;
+      return `<div ${lineAttrs(block.line, block.type, `md-list ${listDepthClass(depth)}`)}>${this._pageHtml(block.line.text)}</div>`;
     }
     if (block.type === "code-fence") return this._renderCodeFence(block);
     if (block.type === "table") return this._renderTable(block);
-    const content = parseReferenceDefinition(block.line.text)
-      ? escapeHtml(block.line.text)
-      : decorateInline(block.line.text, options);
-    return `<div ${lineAttrs(block.line, "paragraph")}>${content}</div>`;
+    return `<div ${lineAttrs(block.line, "paragraph")}>${this._pageHtml(block.line.text)}</div>`;
   }
   _lineEditable() { return (!this.disabled && !this.readonly) ? "true" : "false"; }
-  _renderHeadingLine(text, heading) {
-    const markerEnd = heading.indent.length + heading.markerText.length;
-    return `<span class="md-token">${escapeHtml(text.slice(0, markerEnd))}</span>${decorateInline(text.slice(markerEnd), this._rendererOptions())}`;
-  }
-  _renderTaskLine(list) { return decorateInline(list.content, this._rendererOptions()); }
+  _renderTaskLine(list) { return this._pageHtml(list.content); }
   _renderCodeFence(block) {
     const editable = this._lineEditable();
     const language = String(block.language || "").trim();
-    // Map the header language label directly onto the language text in the
-    // opening fence line (```LANGUAGE) so the user can type the language there.
-    const openingText = block.opening.text;
-    const infoMatch = /^(\s{0,3})(`{3,}|~{3,})([ \t]*)/.exec(openingText);
-    const langStartInLine = infoMatch ? infoMatch[0].length : block.fence.sequence.length;
-    const langFrom = block.opening.start + langStartInLine;
-    const langTo = block.opening.end;
-    const placeholderAttr = language ? "" : ` data-placeholder="code"`;
-    const placeholderClass = language ? "" : " md-empty-placeholder";
-    const label = `<span class="md-code-label${placeholderClass}" part="code-language" data-editable="line" data-kind="code-language" data-from="${langFrom}" data-to="${langTo}" contenteditable="${editable}" spellcheck="false"${placeholderAttr}>${escapeHtml(language) || "<br>"}</span>`;
-    const header = `<div class="md-code-header" part="code-header" contenteditable="false">${label}</div>`;
-    const codeLines = block.codeLines.map(line => `<div class="md-code-line" part="code-line" data-editable="line" data-kind="code-line" data-from="${line.start}" data-to="${line.end}" contenteditable="${editable}" spellcheck="false">${escapeHtml(line.text) || "<br>"}</div>`).join("");
-    const virtualOffset = block.codeLines[0]?.start ?? (block.closing ? block.opening.newlineEnd : block.opening.end);
-    const virtualLine = `<div class="md-code-line" part="code-line" data-editable="virtual-code" data-kind="code-line" data-from="${virtualOffset}" data-to="${virtualOffset}" contenteditable="${editable}" spellcheck="false"><br></div>`;
     const afterAnchor = block.closing && block.newlineEnd === block.to
       ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After code block"><br></div>`
       : "";
-    return `<div class="md-code-block" part="code-block" data-kind="code-fence" data-from="${block.from}" data-to="${block.to}" data-language="${escapeAttribute(language)}">${header}<div class="md-code-lines" part="code-lines">${codeLines || virtualLine}</div></div>${afterAnchor}`;
+    return `<div class="md-code-block" part="code-block" data-editable="line" data-kind="code-fence" data-from="${block.from}" data-to="${block.to}" data-language="${escapeAttribute(language)}" contenteditable="${editable}" spellcheck="false">${this._pageHtml(this._value.slice(block.from, block.to))}</div>${afterAnchor}`;
   }
   _renderTable(block) {
     const cols = Math.max(block.header.cells.length, ...block.rows.map(r => r.cells.length), 1);
@@ -2286,7 +2123,7 @@ class WritemarkEditorElement extends HTMLElement {
     const delColBtn = i => (editable && cols > 2) ? control("del-col", "Delete column", minus, ` data-index="${i}"`) : "";
     const delRowBtn = r => (editable && block.rows.length > 1) ? control("del-row", "Delete row", minus, ` data-index="${r}"`) : "";
     const lastCol = cols - 1;
-    const renderCell = (cell, tag, row, col, extra = "") => `<${tag}${tableAlignmentStyle(alignments[col])}>${extra}<div class="md-cell" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${cell?.from ?? block.to}" data-to="${cell?.to ?? block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${decorateInline(unescapeTableCellText(cell?.text ?? ""), this._rendererOptions())}</div></${tag}>`;
+    const renderCell = (cell, tag, row, col, extra = "") => `<${tag}${tableAlignmentClass(alignments[col])}>${extra}<div class="md-cell" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${cell?.from ?? block.to}" data-to="${cell?.to ?? block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${this._pageHtml(unescapeTableCellText(cell?.text ?? ""))}</div></${tag}>`;
     const header = `<thead><tr>${Array.from({ length: cols }, (_, i) => renderCell(block.header.cells[i] ?? { text: "", from: block.header.end, to: block.header.end }, "th", -1, i, `${delColBtn(i)}${i === lastCol ? addColBtn : ""}`)).join("")}</tr></thead>`;
     const hasRealRows = block.rows.length > 0;
     const bodyRows = hasRealRows ? block.rows : [{ cells: Array.from({ length: cols }, () => ({ text: "", from: block.delimiter.end, to: block.delimiter.end })) }];
@@ -2369,7 +2206,16 @@ class WritemarkEditorElement extends HTMLElement {
     if (!editable) return;
     const before = this._beforeInputSnapshot;
     const from = Number(editable.dataset.from); const to = Number(editable.dataset.to);
-    const raw = this._plainText(editable).replace(/\n/g, "");
+    const sourceSlice = this._value.slice(from, to);
+    const rendered = pageModule ? renderMarkdown(sourceSlice, this._rendererOptions()) : "";
+    const oldDisplay = rendered ? this._textFromHtml(rendered).replace(/\n/g, "") : null;
+    let raw = this._plainText(editable).replace(/\n/g, "");
+    let mappedCursor = null;
+    if (editable.dataset.editable !== "cell" && oldDisplay != null && oldDisplay !== sourceSlice) {
+      const edit = sourceEditFromDisplay(sourceSlice, oldDisplay, raw);
+      raw = edit.value;
+      mappedCursor = edit.cursor;
+    }
     const liveSelection = this._getLiveSelection(editable);
     const changedDisplay = inputTarget
       ? diffTextChange(inputTarget.text, raw)[0]
@@ -2403,9 +2249,11 @@ class WritemarkEditorElement extends HTMLElement {
     }
     const previousValue = this._value;
     const nextValue = previousValue.slice(0, from) + insert + previousValue.slice(to);
-    const liveCursor = liveSelection?.end != null
-      ? liveSelection.end - from
-      : (inferredDisplayCursor ?? insert.length - virtualPrefixLength);
+    const liveCursor = mappedCursor != null
+      ? mappedCursor
+      : (liveSelection?.end != null
+        ? liveSelection.end - from
+        : (inferredDisplayCursor ?? insert.length - virtualPrefixLength));
     const cursor = clamp(from + virtualPrefixLength + liveCursor, from, from + insert.length);
     this._value = nextValue;
     this._selection = { start: cursor, end: cursor, direction: "none" };
@@ -2523,7 +2371,19 @@ class WritemarkEditorElement extends HTMLElement {
     });
     if (!this._isComposing) this._scheduleCompletionUpdate();
   }
-  _plainText(el) { return (el.textContent ?? "").replace(/\u00a0/g, " ").replace(/\n+$/g, ""); }
+  _plainText(el) {
+    if (!el) return "";
+    let text = "";
+    if (el.querySelector?.("button, .code-header, .line-numbers")) {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => this._isEditingText(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+      });
+      while (walker.nextNode()) text += walker.currentNode.nodeValue;
+    } else {
+      text = el.textContent ?? "";
+    }
+    return text.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
+  }
   _editableSourceRange(editable) {
     const from = Number(editable?.dataset?.from);
     const to = Number(editable?.dataset?.to);
@@ -2539,7 +2399,12 @@ class WritemarkEditorElement extends HTMLElement {
     if (!range) return 0;
     const raw = this._cellRawSource(editable);
     const rel = clamp(Number(sourceOffset) - range.from, 0, range.to - range.from);
-    if (raw == null) return clamp(rel, 0, this._plainText(editable).length);
+    if (raw == null) {
+      const source = this._value.slice(range.from, range.to);
+      const display = this._plainText(editable).replace(/\n/g, "");
+      if (display === source) return clamp(rel, 0, display.length);
+      return sourceOffsetToDisplayOffset(source, display, rel);
+    }
     let display = 0;
     for (let i = 0; i < raw.length && i < rel;) {
       if (raw[i] === "\\" && (raw[i + 1] === "|" || raw[i + 1] === "\\")) {
@@ -2557,8 +2422,13 @@ class WritemarkEditorElement extends HTMLElement {
     const range = this._editableSourceRange(editable);
     if (!range) return null;
     const raw = this._cellRawSource(editable);
-    const target = clamp(Number(displayOffset) || 0, 0, this._plainText(editable).length);
-    if (raw == null) return clamp(range.from + target, range.from, Math.max(range.to, range.from + this._plainText(editable).length));
+    const plain = this._plainText(editable).replace(/\n/g, "");
+    const target = clamp(Number(displayOffset) || 0, 0, plain.length);
+    if (raw == null) {
+      const source = this._value.slice(range.from, range.to);
+      if (plain === source) return clamp(range.from + target, range.from, Math.max(range.to, range.from + plain.length));
+      return range.from + displayOffsetToSourceOffset(source, plain, target);
+    }
     let display = 0;
     for (let i = 0; i < raw.length;) {
       if (display >= target) return range.from + i;
@@ -3160,8 +3030,24 @@ class WritemarkEditorElement extends HTMLElement {
     try { range.setEnd(node, sel.focusOffset); } catch { return null; }
     return range.toString().replace(/\u00a0/g, " ").replace(/\n/g, "").length;
   }
+  _editingOffset(editable, endNode, endOffset) {
+    const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => this._isEditingText(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
+    let count = 0;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const value = node.nodeValue.replace(/\u00a0/g, " ").replace(/\n/g, "");
+      if (node === endNode) return count + Math.min(endOffset, value.length);
+      count += value.length;
+    }
+    return count;
+  }
   _sourceOffsetFromDom(editable, node, offset) {
     const from = Number(editable.dataset.from); if (!Number.isFinite(from)) return null;
+    if (node?.nodeType === Node.TEXT_NODE) {
+      return this._sourceOffsetFromDisplayOffset(editable, this._editingOffset(editable, node, offset)) ?? from;
+    }
     const range = document.createRange(); range.selectNodeContents(editable);
     try { range.setEnd(node, offset); } catch { return from; }
     const text = range.toString().replace(/\u00a0/g, " ").replace(/\n/g, "");
@@ -3254,7 +3140,9 @@ class WritemarkEditorElement extends HTMLElement {
     return this._textPositionInElement(previous, this._plainText(previous).length);
   }
   _textPositionInElement(el, offset) {
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => this._isEditingText(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
     let remaining = clamp(offset, 0, this._plainText(el).length);
     let lastText = null;
     while (walker.nextNode()) {

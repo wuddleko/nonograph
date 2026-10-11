@@ -1,0 +1,9 @@
+.nostr-publish {
+    display: none !important;
+}
+body:not(.nojs) .needs-js {
+    display: block !important;
+}
+body:not(.nojs) button[type="submit"][form="publishForm"] {
+    display: none !important;
+}

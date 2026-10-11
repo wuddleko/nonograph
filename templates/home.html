@@ -34,17 +34,7 @@
         <link rel="canonical" href="{{public_url}}" />
         <link rel="stylesheet" href="/home.css?v={{asset_version}}" />
         <noscript>
-            <style>
-                .nostr-publish {
-                    display: none !important;
-                }
-                body:not(.nojs) .needs-js {
-                    display: block !important;
-                }
-                body:not(.nojs) button[type="submit"][form="publishForm"] {
-                    display: none !important;
-                }
-            </style>
+            <link rel="stylesheet" href="/home-noscript.css?v={{asset_version}}" />
         </noscript>
 
     </head>

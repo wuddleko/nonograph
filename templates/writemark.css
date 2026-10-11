@@ -1,0 +1,229 @@
+:host {
+  color-scheme: light dark;
+  --md-editor-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-editor-mono-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --md-editor-font-size: 15px;
+  --md-editor-line-height: 1.55;
+  --md-editor-bg: Canvas;
+  --md-editor-fg: CanvasText;
+  --md-editor-muted: color-mix(in srgb, CanvasText 55%, Canvas 45%);
+  --md-editor-token: color-mix(in srgb, CanvasText 42%, Canvas 58%);
+  --md-editor-border: color-mix(in srgb, CanvasText 22%, Canvas 78%);
+  --md-editor-border-focus: Highlight;
+  --md-editor-radius: 10px;
+  --md-editor-padding: 14px;
+  --md-editor-min-height: 220px;
+  --md-editor-max-height: none;
+  --md-editor-focus-ring: 0 0 0 3px color-mix(in srgb, Highlight 32%, transparent);
+  --md-editor-active-line-ring: none;
+  --md-editor-active-line-bg: transparent;
+  --md-editor-active-cell-ring: var(--md-editor-active-line-ring);
+  --md-editor-active-cell-bg: var(--md-editor-active-line-bg);
+  --md-editor-popup-bg: Canvas;
+  --md-editor-popup-fg: CanvasText;
+  --md-editor-popup-border: color-mix(in srgb, CanvasText 24%, Canvas 76%);
+  --md-editor-popup-shadow: 0 12px 30px rgb(0 0 0 / 0.16);
+  --md-editor-code-bg: color-mix(in srgb, CanvasText 8%, Canvas 92%);
+  --md-editor-code-header-bg: color-mix(in srgb, CanvasText 5%, Canvas 95%);
+  --md-editor-code-accent: color-mix(in srgb, CanvasText 45%, Canvas 55%);
+  --md-editor-danger: #b00020;
+  --md-editor-transition-duration: 140ms;
+  --md-editor-transition-ease: cubic-bezier(.2,.8,.2,1);
+  display: block;
+  font-family: var(--md-editor-font);
+  color: var(--md-editor-fg);
+}
+:host([hidden]) { display: none; }
+.container { display: grid; gap: 8px; font-size: var(--md-editor-font-size); }
+.label:empty { display: none; }
+.label { font-weight: 650; color: var(--md-editor-fg); }
+.workspace { display: grid; gap: 10px; }
+.editor-shell { position: relative; min-width: 0; }
+.live-editor, textarea {
+  box-sizing: border-box; inline-size: 100%; min-block-size: var(--md-editor-min-height); max-block-size: var(--md-editor-max-height);
+  border: 1px solid var(--md-editor-border); border-radius: var(--md-editor-radius); padding: var(--md-editor-padding);
+  background: var(--md-editor-bg); color: var(--md-editor-fg); line-height: var(--md-editor-line-height); overflow: auto;
+  transition: border-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease), background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease);
+}
+/* The live writing surface is a bare canvas: no frame, ever. */
+.live-editor, .live-editor:focus, .live-editor:focus-within, .live-editor:hover { border: 0; outline: none; box-shadow: none; }
+textarea:focus { outline: none; border-color: var(--md-editor-border-focus); box-shadow: var(--md-editor-focus-ring); }
+.live-editor[aria-disabled="true"], textarea:disabled { opacity: 0.62; cursor: not-allowed; }
+textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-font); font-size: var(--md-editor-font-size); tab-size: 2; }
+:host([mode="source"]) .live-editor { display: none; }
+:host([mode="source"]) textarea { display: block; }
+.live-placeholder { color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
+.md-empty-placeholder::before { content: attr(data-placeholder); position: absolute; color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
+.md-virtual-spacer { display: block; pointer-events: none; user-select: none; inline-size: 1px; min-block-size: 0; }
+.md-line { position: relative; min-block-size: calc(var(--md-editor-line-height, 1.55) * 1em); line-height: var(--md-editor-line-height, 1.55); white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; padding: 0; outline: none; transition: background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease); }
+.md-line:focus, .md-task-source:focus, .md-code-line:focus { box-shadow: var(--md-editor-active-line-ring); background: var(--md-editor-active-line-bg); }
+.md-cell:focus { box-shadow: var(--md-editor-active-cell-ring); background: var(--md-editor-active-cell-bg); }
+/* Blank source lines stand in for the paragraph gap in the finished
+   output, so give them the same block size as a rendered paragraph
+   margin rather than a full text line. */
+.md-line[data-kind="blank"] { min-block-size: var(--md-editor-paragraph-gap, 1.1em); }
+.md-token { color: var(--md-editor-token); font-weight: 500; }
+.md-url { color: var(--md-editor-muted); text-decoration: underline; }
+.md-heading { font-family: var(--md-editor-font); font-weight: 760; line-height: 1.18; margin-block: 0.22em; }
+.md-h1 { font-size: 2.0em; }
+.md-h2 { font-size: 1.6em; }
+.md-h3 { font-size: 1.35em; }
+.md-h4 { font-size: 1.18em; }
+.md-list { padding-inline-start: calc(var(--md-list-depth, 0) * 1.4em + 2px); }
+.md-task-line { display: flex; align-items: baseline; gap: 0.35em; }
+.md-task-line input { transform: translateY(0.12em); accent-color: var(--md-editor-checkbox-accent, #333); }
+.md-task-source { flex: 1; min-width: 0; white-space: pre-wrap; outline: none; border-radius: 6px; }
+.md-quote {
+  --md-quote-depth: 1;
+  border-radius: 0;
+  padding-inline-start: calc(var(--md-quote-depth) * 1em + 0.35em);
+  color: color-mix(in srgb, CanvasText 80%, Canvas 20%);
+  background-image: repeating-linear-gradient(to right, var(--md-editor-border) 0 4px, transparent 4px 1em);
+  background-position: left top;
+  background-repeat: no-repeat;
+  background-size: calc(var(--md-quote-depth) * 1em) 100%;
+}
+.md-quote:dir(rtl) {
+  background-image: repeating-linear-gradient(to left, var(--md-editor-border) 0 4px, transparent 4px 1em);
+  background-position: right top;
+}
+.md-quote-depth-2 { --md-quote-depth: 2; }
+.md-quote-depth-3 { --md-quote-depth: 3; }
+.md-quote-depth-4 { --md-quote-depth: 4; }
+.md-quote-depth-5 { --md-quote-depth: 5; }
+.md-quote-depth-6 { --md-quote-depth: 6; }
+.md-quote-depth-7 { --md-quote-depth: 7; }
+.md-quote-depth-8 { --md-quote-depth: 8; }
+.md-quote-depth-9 { --md-quote-depth: 9; }
+.md-quote-depth-10 { --md-quote-depth: 10; }
+.md-quote-depth-11 { --md-quote-depth: 11; }
+.md-quote-depth-12 { --md-quote-depth: 12; }
+.md-quote-depth-13 { --md-quote-depth: 13; }
+.md-quote-depth-14 { --md-quote-depth: 14; }
+.md-quote-depth-15 { --md-quote-depth: 15; }
+.md-quote-depth-16 { --md-quote-depth: 16; }
+.md-quote + .md-quote { margin-block-start: 0; }
+.md-hr-line { display: block; min-block-size: 1.35em; color: var(--md-editor-token); cursor: text; }
+.md-hr-line::after { content: ""; display: block; border-block-start: 1px solid var(--md-editor-border); margin-block-start: 0.3em; }
+/* Show the raw divider markers (e.g. ***) so the line stays editable. */
+.md-hr-line .md-token { display: inline; }
+/* Code blocks mirror the published post output (post.html): flat panel
+   with a header strip showing the language, monospace body at 14px/1.4.
+   No syntax highlighting and no copy/collapse controls in the editor. */
+.md-code-block { margin-block: 20px; border: 1px solid var(--md-editor-border); border-radius: var(--md-editor-radius); background: var(--md-editor-code-bg); overflow: hidden; }
+.md-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-block-size: 22px; padding: 1px 6px; border-block-end: 1px solid var(--md-editor-border); background: var(--md-editor-code-header-bg); color: var(--md-editor-code-accent); font-family: var(--md-editor-ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); font-size: 12px; line-height: 1.4; user-select: none; }
+.md-code-label { position: relative; text-transform: uppercase; font-weight: 500; letter-spacing: 0.5px; outline: none; min-inline-size: 1ch; }
+.md-code-language { display: none; }
+.md-code-lines { padding: 6px 0 6px 12px; font-family: var(--md-editor-mono-font); font-size: 14px; line-height: 1.4; color: var(--md-editor-fg); white-space: pre; overflow-x: auto; }
+.md-code-line { min-height: 1.4em; line-height: 1.4; outline: none; white-space: pre; border-radius: 0; }
+.md-code-line:empty::before { content: "\200b"; }
+.md-code-fence { display: none; }
+.md-table-block { overflow: auto; margin-block: 0.5em; }
+.md-table { border-collapse: collapse; inline-size: 100%; table-layout: fixed; }
+.md-table th, .md-table td { border: 1px solid var(--md-editor-border); padding: 6px 8px; vertical-align: top; }
+.md-table th { background: color-mix(in srgb, CanvasText 7%, Canvas 93%); font-weight: 700; text-align: left; }
+.md-cell { min-height: 1.35em; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Hover controls (add/remove rows and columns): identically sized,
+   2px-corner tabs. The block adds no padding, so table spacing matches
+   the base rule (margin-block: 0.5em). Each tab is centered on a table
+   edge: column-delete on the top, row-add on the bottom, and column-add
+   and row-delete on the right (over the cells' right padding). Nothing
+   extends horizontally, so there is no scrollbar; overflow is shown so
+   the top/bottom tabs are not clipped. */
+.md-has-controls { position: relative; overflow: visible; }
+.md-has-controls .md-table th, .md-has-controls .md-table td { position: relative; }
+.md-tbl-ctl { position: absolute; z-index: 3; box-sizing: border-box; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--md-editor-border); border-radius: 2px; background: var(--md-editor-code-bg, Canvas); color: var(--md-editor-fg); cursor: pointer; opacity: 0; transition: opacity 0.12s ease; user-select: none; }
+.md-tbl-ctl svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.md-tbl-ctl:focus-visible { opacity: 1; outline: 2px solid var(--md-editor-accent, Highlight); outline-offset: 1px; }
+[data-table-control="add-col"] { right: 0; top: 50%; transform: translateY(-50%); }
+[data-table-control="add-row"] { left: 50%; bottom: 0; transform: translate(-50%, 50%); }
+[data-table-control="del-col"] { left: 50%; top: 0; transform: translate(-50%, -50%); }
+[data-table-control="del-row"] { right: 0; top: 50%; transform: translateY(-50%); }
+.md-has-controls:hover [data-table-control^="add-"], .md-has-controls:focus-within [data-table-control^="add-"] { opacity: 0.5; }
+.md-table th:hover [data-table-control="del-col"], .md-table tr:hover [data-table-control="del-row"] { opacity: 0.6; }
+.md-has-controls .md-tbl-ctl:hover { opacity: 1; background: color-mix(in srgb, CanvasText 12%, Canvas 88%); }
+.completion-popup { position: absolute; z-index: 20; min-inline-size: 240px; max-inline-size: min(420px, 90vw); max-block-size: min(320px, 50vh); overflow: auto; border: 1px solid var(--md-editor-popup-border); border-radius: var(--md-editor-radius); background: var(--md-editor-popup-bg); color: var(--md-editor-popup-fg); box-shadow: var(--md-editor-popup-shadow); padding: 4px; }
+.completion-popup[hidden] { display: none; }
+/* Floating selection toolbar (bubble menu) shown above a text selection.
+   Dark by default to match the site's Publish button, with white icons. */
+.selection-toolbar { position: absolute; z-index: 25; display: flex; gap: 1px; padding: 3px; border-radius: var(--md-editor-toolbar-radius, 4px); background: var(--md-editor-toolbar-bg, #333); color: var(--md-editor-toolbar-fg, #fff); white-space: nowrap; transition: left var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)), top var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)); }
+.selection-toolbar[hidden] { display: none; }
+/* Don't animate the very first placement (avoids sliding in from a stale spot). */
+.selection-toolbar[data-instant] { transition: none; }
+@media (prefers-reduced-motion: reduce) { .selection-toolbar { transition: none; } }
+.selection-toolbar button { display: inline-flex; align-items: center; justify-content: center; inline-size: 34px; block-size: 34px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.selection-toolbar button:hover { background: var(--md-editor-toolbar-hover, rgba(255,255,255,0.16)); }
+.selection-toolbar button:active { background: var(--md-editor-toolbar-active, rgba(255,255,255,0.28)); }
+.selection-toolbar button svg { inline-size: 20px; block-size: 20px; display: block; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.selection-toolbar button svg [fill] { fill: currentColor; }
+@keyframes md-editor-pop { from { opacity: 0; transform: translateY(-3px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.completion-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.completion-item[aria-selected="true"] { background: color-mix(in srgb, Highlight 18%, transparent); }
+.completion-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.58; }
+.completion-label { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 0.9em; } .completion-description { grid-column: 1 / -1; }
+.validation { min-block-size: 1.2em; color: var(--md-editor-danger); font-size: 0.92em; } .validation:empty { display: none; }
+.sr-only { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; } }
+
+/* Nonograph theme: make the live document and slash menu resemble the
+   published post output. Values track the editor's CSS custom properties
+   so the host can still retheme via --md-editor-*. */
+.live-editor { caret-color: var(--md-editor-fg); }
+.md-line strong, .md-task-source strong { font-weight: 600; }
+.md-line em, .md-task-source em { font-style: italic; }
+.md-line del, .md-task-source del { text-decoration: line-through; }
+.md-line a, .md-task-source a { color: var(--md-editor-fg); text-decoration: underline; }
+.md-line a:hover, .md-task-source a:hover { color: color-mix(in srgb, var(--md-editor-fg) 70%, #000 30%); }
+.md-line code, .md-task-source code { background: var(--md-editor-code-bg); padding: 2px 6px; font-family: var(--md-editor-mono-font); font-size: 0.9em; }
+.md-heading { font-weight: 600; color: var(--md-editor-fg); }
+.md-h1 { font-size: 1.8em; }
+.md-h2 { font-size: 1.5em; }
+.md-h3 { font-size: 1.3em; }
+.md-h4 { font-size: 1.15em; }
+.md-quote { color: var(--md-editor-muted); background-image: none; border-inline-start: 2px solid var(--md-editor-border); padding-inline-start: 20px; }
+.md-table th, .md-table td { border: 1px solid var(--md-editor-border); }
+.md-table th { background: var(--md-editor-code-bg); font-weight: 600; }
+/* Slash-command menu matches the site's earlier .editor-menu look. */
+.completion-popup { border-radius: 4px; padding: 4px; min-inline-size: 200px; }
+.completion-item { padding: 4px 12px; border-radius: 2px; font-family: var(--md-editor-ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); color: var(--md-editor-popup-fg); }
+.completion-item[aria-selected="true"] { background: color-mix(in srgb, var(--md-editor-popup-fg) 12%, transparent); }
+.completion-item:hover { background: color-mix(in srgb, var(--md-editor-popup-fg) 7%, transparent); }
+.completion-label { font-weight: 500; font-size: 14px; }
+.completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 12px; }
+
+.md-list-depth-0 { --md-list-depth: 0; }
+.md-list-depth-1 { --md-list-depth: 1; }
+.md-list-depth-2 { --md-list-depth: 2; }
+.md-list-depth-3 { --md-list-depth: 3; }
+.md-list-depth-4 { --md-list-depth: 4; }
+.md-list-depth-5 { --md-list-depth: 5; }
+.md-list-depth-6 { --md-list-depth: 6; }
+.md-list-depth-7 { --md-list-depth: 7; }
+.md-list-depth-8 { --md-list-depth: 8; }
+.md-list-depth-9 { --md-list-depth: 9; }
+.md-list-depth-10 { --md-list-depth: 10; }
+.md-list-depth-11 { --md-list-depth: 11; }
+.md-list-depth-12 { --md-list-depth: 12; }
+.md-list-depth-13 { --md-list-depth: 13; }
+.md-list-depth-14 { --md-list-depth: 14; }
+.md-list-depth-15 { --md-list-depth: 15; }
+.md-list-depth-16 { --md-list-depth: 16; }
+.md-list-depth-17 { --md-list-depth: 17; }
+.md-list-depth-18 { --md-list-depth: 18; }
+.md-list-depth-19 { --md-list-depth: 19; }
+.md-list-depth-20 { --md-list-depth: 20; }
+.md-list-depth-21 { --md-list-depth: 21; }
+.md-list-depth-22 { --md-list-depth: 22; }
+.md-list-depth-23 { --md-list-depth: 23; }
+.md-list-depth-24 { --md-list-depth: 24; }
+.md-list-depth-25 { --md-list-depth: 25; }
+.md-list-depth-26 { --md-list-depth: 26; }
+.md-list-depth-27 { --md-list-depth: 27; }
+.md-list-depth-28 { --md-list-depth: 28; }
+.md-list-depth-29 { --md-list-depth: 29; }
+.md-list-depth-30 { --md-list-depth: 30; }
+.md-list-depth-31 { --md-list-depth: 31; }
+.md-list-depth-32 { --md-list-depth: 32; }
+th.md-align-center, td.md-align-center { text-align: center; }
+th.md-align-right, td.md-align-right { text-align: right; }

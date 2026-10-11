@@ -1,0 +1,9 @@
+body {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 40px 20px;
+    text-align: center;
+    color: #333;
+}
+h1 { font-weight: 300; margin-bottom: 16px; }
+a { color: #333; }

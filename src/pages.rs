@@ -28,7 +28,10 @@ pub const SECP256K1_JS_PATH: &str = "/secp256k1.js";
 pub const POST_CSS_PATH: &str = "/post.css";
 pub const POST_JS_PATH: &str = "/post.js";
 pub const POST_NOSCRIPT_CSS_PATH: &str = "/post-noscript.css";
+pub const HOME_NOSCRIPT_CSS_PATH: &str = "/home-noscript.css";
 pub const WRITEMARK_JS_PATH: &str = "/writemark.js";
+pub const WRITEMARK_CSS_PATH: &str = "/writemark.css";
+pub const NOTICE_CSS_PATH: &str = "/notice.css";
 
 const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
 const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
@@ -51,7 +54,10 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         | POST_CSS_PATH
         | POST_JS_PATH
         | POST_NOSCRIPT_CSS_PATH
-        | WRITEMARK_JS_PATH => LONG_CACHE,
+        | HOME_NOSCRIPT_CSS_PATH
+        | WRITEMARK_JS_PATH
+        | WRITEMARK_CSS_PATH
+        | NOTICE_CSS_PATH => LONG_CACHE,
         _ => "no-store, max-age=0",
     }
 }
@@ -112,7 +118,10 @@ struct Assets {
     post_css: String,
     post_js: String,
     post_noscript_css: String,
+    home_noscript_css: String,
     writemark_js: String,
+    writemark_css: String,
+    notice_css: String,
 }
 
 pub fn warm() {
@@ -139,7 +148,10 @@ fn assets() -> &'static Assets {
         let post_css = read("post.css");
         let post_js = read("post.js");
         let post_noscript_css = read("post-noscript.css");
+        let home_noscript_css = read("home-noscript.css");
         let writemark_js = read("writemark.js");
+        let writemark_css = read("writemark.css");
+        let notice_css = read("notice.css");
         let version = asset_version(&[
             &home_css,
             &home_js,
@@ -148,7 +160,10 @@ fn assets() -> &'static Assets {
             &post_css,
             &post_js,
             &post_noscript_css,
+            &home_noscript_css,
             &writemark_js,
+            &writemark_css,
+            &notice_css,
         ]);
         Assets {
             version,
@@ -159,7 +174,10 @@ fn assets() -> &'static Assets {
             post_css,
             post_js,
             post_noscript_css,
+            home_noscript_css,
             writemark_js,
+            writemark_css,
+            notice_css,
         }
     })
 }
@@ -178,15 +196,27 @@ fn home_scripts(version: &str) -> String {
     )
 }
 
-fn home_content_field(nojs: bool, max_length: &str, content: &str) -> String {
+fn home_content_field(
+    nojs: bool,
+    max_length: &str,
+    content: &str,
+    options: &nonograph_parser::RenderOptions,
+) -> String {
     if nojs {
         format!(
             "<textarea name=\"content\" placeholder=\"Write something with markdown...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required>{}</textarea>",
             nonograph_parser::html_escape(content)
         )
     } else {
+        let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
+        let external = if options.external_link_security {
+            "true"
+        } else {
+            "false"
+        };
         format!(
-            "<writemark-editor name=\"content\" mode=\"live\" placeholder=\"Write something with markdown or type / for formatting options...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required></writemark-editor>"
+            "<writemark-editor name=\"content\" mode=\"live\" placeholder=\"Write something with markdown or type / for formatting options...\" maxlength=\"{max_length}\" data-syntax-theme=\"{theme}\" data-max-url-length=\"{max_url}\" data-external-links=\"{external}\" title=\"Mind your opsec, be careful what you share.\" required></writemark-editor>",
+            max_url = options.max_url_length,
         )
     }
 }
@@ -310,7 +340,7 @@ fn home_form_context(
     context.insert("alias_value".to_string(), alias.to_string());
     context.insert(
         "content_field".to_string(),
-        home_content_field(nojs, &max_length, content),
+        home_content_field(nojs, &max_length, content, &render_options(config)),
     );
     context.insert(
         "nostr_relays".to_string(),
@@ -1242,7 +1272,7 @@ pub(crate) fn sealed_shell(
         String::new()
     } else {
         format!(
-            "<script type=\"application/json\" id=\"sealed-event\">{}</script>\n    <script type=\"module\" src=\"/nostr.js?v={version}\"></script>",
+            "<script type=\"module\" src=\"/nostr.js?v={version}\"></script>\n    <div id=\"sealed-event\" hidden>{}</div>",
             event_json.replace('<', "\\u003c"),
         )
     };
@@ -1817,6 +1847,7 @@ fn release_public_fetch(counter: &AtomicUsize) {
 }
 
 fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
+    let version = assets().version.as_str();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -1825,17 +1856,7 @@ fn centered_notice(document_title: &str, heading: &str, body: &str) -> String {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{document_title}</title>
     <link rel="icon" href="data:," />
-    <style>
-        body {{
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            text-align: center;
-            color: #333;
-        }}
-        h1 {{ font-weight: 300; margin-bottom: 16px; }}
-        a {{ color: #333; }}
-    </style>
+    <link rel="stylesheet" href="/notice.css?v={version}" />
 </head>
 <body>
     <h1>{heading}</h1>
@@ -1898,9 +1919,24 @@ pub fn post_noscript_css() -> (ContentType, &'static str) {
     (ContentType::CSS, assets().post_noscript_css.as_str())
 }
 
+#[get("/home-noscript.css")]
+pub fn home_noscript_css() -> (ContentType, &'static str) {
+    (ContentType::CSS, assets().home_noscript_css.as_str())
+}
+
 #[get("/writemark.js")]
 pub fn writemark_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, assets().writemark_js.as_str())
+}
+
+#[get("/writemark.css")]
+pub fn writemark_css() -> (ContentType, &'static str) {
+    (ContentType::CSS, assets().writemark_css.as_str())
+}
+
+#[get("/notice.css")]
+pub fn notice_css() -> (ContentType, &'static str) {
+    (ContentType::CSS, assets().notice_css.as_str())
 }
 
 const ROBOTS_TXT: &str = include_str!("../robots.txt");

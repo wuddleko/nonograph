@@ -27,6 +27,8 @@ fn a_bad_socks_address_is_fatal_before_relays_are_configured() {
 fn csp_keeps_the_tab_on_this_host() {
     let policy = content_security_policy();
     assert!(policy.contains("connect-src 'self';"));
+    assert!(policy.contains("script-src 'self' 'wasm-unsafe-eval'"));
+    assert!(!policy.contains("unsafe-inline"));
     assert!(!policy.contains("wss:"));
     assert!(!policy.contains("damus.io"));
     assert!(policy.contains("default-src 'self'"));

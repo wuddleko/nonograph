@@ -76,7 +76,6 @@ impl Fairing for SecurityHeadersFairing {
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
-        // TODO: Refactor HTML and remove unsafe-inline.
         response.set_header(Header::new(
             "Content-Security-Policy",
             content_security_policy(),
@@ -124,9 +123,9 @@ fn content_security_policy() -> String {
      img-src 'self' https: http: data:; \
      media-src 'self' https: http:; \
      object-src 'none'; \
-     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+     script-src 'self' 'wasm-unsafe-eval'; \
      script-src-attr 'none'; \
-     style-src 'self' https: 'unsafe-inline'"
+     style-src 'self' https:"
         .to_string()
 }
 
@@ -368,7 +367,10 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::post_css,
                 pages::post_js,
                 pages::post_noscript_css,
+                pages::home_noscript_css,
                 pages::writemark_js,
+                pages::writemark_css,
+                pages::notice_css,
             ],
         );
 
