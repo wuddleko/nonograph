@@ -752,6 +752,85 @@ fn selection_hash_keeps_the_query_string() {
 }
 
 #[test]
+fn public_origin_is_optional_and_a_bad_one_is_fatal() {
+    let engine = crate::template::TemplateEngine::new("templates");
+    let config = crate::config::Config::default();
+    let home = engine
+        .render("home", &home_context(&config, false, None, None))
+        .unwrap();
+    assert!(home.contains("rel=\"canonical\" href=\"/\""));
+    assert!(home.contains("property=\"og:url\" content=\"/\""));
+    assert!(!home.contains("nonograph.com"));
+
+    let mut named = crate::config::Config::default();
+    named.server.public_origin = "https://example.com".to_string();
+    let home = engine
+        .render("home", &home_context(&named, false, None, None))
+        .unwrap();
+    assert!(home.contains("rel=\"canonical\" href=\"https://example.com/\""));
+    assert!(home.contains("property=\"og:url\" content=\"https://example.com/\""));
+    assert!(!home.contains("nonograph.com"));
+    let about = match build_static_page("about", &named, false) {
+        BuiltPage::Ready(html) => html,
+        other => panic!("about page did not render: {other:?}"),
+    };
+    assert!(about.contains("property=\"og:url\" content=\"https://example.com/about\""));
+
+    let temp = tempfile::tempdir().unwrap();
+    for bad in ["http://example.com", "https://abcd.onion", "javascript:alert(1)"] {
+        let mut rejected = crate::config::Config::default();
+        rejected.server.public_origin = bad.to_string();
+        let error = rejected.normalized_public_origin().unwrap_err();
+        assert!(
+            error.starts_with("[server].public_origin is not an https URL"),
+            "{error}"
+        );
+        let home = engine
+            .render("home", &home_context(&rejected, false, None, None))
+            .unwrap();
+        assert!(!home.contains(bad), "{bad}");
+        assert!(home.contains("rel=\"canonical\" href=\"/\""));
+        assert!(home.contains("property=\"og:url\" content=\"/\""));
+
+        let path = temp.path().join("bad.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[limits]
+title_max_length = 128
+alias_max_length = 32
+content_max_length = 10
+
+[server]
+port = 9
+address = "127.0.0.1"
+onion_url = ""
+onion_hostname_file = "/var/lib/tor/hidden_service/hostname"
+public_origin = "{bad}"
+
+[security]
+max_url_length = 4096
+external_link_security = true
+csrf_protection_enabled = true
+
+[theme]
+syntax_highlighting = "base16-ocean.dark"
+"#
+            ),
+        )
+        .unwrap();
+        let error = crate::config::Config::load_from(&path).unwrap_err();
+        assert!(
+            error.starts_with("[server].public_origin is not an https URL"),
+            "{error}"
+        );
+        assert!(!error.contains("href="), "{error}");
+        assert!(!error.contains("<"), "{error}");
+    }
+}
+
+#[test]
 fn nojs_static_page_omits_scripts() {
     let config = crate::config::Config::default();
     let nojs = match build_static_page("about", &config, true) {

@@ -10,9 +10,6 @@ alias_max_length = 32
 # Maximum content length in characters
 content_max_length = 256_000
 
-# Maximum form data size in KB
-form_data_limit_kb = 512
-
 [server]
 # Server port (can be overridden by ROCKET_PORT environment variable)
 port = 8009
@@ -25,6 +22,8 @@ address = "127.0.0.1"
 # file below. Set a full URL (e.g. "http://abcd...xyz.onion") to override.
 onion_url = ""
 onion_hostname_file = "/var/lib/tor/hidden_service/hostname"
+
+public_origin = ""
 
 [security]
 # Maximum URL length for link processing

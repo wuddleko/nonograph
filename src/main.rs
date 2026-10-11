@@ -305,33 +305,43 @@ fn install_bundled_pages_from(
     Ok(installed)
 }
 
+fn startup_socks(config: &Config) -> Result<crate::nostr::RelaySocks, ()> {
+    match config.socks_addr()? {
+        Some(addr) => Ok(crate::nostr::RelaySocks::Proxy(addr)),
+        None => Ok(crate::nostr::RelaySocks::Direct),
+    }
+}
+
 fn rocket() -> rocket::Rocket<rocket::Build> {
     use rocket::data::{Limits, ToByteUnit};
 
     install_bundled_pages();
     pages::warm();
 
-    let config = Config::load_with_logging();
+    let config = match Config::load_with_logging() {
+        Ok(config) => config,
+        Err(_) => std::process::exit(1),
+    };
 
     let limits = Limits::default()
         .limit("form", config.form_data_limit_bytes().bytes())
         .limit("data-form", config.form_data_limit_bytes().bytes())
         .limit("string", config.form_data_limit_bytes().bytes());
 
-    match config.socks_addr() {
-        Ok(Some(addr)) => {
-            crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Proxy(addr));
+    match startup_socks(&config) {
+        Ok(socks @ crate::nostr::RelaySocks::Proxy(addr)) => {
+            crate::nostr::set_relay_socks(socks);
             println!("Nonograph: Nostr relays via SOCKS {addr}");
         }
-        Ok(None) => {
+        Ok(crate::nostr::RelaySocks::Direct) => {
             crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Direct);
             println!("Nonograph: Nostr relays connect directly (no SOCKS)");
         }
-        Err(()) => {
-            crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Disabled);
+        Ok(crate::nostr::RelaySocks::Disabled) | Err(()) => {
             eprintln!(
                 "Nonograph: [nostr].socks is not a socket address; relay connections are disabled"
             );
+            std::process::exit(1);
         }
     }
 

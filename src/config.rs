@@ -18,7 +18,6 @@ pub struct Limits {
     pub title_max_length: usize,
     pub alias_max_length: usize,
     pub content_max_length: usize,
-    pub form_data_limit_kb: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +26,8 @@ pub struct Server {
     pub address: String,
     pub onion_url: String,
     pub onion_hostname_file: String,
+    #[serde(default)]
+    pub public_origin: String,
 }
 
 fn default_onion_hostname_file() -> String {
@@ -88,13 +89,13 @@ impl Default for Config {
                 title_max_length: 128,
                 alias_max_length: 32,
                 content_max_length: 128000,
-                form_data_limit_kb: 512,
             },
             server: Server {
                 port: 8000,
                 address: "127.0.0.1".to_string(),
                 onion_url: String::new(),
                 onion_hostname_file: default_onion_hostname_file(),
+                public_origin: String::new(),
             },
             security: Security {
                 max_url_length: 4096,
@@ -191,20 +192,37 @@ pub(crate) fn normalize_https_url(input: &str) -> Option<String> {
 }
 
 impl Config {
-    pub fn load() -> Result<Self, String> {
-        let config_path = Path::new("Config.toml");
+    pub fn load_from(path: &Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Ok(Config::default());
+        }
 
-        if config_path.exists() {
-            let content = fs::read_to_string(config_path)
-                .map_err(|e| format!("Failed to read Config.toml: {}", e))?;
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read Config.toml: {}", e))?;
+        let config: Config =
+            toml::from_str(&content).map_err(|e| format!("Failed to parse Config.toml: {}", e))?;
+        config.normalized_public_origin()?;
+        Ok(config)
+    }
 
-            toml::from_str(&content).map_err(|e| format!("Failed to parse Config.toml: {}", e))
-        } else {
-            Ok(Config::default())
+    pub fn normalized_public_origin(&self) -> Result<String, String> {
+        let raw = self.server.public_origin.trim();
+        if raw.is_empty() {
+            return Ok(String::new());
+        }
+        match normalize_https_url(raw) {
+            Some(url) => Ok(url.trim_end_matches('/').to_string()),
+            None => Err(format!(
+                "[server].public_origin is not an https URL ({raw})"
+            )),
         }
     }
 
-    pub fn load_with_logging() -> Self {
+    pub fn load() -> Result<Self, String> {
+        Self::load_from(Path::new("Config.toml"))
+    }
+
+    pub fn load_with_logging() -> Result<Self, String> {
         match Self::load() {
             Ok(config) => {
                 println!("Nonograph: ✅ Configuration loaded successfully");
@@ -214,18 +232,23 @@ impl Config {
                     "   Content limit: {} chars",
                     config.limits.content_max_length
                 );
-                config
+                Ok(config)
             }
-            Err(e) => {
-                eprintln!("Nonograph: ⚠️  Configuration error: {}", e);
-                eprintln!("Nonograph:    Using default configuration");
-                Config::default()
+            Err(error) => {
+                eprintln!("Nonograph: ⚠️  Configuration error: {}", error);
+                Err(error)
             }
         }
     }
 
     pub fn form_data_limit_bytes(&self) -> u32 {
-        self.limits.form_data_limit_kb * 1024
+        let text = self
+            .limits
+            .content_max_length
+            .saturating_add(self.limits.title_max_length)
+            .saturating_add(self.limits.alias_max_length);
+        let bytes = text.saturating_mul(4).saturating_add(4096);
+        u32::try_from(bytes).unwrap_or(u32::MAX)
     }
 
     /// `Ok(None)` connects directly. `Err` means `socks` was set but is not a socket address.

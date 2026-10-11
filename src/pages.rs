@@ -386,7 +386,20 @@ fn home_form_context(
             String::new()
         },
     );
+    let origin = config.normalized_public_origin().unwrap_or_default();
+    context.insert(
+        "public_url".to_string(),
+        join_public_origin(&origin, "/"),
+    );
     context
+}
+
+fn join_public_origin(origin: &str, path: &str) -> String {
+    if origin.is_empty() {
+        path.to_string()
+    } else {
+        format!("{origin}{path}")
+    }
 }
 
 fn about_durability(nojs: bool) -> &'static str {
@@ -1111,6 +1124,7 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
     };
     let rendered_content =
         nonograph_parser::render_markdown_with_config(&raw_content, &render_options(config));
+    let origin = config.normalized_public_origin().unwrap_or_default();
     let mut context = article_context(
         &title,
         &author,
@@ -1119,6 +1133,7 @@ fn build_static_page(page_name: &str, config: &Config, nojs: bool) -> BuiltPage 
         "",
         nojs,
         page_name,
+        &origin,
     );
     context.insert("content".to_string(), rendered_content);
     match template::shared().render("post", &context) {
@@ -1144,6 +1159,7 @@ fn article_context(
     description: &str,
     nojs: bool,
     public_id: &str,
+    origin: &str,
 ) -> HashMap<String, String> {
     let author = if author.is_empty() {
         "Anonymous".to_string()
@@ -1166,7 +1182,7 @@ fn article_context(
             .map(|time| time.format("%Y-%m-%dT00:00:00+00:00").to_string())
             .unwrap_or_default(),
     );
-    context.insert("url".to_string(), url.to_string());
+    context.insert("url".to_string(), join_public_origin(origin, url));
     context.insert("description".to_string(), description.to_string());
     fill_page_chrome(&mut context, nojs, public_id);
     context
@@ -1496,6 +1512,7 @@ fn nojs_note_html(
         nonograph_parser::render_markdown_with_config(&note.content, &render_options(config));
     let share = js_seal_href(locator, event_id, k, hints);
     let page = share.split_once('#').map(|(page, _)| page).unwrap_or(&share);
+    let origin = config.normalized_public_origin().unwrap_or_default();
     let mut context = article_context(
         &note.title,
         &note.author,
@@ -1504,6 +1521,7 @@ fn nojs_note_html(
         &post_description(&note.content),
         true,
         locator,
+        &origin,
     );
     context.insert("content".to_string(), content);
     context.insert("mode_href".to_string(), share);

@@ -3,6 +3,27 @@ use crate::template::TemplateEngine;
 use std::collections::HashMap;
 
 #[test]
+fn a_bad_socks_address_is_fatal_before_relays_are_configured() {
+    let mut config = Config::default();
+    assert!(matches!(
+        startup_socks(&config),
+        Ok(crate::nostr::RelaySocks::Direct)
+    ));
+    config.nostr.socks = "   ".to_string();
+    assert!(matches!(
+        startup_socks(&config),
+        Ok(crate::nostr::RelaySocks::Direct)
+    ));
+    config.nostr.socks = "127.0.0.1:9050".to_string();
+    assert!(matches!(
+        startup_socks(&config),
+        Ok(crate::nostr::RelaySocks::Proxy(addr)) if addr == "127.0.0.1:9050".parse().unwrap()
+    ));
+    config.nostr.socks = "not-a-socket".to_string();
+    assert!(matches!(startup_socks(&config), Err(())));
+}
+
+#[test]
 fn csp_keeps_the_tab_on_this_host() {
     let policy = content_security_policy();
     assert!(policy.contains("connect-src 'self';"));

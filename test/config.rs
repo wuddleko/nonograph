@@ -23,9 +23,69 @@ fn test_default_config() {
 }
 
 #[test]
+fn a_missing_config_is_the_default_and_a_bad_file_is_fatal() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing.toml");
+    let config = Config::load_from(&missing).unwrap();
+    assert_eq!(config.server.port, Config::default().server.port);
+    assert_eq!(
+        config.limits.content_max_length,
+        Config::default().limits.content_max_length
+    );
+    assert!(config.nostr.socks.is_empty());
+
+    let unread = temp.path().join("Config.toml");
+    std::fs::create_dir(&unread).unwrap();
+    let error = Config::load_from(&unread).unwrap_err();
+    assert!(error.starts_with("Failed to read Config.toml:"), "{error}");
+
+    let parsed = temp.path().join("broken.toml");
+    std::fs::write(&parsed, "[[[not toml").unwrap();
+    let error = Config::load_from(&parsed).unwrap_err();
+    assert!(error.starts_with("Failed to parse Config.toml:"), "{error}");
+
+    let valid = temp.path().join("valid.toml");
+    std::fs::write(
+        &valid,
+        r#"
+[limits]
+title_max_length = 128
+alias_max_length = 32
+content_max_length = 10
+form_data_limit_kb = 512
+
+[server]
+port = 9
+address = "127.0.0.1"
+onion_url = ""
+onion_hostname_file = "/var/lib/tor/hidden_service/hostname"
+
+[security]
+max_url_length = 4096
+external_link_security = true
+csrf_protection_enabled = true
+
+[theme]
+syntax_highlighting = "base16-ocean.dark"
+"#,
+    )
+    .unwrap();
+    let config = Config::load_from(&valid).unwrap();
+    assert_eq!(config.server.port, 9);
+    assert_eq!(config.limits.content_max_length, 10);
+}
+
+#[test]
 fn test_form_data_limit_bytes() {
     let config = Config::default();
-    assert_eq!(config.form_data_limit_bytes(), 512 * 1024);
+    assert_eq!(
+        config.form_data_limit_bytes(),
+        (128_000 + 128 + 32) * 4 + 4096
+    );
+
+    let mut wide = Config::default();
+    wide.limits.content_max_length = usize::MAX;
+    assert_eq!(wide.form_data_limit_bytes(), u32::MAX);
 }
 
 #[test]
