@@ -18,30 +18,16 @@ fn test_npub_bech32_matches_nip19() {
 
 #[test]
 fn test_signed_note_verifies_and_ids_differ() {
-    let first = sign_note(
-        "Hello",
-        "Ada",
-        "a line\nwith \"quotes\" and \\slashes",
-        1_700_000_000,
-    );
-    let second = sign_note(
-        "Hello",
-        "Ada",
-        "a line\nwith \"quotes\" and \\slashes",
-        1_700_000_000,
-    );
+    let content = "a line\nwith \"quotes\" and \\slashes";
+    let first = sign_sealed_note(content, "0123456789abcdef0123", 1_700_000_000);
+    let second = sign_sealed_note(content, "0123456789abcdef0123", 1_700_000_000);
     assert_ne!(first.id, second.id);
     assert_ne!(first.pubkey, second.pubkey);
     assert_signature(&first);
     assert_signature(&second);
 
     let parsed: serde_json::Value = serde_json::from_str(&first.event_json).unwrap();
-    assert_eq!(parsed["kind"], 30023);
-    assert_eq!(parsed["content"], "a line\nwith \"quotes\" and \\slashes");
-    assert_eq!(parsed["tags"][1][0], "title");
-    assert_eq!(parsed["tags"][1][1], "Hello");
-    assert_eq!(parsed["tags"][3][0], "author");
-    assert_eq!(parsed["tags"][3][1], "Ada");
+    assert_eq!(parsed["content"], content);
 }
 
 #[test]
@@ -49,11 +35,9 @@ fn seal_query_asks_for_the_event_id() {
     let event_id = "ab".repeat(32);
     let payload = req_payload(
         "sub",
-        &RelayQuery::Seal {
-            event_id_hex: event_id.clone(),
-            locator: "0123456789abcdef0123".to_string(),
-            payload_max: crate::seal::sealed_payload_max(128, 32, 256),
-        },
+        &event_id,
+        "0123456789abcdef0123",
+        crate::seal::sealed_payload_max(128, 32, 256),
     );
     let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(value[0], "REQ");
@@ -106,7 +90,17 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     bad_sig["sig"] = serde_json::Value::String(flipped);
     let bad_message = format!(r#"["EVENT","sub",{}]"#, bad_sig);
     assert!(sealed_from_relay_message(&bad_message, &note.id_hex(), locator, payload_max).is_none());
-    let clear = sign_note("Hello", "Ada", "plaintext", 1_700_000_000);
+    let clear = signed_event(
+        &Keypair::new(SECP256K1, &mut thread_rng()),
+        1_700_000_000,
+        30023,
+        &[
+            vec!["d".to_string(), "fedcba9876543210abcd".to_string()],
+            vec!["title".to_string(), "Hello".to_string()],
+            vec!["author".to_string(), "Ada".to_string()],
+        ],
+        "plaintext",
+    );
     let clear_message = format!(r#"["EVENT","sub",{}]"#, clear.event_json);
     assert!(sealed_from_relay_message(&clear_message, &clear.id_hex(), locator, payload_max).is_none());
 }
@@ -160,25 +154,22 @@ fn a_sealed_fetch_keeps_the_requested_event() {
     let locator = "0123456789abcdef0123";
     let older = sign_sealed_note("old1", locator, 1_700_000_000);
     let newer = sign_sealed_note("new1", locator, 1_800_000_000);
-    let query = RelayQuery::Seal {
-        event_id_hex: older.id_hex(),
-        locator: locator.to_string(),
-        payload_max: crate::seal::sealed_payload_max(128, 32, 256),
-    };
+    let event_id = older.id_hex();
+    let payload_max = crate::seal::sealed_payload_max(128, 32, 256);
     let old_message = format!(r#"["EVENT","sub",{}]"#, older.event_json);
     let new_message = format!(r#"["EVENT","sub",{}]"#, newer.event_json);
-    let old_note = note_for_query(&old_message, &query).unwrap();
-    assert!(note_for_query(&new_message, &query).is_none());
-    assert!(old_note.1.content.contains("old1"));
-    assert!(!old_note.1.content.contains("new1"));
+    let old_json = note_for_query(&old_message, &event_id, locator, payload_max).unwrap();
+    assert!(note_for_query(&new_message, &event_id, locator, payload_max).is_none());
+    assert!(old_json.contains("old1"));
+    assert!(!old_json.contains("new1"));
     let (tx, rx) = mpsc::channel();
-    tx.send(Some(old_note.1)).unwrap();
+    tx.send(Some(old_json)).unwrap();
     drop(tx);
     let started = Instant::now();
     let kept = take_first_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(kept.content.contains("old1"));
-    assert!(!kept.content.contains("new1"));
+    assert!(kept.contains("old1"));
+    assert!(!kept.contains("new1"));
 }
 
 #[test]
@@ -311,20 +302,12 @@ fn test_first_note_returns_when_the_first_relay_answers() {
     let late = tx.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(80));
-        let _ = late.send(Some(FetchedNote {
-            id_hex: "ab".repeat(32),
-            title: "Hello".to_string(),
-            author: String::new(),
-            content: "body".to_string(),
-            created_at: 1_700_000_000,
-            ..FetchedNote::default()
-        }));
+        let _ = late.send(Some("body".to_string()));
     });
     let started = Instant::now();
     let note = take_first_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert_eq!(note.title, "Hello");
-    assert_eq!(note.content, "body");
+    assert_eq!(note, "body");
     drop(tx);
 }
 
@@ -1019,7 +1002,7 @@ fn publish_does_not_dial_a_private_relay() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
-    let note = sign_note("Title", "Ada", "body", 1_700_000_000);
+    let note = sign_sealed_note("body", "0123456789abcdef0123", 1_700_000_000);
     let started = Instant::now();
     let accepted = publish_to_relays(
         &[format!("wss://127.0.0.1:{port}")],
@@ -1155,7 +1138,7 @@ fn publish_waits_for_every_relay_it_will_name() {
     let refused_port = refused.local_addr().unwrap().port();
     drop(refused);
 
-    let note = sign_note("Title", "Ada", "body", 1_700_000_000);
+    let note = sign_sealed_note("body", "0123456789abcdef0123", 1_700_000_000);
     let started = Instant::now();
     let accepted = publish_to_relays_inner(
         &[
@@ -1398,19 +1381,19 @@ fn tab_long_form_signature_verifies() {
     ];
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
-    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, KIND_LONG_FORM, &tags, content);
+    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, 30023, &tags, content);
     let sig = SECP256K1.sign_schnorr_with_aux_rand(&Message::from_digest(id), &keypair, &[0u8; 32]);
     let json = event_wire(
         &hex_encode(&id),
         &pubkey_hex,
         created_at,
-        KIND_LONG_FORM,
+        30023,
         &tags,
         content,
         Some(&hex_encode(&sig.serialize())),
     );
     let parsed = parse_event(&serde_json::from_str(&json).unwrap()).unwrap();
-    assert_eq!(parsed.kind, KIND_LONG_FORM);
+    assert_eq!(parsed.kind, 30023);
     assert!(event_id_matches(&parsed));
     assert!(verify_sig(&parsed));
     assert_eq!(
@@ -1423,7 +1406,7 @@ fn tab_long_form_signature_verifies() {
 fn homepage_js_signed_note_verifies() {
     let json = r#"{"id":"6d8323bd8e3e7824bf16f7983288645b2a476bcd4d6db2958edd73455b2a787b","pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","created_at":1700000000,"kind":30023,"tags":[["d","4a-tab-sign"],["title","Hello"],["published_at","1700000000"],["author","Ada"]],"content":"hello from the tab\nwith \"quotes\"","sig":"148d67d68dd5079295caa75e797894f9a8654499a3316b9849c672f69fb283b75d01374033b5c6c7dd4822fd576a8f44a9e7fa0e6ede5ed160960054ba5f5364"}"#;
     let parsed = parse_event(&serde_json::from_str(json).unwrap()).unwrap();
-    assert_eq!(parsed.kind, KIND_LONG_FORM);
+    assert_eq!(parsed.kind, 30023);
     assert!(event_id_matches(&parsed));
     assert!(verify_sig(&parsed));
 }

@@ -14,8 +14,6 @@ use secp256k1::schnorr::Signature;
 use secp256k1::{Keypair, Message, XOnlyPublicKey, SECP256K1};
 use tungstenite::client::IntoClientRequest;
 
-#[cfg(test)]
-pub const KIND_LONG_FORM: u32 = 30023;
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
 const SEALED_EVENT_OVERHEAD: usize = 8192;
 const SEALED_FRAME_OVERHEAD: usize = 1024;
@@ -26,33 +24,10 @@ pub struct SignedNote {
     pub event_json: String,
 }
 
-#[derive(Default)]
-pub struct FetchedNote {
-    pub id_hex: String,
-    pub title: String,
-    pub author: String,
-    pub content: String,
-    pub created_at: i64,
-    pub pubkey: [u8; 32],
-    pub identifier: String,
-}
-
 impl SignedNote {
     pub fn id_hex(&self) -> String {
         hex_encode(&self.id)
     }
-}
-
-#[cfg(test)]
-pub fn sign_note(title: &str, author: &str, content: &str, created_at: i64) -> SignedNote {
-    let keypair = Keypair::new(SECP256K1, &mut thread_rng());
-    signed_event(
-        &keypair,
-        created_at,
-        KIND_LONG_FORM,
-        &long_form_tags(title, author, created_at),
-        content,
-    )
 }
 
 #[cfg(test)]
@@ -1251,62 +1226,29 @@ pub fn fetch_sealed(
     timeout: Duration,
 ) -> Option<String> {
     let payload_max = crate::seal::sealed_payload_max(title_max, alias_max, content_max);
-    Some(
-        fetch_from_relays(
-            relays,
-            RelayQuery::Seal {
-                event_id_hex: event_id_hex.to_string(),
-                locator: locator.to_string(),
-                payload_max,
-            },
-            timeout,
-            true,
-        )?
-        .content,
-    )
-}
-
-#[derive(Clone)]
-enum RelayQuery {
-    Seal {
-        event_id_hex: String,
-        locator: String,
-        payload_max: usize,
-    },
+    Some(fetch_from_relays(
+        relays,
+        event_id_hex,
+        locator,
+        payload_max,
+        timeout,
+    )?)
 }
 
 fn fetch_from_relays(
     relays: &[String],
-    query: RelayQuery,
+    event_id_hex: &str,
+    locator: &str,
+    payload_max: usize,
     timeout: Duration,
-    public_only: bool,
-) -> Option<FetchedNote> {
-    match &query {
-        RelayQuery::Seal {
-            event_id_hex,
-            locator,
-            ..
-        } => {
-            if decode_fixed_hex::<32>(event_id_hex).is_none() || !sealed_locator(locator) {
-                return None;
-            }
-        }
+) -> Option<String> {
+    if decode_fixed_hex::<32>(event_id_hex).is_none() || !sealed_locator(locator) {
+        return None;
     }
-    let limit = if public_only {
-        MAX_FETCH_RELAYS
-    } else {
-        usize::MAX
-    };
     let relays: Vec<String> = relays
         .iter()
-        .filter(|relay| {
-            if public_only {
-                public_relay_url(relay)
-            } else {
-                valid_relay_url(relay)
-            }
-        })
-        .take(limit)
+        .filter(|relay| public_relay_url(relay))
+        .take(MAX_FETCH_RELAYS)
         .cloned()
         .collect();
     if relays.is_empty() {
@@ -1319,10 +1261,18 @@ fn fetch_from_relays(
     let mut handles = Vec::with_capacity(relays.len());
     for relay in relays {
         let tx = tx.clone();
-        let query = query.clone();
+        let event_id_hex = event_id_hex.to_string();
+        let locator = locator.to_string();
         let cancel = Arc::clone(&cancel);
         handles.push(std::thread::spawn(move || {
-            let found = match fetch_from_relay(&relay, &query, deadline, &cancel, public_only) {
+            let found = match fetch_from_relay(
+                &relay,
+                &event_id_hex,
+                &locator,
+                payload_max,
+                deadline,
+                &cancel,
+            ) {
                 Ok(note) => note,
                 Err(error) => {
                     if error != RELAY_TIMEOUT {
@@ -1344,9 +1294,9 @@ fn fetch_from_relays(
 }
 
 fn take_first_note(
-    rx: mpsc::Receiver<Option<FetchedNote>>,
+    rx: mpsc::Receiver<Option<String>>,
     deadline: Instant,
-) -> Option<FetchedNote> {
+) -> Option<String> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1360,31 +1310,35 @@ fn take_first_note(
     }
 }
 
-fn req_payload(sub_id: &str, query: &RelayQuery) -> String {
-    match query {
-        RelayQuery::Seal { event_id_hex, .. } => serde_json::json!([
-            "REQ",
-            sub_id,
-            {
-                "ids": [event_id_hex],
-            }
-        ])
-        .to_string(),
-    }
+fn req_payload(
+    sub_id: &str,
+    event_id_hex: &str,
+    locator: &str,
+    payload_max: usize,
+) -> String {
+    let _ = (locator, payload_max);
+    serde_json::json!([
+        "REQ",
+        sub_id,
+        {
+            "ids": [event_id_hex],
+        }
+    ])
+    .to_string()
 }
 
 fn fetch_from_relay(
     relay: &str,
-    query: &RelayQuery,
+    event_id_hex: &str,
+    locator: &str,
+    payload_max: usize,
     deadline: Instant,
     cancel: &AtomicBool,
-    public_only: bool,
-) -> Result<Option<FetchedNote>, String> {
-    let mut socket = connect_relay(relay, deadline, Some(cancel), public_only, relay_socks())?;
-    let RelayQuery::Seal { payload_max, .. } = query;
-    limit_sealed_socket(&mut socket, *payload_max);
+) -> Result<Option<String>, String> {
+    let mut socket = connect_relay(relay, deadline, Some(cancel), true, relay_socks())?;
+    limit_sealed_socket(&mut socket, payload_max);
     let sub_id = random_hex(8);
-    let payload = req_payload(&sub_id, query);
+    let payload = req_payload(&sub_id, event_id_hex, locator, payload_max);
     arm_stream(
         socket.get_ref().get_ref(),
         wait_budget(deadline, Some(cancel))?,
@@ -1403,12 +1357,13 @@ fn fetch_from_relay(
                 return Err("relay closed the connection".to_string());
             }
             Incoming::Text(text) => {
-                let RelayQuery::Seal { payload_max, .. } = query;
-                if text.len() > sealed_frame_max(*payload_max) {
+                if text.len() > sealed_frame_max(payload_max) {
                     continue;
                 }
-                if let Some((_created_at, note)) = note_for_query(&text, query) {
-                    return Ok(Some(note));
+                if let Some(event_json) =
+                    note_for_query(&text, event_id_hex, locator, payload_max)
+                {
+                    return Ok(Some(event_json));
                 }
                 if relay_has_no_event(&text, &sub_id) {
                     return Ok(None);
@@ -1418,25 +1373,14 @@ fn fetch_from_relay(
     }
 }
 
-fn note_for_query(message: &str, query: &RelayQuery) -> Option<(i64, FetchedNote)> {
-    match query {
-        RelayQuery::Seal {
-            event_id_hex,
-            locator,
-            payload_max,
-        } => sealed_from_relay_message(message, event_id_hex, locator, *payload_max).map(
-            |(created_at, event_json)| {
-                (
-                    created_at,
-                    FetchedNote {
-                        content: event_json,
-                        created_at,
-                        ..FetchedNote::default()
-                    },
-                )
-            },
-        ),
-    }
+fn note_for_query(
+    message: &str,
+    event_id_hex: &str,
+    locator: &str,
+    payload_max: usize,
+) -> Option<String> {
+    sealed_from_relay_message(message, event_id_hex, locator, payload_max)
+        .map(|(_created_at, event_json)| event_json)
 }
 
 fn relay_has_no_event(message: &str, sub_id: &str) -> bool {
@@ -1659,19 +1603,6 @@ fn public_relay_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>,
     } else {
         Ok(public)
     }
-}
-
-#[cfg(test)]
-fn long_form_tags(title: &str, author: &str, created_at: i64) -> Vec<Vec<String>> {
-    let mut tags = vec![
-        vec!["d".to_string(), random_hex(16)],
-        vec!["title".to_string(), title.to_string()],
-        vec!["published_at".to_string(), created_at.to_string()],
-    ];
-    if !author.is_empty() {
-        tags.push(vec!["author".to_string(), author.to_string()]);
-    }
-    tags
 }
 
 pub(crate) fn signed_event(

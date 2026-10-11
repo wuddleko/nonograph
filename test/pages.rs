@@ -2010,7 +2010,18 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
 
 #[test]
 fn nostr_publish_refuses_a_clear_long_form_note() {
-    let note = crate::nostr::sign_note("Hello", "Ada", "body", 1_700_000_000);
+    let keypair = secp256k1::Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let note = crate::nostr::signed_event(
+        &keypair,
+        1_700_000_000,
+        30023,
+        &[
+            vec!["d".to_string(), "0123456789abcdef0123".to_string()],
+            vec!["title".to_string(), "Hello".to_string()],
+            vec!["author".to_string(), "Ada".to_string()],
+        ],
+        "body",
+    );
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
