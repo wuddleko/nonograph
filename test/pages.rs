@@ -2705,6 +2705,61 @@ fn homepage_js_gets_the_instance_public_relays() {
 }
 
 #[test]
+fn the_homepage_and_sealed_fetch_stay_on_the_config_relays() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let document: serde_json::Value =
+        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
+    crawler::save(
+        &path,
+        &crawler::Pool {
+            rows: vec![crawler::Row {
+                url: "wss://pool.example".to_string(),
+                first_seen: 1_700_000_000,
+                next_try: 1_700_000_100,
+                failures: 0,
+                visit: Some(crawler::Visit {
+                    at: 1_700_000_100,
+                    socket_answered: true,
+                    nip11: Some(document),
+                    probes: vec![crawler::ProbeResult {
+                        name: "30323".to_string(),
+                        accepted: true,
+                        detail: "OK".to_string(),
+                    }],
+                }),
+            }],
+        },
+    )
+    .unwrap();
+    let usable = crate::crawl::usable_rows(&path);
+    assert_eq!(usable.len(), 1);
+    assert_eq!(usable[0].url, "wss://pool.example");
+
+    let mut config = crate::config::Config::default();
+    config.nostr.relays = vec!["wss://config.example".to_string()];
+    for nojs in [false, true] {
+        let page = home_context(&config, nojs, None, None);
+        let relays: Vec<String> = serde_json::from_str(page.get("nostr_relays").unwrap()).unwrap();
+        assert_eq!(relays, config.nostr.relays);
+        let sidebar = page.get("relays_sidebar").unwrap();
+        assert!(sidebar.contains("wss://config.example"));
+        assert!(!sidebar.contains("wss://pool.example"));
+    }
+    assert_eq!(
+        relays_for_public_fetch(&[], &config.nostr.relays),
+        config.nostr.relays
+    );
+
+    let home = include_str!("../src/pages/home.rs");
+    let sealed = include_str!("../src/pages/sealed.rs");
+    assert!(!home.contains("usable_rows"));
+    assert!(!sealed.contains("usable_rows"));
+    assert!(home.contains("config.nostr.relays"));
+    assert!(sealed.contains("config.nostr.relays"));
+}
+
+#[test]
 fn tab_relay_timeout_is_at_least_ten_seconds() {
     assert_eq!(tab_relay_timeout_ms(0), 10_000);
     assert_eq!(tab_relay_timeout_ms(3), 10_000);

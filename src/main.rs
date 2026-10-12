@@ -305,14 +305,16 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         .limit("data-form", config.form_data_limit_bytes().bytes())
         .limit("string", config.form_data_limit_bytes().bytes());
 
-    match startup_socks(&config) {
+    let socks = match startup_socks(&config) {
         Ok(socks @ crate::nostr::RelaySocks::Proxy(addr)) => {
             crate::nostr::set_relay_socks(socks);
             println!("Nonograph: Nostr relays via SOCKS {addr}");
+            socks
         }
         Ok(crate::nostr::RelaySocks::Direct) => {
             crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Direct);
             println!("Nonograph: Nostr relays connect directly (no SOCKS)");
+            crate::nostr::RelaySocks::Direct
         }
         Ok(crate::nostr::RelaySocks::Disabled) | Err(()) => {
             eprintln!(
@@ -320,7 +322,9 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
             );
             std::process::exit(1);
         }
-    }
+    };
+    let timeout_secs = config.nostr.timeout_secs;
+    crawl::start_pool(socks, move || crawl::run_pool(socks, timeout_secs));
 
     let onion_url = config.resolve_onion_url();
     match &onion_url {

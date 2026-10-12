@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crawler::{due, load, run_batch, Queue, Visit, VisitHook};
+use crawler::{due, load, run_batch, Queue, Row, Visit, VisitHook};
 use serde_json::Value;
 
 use crate::nostr::{fetch_nip11, probe_kind, read_relay_list, RelayList, RelaySocks};
@@ -39,6 +39,53 @@ where
 {
     let mut queue = batch_queue(path, now);
     run_batch(&mut queue, WORKERS, now, make_hook, path)
+}
+
+pub(crate) fn start_pool<F>(socks: RelaySocks, start: F) -> bool
+where
+    F: FnOnce() + Send + 'static,
+{
+    if !matches!(socks, RelaySocks::Proxy(_)) {
+        return false;
+    }
+    std::thread::spawn(start);
+    true
+}
+
+pub(crate) fn run_pool(socks: RelaySocks, timeout_secs: u64) {
+    let path = pool_path(Path::new("content"));
+    serve_pool(
+        &path,
+        |now| run_crawl(&path, now, || CrawlVisit::new(timeout_secs, socks)),
+        |wait| {
+            std::thread::sleep(wait);
+            true
+        },
+    );
+}
+
+fn serve_pool<C, S>(path: &Path, mut crawl: C, mut sleep: S)
+where
+    C: FnMut(i64) -> io::Result<()>,
+    S: FnMut(Duration) -> bool,
+{
+    loop {
+        let now = crate::nostr::now_secs();
+        if let Err(error) = crawl(now) {
+            eprintln!("Nonograph: relay pool was not saved: {error}");
+        }
+        let now = crate::nostr::now_secs();
+        if !sleep(pool_wait(&load(path).rows, now)) {
+            return;
+        }
+    }
+}
+
+fn pool_wait(rows: &[Row], now: i64) -> Duration {
+    match rows.iter().map(|row| row.next_try).min() {
+        Some(next) => Duration::from_secs(next.saturating_sub(now) as u64),
+        None => Duration::ZERO,
+    }
 }
 
 pub(crate) struct CrawlVisit<R> {
@@ -101,11 +148,39 @@ fn nip11_document(body: Option<String>) -> Option<Value> {
     }
 }
 
+pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
+    load(path)
+        .rows
+        .into_iter()
+        .filter(|row| row_is_usable(row))
+        .collect()
+}
+
+fn row_is_usable(row: &Row) -> bool {
+    let Some(visit) = row.visit.as_ref() else {
+        return false;
+    };
+    if !visit.socket_answered {
+        return false;
+    }
+    let Some(document) = visit.nip11.as_ref() else {
+        return false;
+    };
+    if !crate::nip11::document_is_public(document) {
+        return false;
+    }
+    let name = nonograph_nip44::KIND.to_string();
+    visit
+        .probes
+        .iter()
+        .any(|probe| probe.accepted && probe.name == name)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crawler::{save, Pool, ProbeResult, Row, Visit, VisitHook};
+    use crawler::{save, schedule, Pool, ProbeResult, Row, Visit, VisitHook};
     use serde_json::json;
 
     use super::*;
@@ -122,6 +197,15 @@ mod tests {
                 accepted: true,
                 detail: "ok".to_owned(),
             }],
+        }
+    }
+
+    fn silent() -> Visit {
+        Visit {
+            at: NOW - 5,
+            socket_answered: false,
+            nip11: None,
+            probes: Vec::new(),
         }
     }
 
@@ -152,6 +236,88 @@ mod tests {
                 Vec::new(),
             )
         }
+    }
+
+    #[test]
+    fn the_pool_starts_only_behind_a_proxy() {
+        use std::sync::mpsc;
+
+        assert!(!start_pool(RelaySocks::Direct, || panic!(
+            "started without a proxy"
+        )));
+        assert!(!start_pool(RelaySocks::Disabled, || panic!(
+            "started without a proxy"
+        )));
+
+        let proxy = RelaySocks::Proxy("127.0.0.1:9050".parse().unwrap());
+        let (started, done) = mpsc::channel();
+        assert!(start_pool(proxy, move || {
+            let _ = started.send(());
+        }));
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("pool thread");
+    }
+
+    #[test]
+    fn the_pool_sleeps_until_the_earliest_next_try() {
+        let mut answered = row("wss://open.example", NOW, Some(answered()));
+        assert_eq!(schedule(&mut answered, NOW), NOW + 24 * 60 * 60);
+
+        let mut missed = row("wss://miss.example", NOW, Some(silent()));
+        assert_eq!(schedule(&mut missed, NOW), NOW + 15 * 60);
+        assert_eq!(schedule(&mut missed, NOW), NOW + 60 * 60);
+        assert_eq!(schedule(&mut missed, NOW), NOW + 6 * 60 * 60);
+
+        let mut soon = row("wss://soon.example", NOW, Some(silent()));
+        schedule(&mut soon, NOW);
+        assert_eq!(
+            super::pool_wait(&[answered, missed, soon], NOW),
+            Duration::from_secs(15 * 60)
+        );
+        assert_eq!(super::pool_wait(&[], NOW), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_save_error_lets_the_pool_continue() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let later = crate::nostr::now_secs() + 15 * 60;
+        save(
+            &path,
+            &Pool {
+                rows: vec![row("wss://relay.example", later, None)],
+            },
+        )
+        .unwrap();
+        let crawls = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&crawls);
+        let finished = Arc::clone(&crawls);
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            move |_| {
+                let attempt = count.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, "disk"))
+                } else {
+                    Ok(())
+                }
+            },
+            move |wait| {
+                seen.lock().expect("waits").push(wait);
+                crawls.load(Ordering::SeqCst) < 2
+            },
+        );
+
+        assert_eq!(finished.load(Ordering::SeqCst), 2);
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.len(), 2);
+        assert!(waits[0].as_secs() <= 15 * 60);
+        assert!(waits[0].as_secs() >= 15 * 60 - 5);
     }
 
     #[test]
@@ -328,5 +494,77 @@ mod tests {
         assert!(visit.nip11.is_none());
         assert!(visit.probes.is_empty());
         assert!(urls.is_empty());
+    }
+
+    fn saved_document(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("nip11 fixture")
+    }
+
+    fn visited(url: &str, socket_answered: bool, nip11: Value, accepted: bool) -> Row {
+        row(
+            url,
+            NOW,
+            Some(Visit {
+                at: NOW,
+                socket_answered,
+                nip11: Some(nip11),
+                probes: vec![ProbeResult {
+                    name: "30323".to_owned(),
+                    accepted,
+                    detail: if accepted {
+                        "OK".to_owned()
+                    } else {
+                        "blocked: kind 30323 is not accepted".to_owned()
+                    },
+                }],
+            }),
+        )
+    }
+
+    #[test]
+    fn usable_rows_keep_an_open_relay_that_accepted_the_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        save(
+            &path,
+            &Pool {
+                rows: vec![
+                    visited(
+                        "wss://auth.example",
+                        true,
+                        saved_document(include_str!("../test/nip11/auth.json")),
+                        true,
+                    ),
+                    visited(
+                        "wss://payment.example",
+                        true,
+                        saved_document(include_str!("../test/nip11/payment.json")),
+                        true,
+                    ),
+                    visited(
+                        "wss://restricted.example",
+                        true,
+                        saved_document(include_str!("../test/nip11/restricted.json")),
+                        true,
+                    ),
+                    visited(
+                        "wss://kinds.example",
+                        true,
+                        saved_document(include_str!("../test/nip11/kinds-without.json")),
+                        true,
+                    ),
+                    visited("wss://refused.example", true, open.clone(), false),
+                    visited("wss://silent.example", false, open.clone(), true),
+                    row("wss://unvisited.example", NOW, None),
+                    visited("wss://open.example", true, open, true),
+                ],
+            },
+        )
+        .unwrap();
+
+        let usable = usable_rows(&path);
+        assert_eq!(usable.len(), 1);
+        assert_eq!(usable[0].url, "wss://open.example");
     }
 }
