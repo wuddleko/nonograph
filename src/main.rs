@@ -6,6 +6,7 @@ pub(crate) mod config;
 pub(crate) mod csrf;
 pub(crate) mod nostr;
 mod pages;
+pub(crate) mod relay_set;
 pub(crate) mod relays;
 pub(crate) mod seal;
 pub(crate) mod template;

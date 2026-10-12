@@ -680,7 +680,7 @@ fn sample_post_context(nojs: bool) -> HashMap<String, String> {
         context.insert(key.to_string(), "x".to_string());
     }
     context.insert("content".to_string(), "<p>Hi</p>".to_string());
-    fill_page_chrome(&mut context, nojs, "abc");
+    fill_layout(&mut context, nojs, "abc");
     context
 }
 

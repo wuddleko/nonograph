@@ -911,7 +911,7 @@ impl RelayPass {
 
     fn apply(&self, job: &PendingAssignment) {
         reap_held_relays();
-        let chosen = crate::pages::relays_to_assign(&job.page, &job.configured);
+        let chosen = crate::relay_set::relays_to_assign(&job.page, &job.configured);
         let paths = (job.circuits)();
         let noted = self.noted(&chosen, Instant::now());
         for relay in relays_needing_assignment(&chosen, paths.as_ref(), &noted) {
