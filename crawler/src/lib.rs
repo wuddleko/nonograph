@@ -1,8 +1,12 @@
 mod list;
+mod queue;
 mod relay_url;
+mod schedule;
 
 pub use list::{list_urls, list_urls_with};
+pub use queue::Queue;
 pub use relay_url::canonical_public_relay;
+pub use schedule::{due, schedule};
 
 use std::fs;
 use std::io;
@@ -21,6 +25,8 @@ pub struct Row {
     pub url: String,
     pub first_seen: i64,
     pub next_try: i64,
+    #[serde(default)]
+    pub failures: u32,
     pub visit: Option<Visit>,
 }
 
@@ -64,3 +70,15 @@ mod url_tests;
 #[cfg(test)]
 #[path = "../test/list.rs"]
 mod list_tests;
+
+#[cfg(test)]
+#[path = "../test/schedule.rs"]
+mod schedule_tests;
+
+#[cfg(test)]
+#[path = "../test/due.rs"]
+mod due_tests;
+
+#[cfg(test)]
+#[path = "../test/queue.rs"]
+mod queue_tests;

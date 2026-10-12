@@ -7,6 +7,7 @@ fn row_holds_a_visit() {
         url: "wss://relay.example".to_owned(),
         first_seen: 1_700_000_000,
         next_try: 1_700_086_400,
+        failures: 0,
         visit: Some(Visit {
             at: 1_700_000_100,
             socket_answered: true,
@@ -41,6 +42,7 @@ fn save_and_load_round_trip() {
             url: "wss://relay.example".to_owned(),
             first_seen: 1_700_000_000,
             next_try: 1_700_086_400,
+            failures: 0,
             visit: Some(Visit {
                 at: 1_700_000_100,
                 socket_answered: true,
@@ -82,5 +84,54 @@ fn load_bad_file_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     std::fs::write(&path, "not a pool").unwrap();
+    assert_eq!(load(&path), Pool { rows: Vec::new() });
+}
+
+#[test]
+fn load_without_failures_is_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    std::fs::write(
+        &path,
+        r#"{"rows":[{"url":"wss://relay.example","first_seen":1,"next_try":2,"visit":null}]}"#,
+    )
+    .unwrap();
+
+    let pool = load(&path);
+    assert_eq!(pool.rows.len(), 1);
+    assert_eq!(pool.rows[0].url, "wss://relay.example");
+    assert_eq!(pool.rows[0].first_seen, 1);
+    assert_eq!(pool.rows[0].next_try, 2);
+    assert_eq!(pool.rows[0].failures, 0);
+    assert!(pool.rows[0].visit.is_none());
+}
+
+#[test]
+fn failures_survive_save_and_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let pool = Pool {
+        rows: vec![Row {
+            url: "wss://relay.example".to_owned(),
+            first_seen: 1_700_000_000,
+            next_try: 1_700_000_900,
+            failures: 3,
+            visit: None,
+        }],
+    };
+
+    save(&path, &pool).unwrap();
+    assert_eq!(load(&path), pool);
+}
+
+#[test]
+fn load_null_failures_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    std::fs::write(
+        &path,
+        r#"{"rows":[{"url":"wss://relay.example","first_seen":1,"next_try":2,"failures":null,"visit":null}]}"#,
+    )
+    .unwrap();
     assert_eq!(load(&path), Pool { rows: Vec::new() });
 }
