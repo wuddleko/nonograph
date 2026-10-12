@@ -56,8 +56,9 @@ textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-fo
 .md-empty-placeholder::before { content: attr(data-placeholder); position: absolute; color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
 .md-virtual-spacer { display: block; pointer-events: none; user-select: none; inline-size: 1px; min-block-size: 0; }
 .md-line { position: relative; min-block-size: calc(var(--md-editor-line-height, 1.55) * 1em); line-height: var(--md-editor-line-height, 1.55); white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; padding: 0; outline: none; transition: background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease); }
+.md-source-form { white-space: pre-wrap; }
 .md-line p { display: inline; margin: 0; }
-.md-line:focus, .md-task-source:focus, .md-code-line:focus { box-shadow: var(--md-editor-active-line-ring); background: var(--md-editor-active-line-bg); }
+.md-line:focus, .md-task-source:focus, .md-list-content:focus, .md-code-line:focus, .md-code-fence-line:focus { box-shadow: var(--md-editor-active-line-ring); background: var(--md-editor-active-line-bg); }
 .md-cell:focus { box-shadow: var(--md-editor-active-cell-ring); background: var(--md-editor-active-cell-bg); }
 /* Blank source lines stand in for the paragraph gap in the finished
    output, so give them the same block size as a rendered paragraph
@@ -71,6 +72,9 @@ textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-fo
 .md-h3 { font-size: 1.35em; }
 .md-h4 { font-size: 1.18em; }
 .md-list { padding-inline-start: calc(var(--md-list-depth, 0) * 1.4em + 2px); }
+.md-list-row { display: flex; align-items: baseline; gap: 0.45em; }
+.md-list-marker { flex: none; min-inline-size: 2.4em; text-align: end; user-select: none; font-variant-numeric: tabular-nums; }
+.md-list-content { flex: 1; min-inline-size: 0; white-space: pre-wrap; overflow-wrap: anywhere; outline: none; border-radius: 6px; }
 .md-task-line { display: flex; align-items: baseline; gap: 0.35em; }
 .md-task-line input { transform: translateY(0.12em); accent-color: var(--md-editor-checkbox-accent, #333); }
 .md-task-source { flex: 1; min-width: 0; white-space: pre-wrap; outline: none; border-radius: 6px; }
@@ -108,13 +112,18 @@ textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-fo
 .md-hr-line::after { content: ""; display: block; border-block-start: 1px solid var(--md-editor-border); margin-block-start: 0.3em; }
 /* Show the raw divider markers (e.g. ***) so the line stays editable. */
 .md-hr-line .md-token { display: inline; }
-/* Code blocks mirror the published post output (post.html): flat panel
-   with a header strip showing the language, monospace body at 14px/1.4.
-   No syntax highlighting and no copy/collapse controls in the editor. */
+/* Highlighted code lines, with the opening and closing fences editable so the
+   language can be changed. Wrap, Collapse, and Copy stay on the published page. */
 .md-code-block { margin-block: 20px; border: 1px solid var(--md-editor-border); border-radius: var(--md-editor-radius); background: var(--md-editor-code-bg); overflow: hidden; }
+.md-comment { color: var(--md-editor-muted); }
+.md-image img, .md-image video { display: block; max-inline-size: 100%; margin-block-start: 0.5em; }
+.md-code-block.md-source-form { white-space: pre-wrap; padding: 8px 12px; font-family: var(--md-editor-mono-font); font-size: 14px; line-height: 1.4; overflow: auto; }
 .md-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-block-size: 22px; padding: 1px 6px; border-block-end: 1px solid var(--md-editor-border); background: var(--md-editor-code-header-bg); color: var(--md-editor-code-accent); font-family: var(--md-editor-ui-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif); font-size: 12px; line-height: 1.4; user-select: none; }
 .md-code-label { position: relative; text-transform: uppercase; font-weight: 500; letter-spacing: 0.5px; outline: none; min-inline-size: 1ch; }
 .md-code-language { display: none; }
+.md-code-fence-line { padding: 2px 12px; font-family: var(--md-editor-mono-font); font-size: 14px; line-height: 1.4; color: var(--md-editor-muted); white-space: pre; overflow-x: auto; outline: none; min-height: 1.4em; }
+.md-code-fence-line[data-fence-role="open"] { padding-top: 6px; }
+.md-code-fence-line[data-fence-role="close"] { padding-bottom: 6px; }
 .md-code-lines { padding: 6px 0 6px 12px; font-family: var(--md-editor-mono-font); font-size: 14px; line-height: 1.4; color: var(--md-editor-fg); white-space: pre; overflow-x: auto; }
 .md-code-line { min-height: 1.4em; line-height: 1.4; outline: none; white-space: pre; border-radius: 0; }
 .md-code-line:empty::before { content: "\200b"; }
@@ -171,12 +180,16 @@ textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-fo
    published post output. Values track the editor's CSS custom properties
    so the host can still retheme via --md-editor-*. */
 .live-editor { caret-color: var(--md-editor-fg); }
-.md-line strong, .md-task-source strong { font-weight: 600; }
-.md-line em, .md-task-source em { font-style: italic; }
-.md-line del, .md-task-source del { text-decoration: line-through; }
-.md-line a, .md-task-source a { color: var(--md-editor-fg); text-decoration: underline; }
-.md-line a:hover, .md-task-source a:hover { color: color-mix(in srgb, var(--md-editor-fg) 70%, #000 30%); }
-.md-line code, .md-task-source code { background: var(--md-editor-code-bg); padding: 2px 6px; font-family: var(--md-editor-mono-font); font-size: 0.9em; }
+.live-editor strong, .md-line strong, .md-task-source strong, .md-cell strong { font-weight: 600; }
+.live-editor em, .md-line em, .md-task-source em, .md-cell em { font-style: italic; }
+.live-editor u, .md-line u, .md-task-source u, .md-cell u { text-decoration: underline; }
+.live-editor mark, .md-line mark, .md-task-source mark, .md-cell mark { background: color-mix(in srgb, #f6e27a 72%, transparent); color: inherit; }
+.live-editor del, .md-line del, .md-task-source del, .md-cell del { text-decoration: line-through; }
+.live-editor a, .md-line a, .md-task-source a, .md-cell a { color: var(--md-editor-fg); text-decoration: underline; }
+.live-editor a:hover, .md-line a:hover, .md-task-source a:hover, .md-cell a:hover { color: color-mix(in srgb, var(--md-editor-fg) 70%, #000 30%); }
+.live-editor code, .md-line code, .md-task-source code, .md-cell code { background: var(--md-editor-code-bg); padding: 2px 6px; font-family: var(--md-editor-mono-font); font-size: 0.9em; }
+.live-editor img, .md-line img, .md-image img { display: block; max-inline-size: 100%; block-size: auto; }
+.md-code-line span { font-family: inherit; white-space: pre; }
 .md-heading { font-weight: 600; color: var(--md-editor-fg); }
 .md-h1 { font-size: 1.8em; }
 .md-h2 { font-size: 1.5em; }

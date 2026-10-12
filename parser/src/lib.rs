@@ -162,19 +162,7 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
     // Process footnotes before text formatting to avoid conflicts with ^ and []
     working_content = process_footnotes(&working_content);
 
-    working_content = safe_replace(&working_content, "**", "**", "<strong>", "</strong>");
-    working_content = safe_replace(&working_content, "*", "*", "<em>", "</em>");
-    working_content = safe_replace(&working_content, "_", "_", "<u>", "</u>");
-    working_content = safe_replace(&working_content, "~", "~", "<del>", "</del>");
-    working_content = safe_replace(&working_content, "^", "^", "<sup>", "</sup>");
-    working_content = safe_replace(&working_content, "==", "==", "<mark>", "</mark>");
-    working_content = safe_replace(
-        &working_content,
-        "#",
-        "#",
-        "<span class=\"secret\">",
-        "</span>",
-    );
+    working_content = apply_emphasis(&working_content);
 
     working_content = restore_media_syntax(&working_content, &media_blocks);
     working_content = restore_link_syntax(&working_content, &link_blocks);
@@ -189,6 +177,39 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
     working_content = restore_footnotes(&working_content);
 
     sanitize_html(working_content)
+}
+
+pub fn render_inline(content: &str) -> String {
+    render_inline_with_config(content, &RenderOptions::default())
+}
+
+pub fn render_inline_with_config(content: &str, config: &RenderOptions) -> String {
+    let cleaned_content = remove_standalone_list_tags(content);
+    let (working_content, code_blocks) = extract_code_blocks(&cleaned_content);
+    let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content);
+    let (working_content_no_links, link_blocks) = extract_link_syntax(&working_content_no_media);
+    let mut working_content = apply_emphasis(&working_content_no_links);
+    working_content = restore_media_syntax(&working_content, &media_blocks);
+    working_content = restore_link_syntax(&working_content, &link_blocks);
+    working_content = process_images_and_links(&working_content, config);
+    working_content = restore_code_blocks(&working_content, &code_blocks);
+    sanitize_html(working_content)
+}
+
+fn apply_emphasis(text: &str) -> String {
+    let mut working_content = safe_replace(text, "**", "**", "<strong>", "</strong>");
+    working_content = safe_replace(&working_content, "*", "*", "<em>", "</em>");
+    working_content = safe_replace(&working_content, "_", "_", "<u>", "</u>");
+    working_content = safe_replace(&working_content, "~", "~", "<del>", "</del>");
+    working_content = safe_replace(&working_content, "^", "^", "<sup>", "</sup>");
+    working_content = safe_replace(&working_content, "==", "==", "<mark>", "</mark>");
+    safe_replace(
+        &working_content,
+        "#",
+        "#",
+        "<span class=\"secret\">",
+        "</span>",
+    )
 }
 
 fn process_images_and_links(text: &str, config: &RenderOptions) -> String {
@@ -1064,43 +1085,11 @@ fn render_code_block(
     code_content: &str,
     line_count: u32,
 ) -> String {
-    let (css_lang, syntect_language) = language_names(original_language);
-    let (syntax, auto_detected) = if let Some(s) = syntax_set.find_syntax_by_name(syntect_language)
-    {
-        (s, false)
-    } else if original_language.is_empty() {
-        // No language specified — try to auto-detect from first line
-        if let Some(s) = syntax_set.find_syntax_by_first_line(code_content) {
-            (s, true)
-        } else {
-            (syntax_set.find_syntax_plain_text(), false)
-        }
-    } else {
-        // Language specified but not recognised — still try first-line as fallback
-        (
-            syntax_set
-                .find_syntax_by_first_line(code_content)
-                .unwrap_or_else(|| syntax_set.find_syntax_plain_text()),
-            false,
-        )
-    };
-
-    // Generate syntax-highlighted code
-    let mut highlighter = HighlightLines::new(syntax, theme);
-    let mut highlighted_code = String::new();
-
-    for line in LinesWithEndings::from(code_content) {
-        let line_html = match highlighter.highlight_line(line, syntax_set) {
-            Ok(ranges) => {
-                match styled_line_to_highlighted_html(&ranges[..], IncludeBackground::No) {
-                    Ok(html) => html,
-                    Err(_) => html_escape(line),
-                }
-            }
-            Err(_) => html_escape(line),
-        };
-        highlighted_code.push_str(&format!("<span class=\"code-line\">{}</span>", line_html));
-    }
+    let (syntax, auto_detected, css_lang) = code_syntax(syntax_set, original_language, code_content);
+    let highlighted_code = highlight_with_syntax(syntax_set, theme, syntax, code_content)
+        .into_iter()
+        .map(|line| format!("<span class=\"code-line\">{line}</span>"))
+        .collect::<String>();
 
     // Generate line numbers
     let line_numbers = (1..=line_count)
@@ -1224,6 +1213,93 @@ fn format_paragraphs_with_headers(text: &str) -> String {
     result = result.replace("\n\n\n", "\n\n");
 
     clear_breaks_before_tables(result)
+}
+
+/// Highlight one line of code the same way [`render_markdown`](render_markdown_with_config)
+/// highlights a fence line: the styled spans only, without the language label,
+/// line numbers, or the Wrap, Collapse, and Copy controls.
+pub fn highlight_code_line(language: &str, line: &str, syntax_theme: &str) -> String {
+    highlight_code_lines(language, line, syntax_theme)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+/// Highlight every line of `code` with one highlighter, matching the spans inside
+/// each `code-line` of a rendered fence. Line endings stay in the HTML so the
+/// result can be compared with that fence.
+pub fn highlight_code_lines(language: &str, code: &str, syntax_theme: &str) -> Vec<String> {
+    let (syntax_set, themes) = syntax_and_themes();
+    let theme = theme_for(themes, syntax_theme);
+    let (syntax, _, _) = code_syntax(syntax_set, language, code);
+    highlight_with_syntax(syntax_set, theme, syntax, code)
+}
+
+fn theme_for<'a>(
+    themes: &'a ThemeSet,
+    name: &str,
+) -> &'a syntect::highlighting::Theme {
+    themes.themes.get(name).unwrap_or_else(|| {
+        eprintln!(
+            "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
+            name
+        );
+        &themes.themes["base16-ocean.dark"]
+    })
+}
+
+fn code_syntax<'a>(
+    syntax_set: &'a SyntaxSet,
+    original_language: &str,
+    code_content: &str,
+) -> (
+    &'a syntect::parsing::SyntaxReference,
+    bool,
+    String,
+) {
+    let (css_lang, syntect_language) = language_names(original_language);
+    let (syntax, auto_detected) = if let Some(s) = syntax_set.find_syntax_by_name(syntect_language)
+    {
+        (s, false)
+    } else if original_language.is_empty() {
+        if let Some(s) = syntax_set.find_syntax_by_first_line(code_content) {
+            (s, true)
+        } else {
+            (syntax_set.find_syntax_plain_text(), false)
+        }
+    } else {
+        (
+            syntax_set
+                .find_syntax_by_first_line(code_content)
+                .unwrap_or_else(|| syntax_set.find_syntax_plain_text()),
+            false,
+        )
+    };
+    (syntax, auto_detected, css_lang.to_string())
+}
+
+fn highlight_with_syntax(
+    syntax_set: &SyntaxSet,
+    theme: &syntect::highlighting::Theme,
+    syntax: &syntect::parsing::SyntaxReference,
+    code_content: &str,
+) -> Vec<String> {
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    LinesWithEndings::from(code_content)
+        .map(|line| highlight_source_line(&mut highlighter, syntax_set, line))
+        .collect()
+}
+
+fn highlight_source_line(
+    highlighter: &mut HighlightLines,
+    syntax_set: &SyntaxSet,
+    line: &str,
+) -> String {
+    match highlighter.highlight_line(line, syntax_set) {
+        Ok(ranges) => styled_line_to_highlighted_html(&ranges[..], IncludeBackground::No)
+            .unwrap_or_else(|_| html_escape(line)),
+        Err(_) => html_escape(line),
+    }
 }
 
 fn paragraph_line(line: &str) -> Option<&str> {

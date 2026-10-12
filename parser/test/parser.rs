@@ -942,6 +942,50 @@ fn test_fenced_code_block_structure() {
 }
 
 #[test]
+fn highlight_code_line_matches_fence_spans() {
+    let theme = "base16-ocean.dark";
+    let code = "fn main() {\n    let value = 1;\n}";
+    let lines = highlight_code_lines("rust", code, theme);
+    let rendered = render_markdown(&format!("```rust\n{code}\n```"));
+    let joined = lines
+        .iter()
+        .map(|line| format!("<span class=\"code-line\">{}</span>", strip_style_attrs(line)))
+        .collect::<String>();
+    assert!(rendered.contains(&joined), "{rendered}");
+    assert!(lines[0].contains("style="));
+    assert_eq!(
+        highlight_code_line("rust", "fn main() {\n", theme),
+        lines[0]
+    );
+    assert!(lines.len() >= 2);
+    for line in &lines {
+        assert!(!line.contains("wrap-button"));
+        assert!(!line.contains("collapse-button"));
+        assert!(!line.contains("copy-button"));
+        assert!(!line.contains("line-number"));
+        assert!(!line.contains("code-language"));
+        assert!(!line.contains("code-header"));
+    }
+    let escaped = highlight_code_line("text", "<tag>", theme);
+    assert!(escaped.contains("&lt;tag&gt;"));
+    assert!(!escaped.contains("<tag>"));
+    assert!(highlight_code_lines("rust", "", theme).is_empty());
+}
+
+fn strip_style_attrs(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find(" style=\"") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + " style=\"".len()..];
+        let end = after.find('"').expect("style attribute quote");
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
 fn test_media_embedding() {
     // Test CommonMark image syntax
     let image_text = "![Alt text](https://example.com/image.jpg)";
@@ -2057,6 +2101,99 @@ fn editor_inline_json(samples: &[&str]) -> String {
     run_javascript("nonograph-inline", &program)
 }
 
+#[test]
+fn inline_markers_edit_like_brackets() {
+    let source = include_str!("../../templates/writemark.js");
+    let start = source
+        .find("const NONOGRAPH_INLINE_RULES")
+        .expect("editor inline rules");
+    let end = source[start..]
+        .find("\nfunction now(")
+        .expect("end of marker pair editor")
+        + start;
+    let cases = [
+        ("", 0, 0, "*", "insert", "**|1|1"),
+        ("**", 1, 1, "*", "insert", "***|3|3"),
+        ("****", 2, 2, "*", "insert", "****|4|4"),
+        ("**bold**", 6, 6, "*", "insert", "**bold**|8|8"),
+        ("*word*", 5, 5, "*", "insert", "*word*|6|6"),
+        ("hello", 0, 5, "*", "insert", "*hello*|1|6"),
+        ("*hello*", 1, 6, "*", "insert", "**hello**|2|7"),
+        ("**hello**", 2, 7, "*", "insert", "noop"),
+        ("", 0, 0, "=", "insert", "noop"),
+        ("=", 1, 1, "=", "insert", "noop"),
+        ("====", 2, 2, "=", "insert", "noop"),
+        ("==hi==", 4, 4, "=", "insert", "noop"),
+        ("****", 2, 2, "", "backspace", "|0|0"),
+        ("**", 1, 1, "", "backspace", "|0|0"),
+        ("====", 2, 2, "", "backspace", "noop"),
+        ("**bold**", 8, 8, "", "backspace", "noop"),
+        ("", 0, 0, "#", "insert", "noop"),
+        ("#", 1, 1, "#", "insert", "noop"),
+        ("hello ", 6, 6, "#", "insert", "noop"),
+        ("hello ##", 7, 7, "#", "insert", "noop"),
+        ("**", 1, 1, " ", "space", "* |2|2"),
+        ("****", 2, 2, " ", "space", "noop"),
+        ("hello", 3, 3, "*", "insert", "noop"),
+        ("", 0, 0, "`", "insert", "noop"),
+        ("x", 1, 1, "`", "insert", "x``|2|2"),
+        ("x``", 2, 2, "`", "insert", "x``|3|3"),
+        ("```\ncode\n```", 4, 4, "*", "insert", "noop"),
+        ("`code`", 3, 3, "*", "insert", "noop"),
+        ("`code`", 5, 5, "`", "insert", "`code`|6|6"),
+        ("_u_", 2, 2, "_", "insert", "noop"),
+        ("~s~", 2, 2, "~", "insert", "noop"),
+        ("^s^", 2, 2, "^", "insert", "noop"),
+        ("****", 2, 2, "", "tab", "****|4|4"),
+        ("**bold**", 4, 4, "", "tab", "**bold**|8|8"),
+        ("*word*", 3, 3, "", "tab", "*word*|6|6"),
+        ("==hi==", 3, 3, "", "tab", "noop"),
+        ("`code`", 3, 3, "", "tab", "`code`|6|6"),
+        ("_u_", 2, 2, "", "tab", "noop"),
+        ("~s~", 2, 2, "", "tab", "noop"),
+        ("^s^", 2, 2, "", "tab", "noop"),
+        ("**_a_**", 4, 4, "", "tab", "**_a_**|7|7"),
+        ("**a*b**", 4, 4, "", "tab", "**a*b**|7|7"),
+        ("hello **", 7, 7, "*", "insert", "hello ****|8|8"),
+        ("a=", 2, 2, "=", "insert", "noop"),
+        (" **", 2, 2, "*", "insert", " ***|4|4"),
+        ("**_a_**", 5, 5, "", "tab", "**_a_**|7|7"),
+        ("`*a*`", 3, 3, "", "tab", "`*a*`|5|5"),
+        ("#secret#", 4, 4, "", "tab", "noop"),
+        ("# Title", 4, 4, "", "tab", "noop"),
+        ("hello", 3, 3, "", "tab", "noop"),
+        ("```\n`x`\n```", 5, 5, "", "tab", "noop"),
+    ];
+    let listed = cases
+        .iter()
+        .map(|(value, start, end, key, action, _)| {
+            format!(
+                "{{value:{value},start:{start},end:{end},key:{key},action:{action}}}",
+                value = json_string(value),
+                start = start,
+                end = end,
+                key = json_string(key),
+                action = json_string(action),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let program = format!(
+        "{slice}\nconst cases = [{listed}];\nconst rendered = JSON.stringify(cases.map((item) => {{\n  const edit = markerPairEdit(item.value, item.start, item.end, item.key, item.action);\n  if (!edit) return \"noop\";\n  const next = item.value.slice(0, edit.from) + edit.insert + item.value.slice(edit.to);\n  return next + \"|\" + edit.start + \"|\" + edit.end;\n}}));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        slice = &source[start..end],
+    );
+    let rendered = run_javascript("nonograph-marker-pairs", &program);
+    let expected = format!(
+        "[{}]",
+        cases
+            .iter()
+            .map(|case| json_string(case.5))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert_eq!(rendered.trim(), expected);
+}
+
 fn run_javascript(prefix: &str, program: &str) -> String {
     let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
     std::fs::write(&path, program).expect("write editor fixture");
@@ -2080,8 +2217,34 @@ fn run_javascript(prefix: &str, program: &str) -> String {
     text
 }
 
+#[test]
+fn render_inline_returns_the_span() {
+    assert_eq!(
+        render_inline("**bold** and *italic*"),
+        "<strong>bold</strong> and <em>italic</em>"
+    );
+    assert_eq!(render_inline("`code`"), "<code>code</code>");
+    assert_eq!(
+        render_inline("[docs](https://example.com/page)"),
+        "<a href=\"https://example.com/page\" target=\"_blank\" rel=\"noopener noreferrer\">docs</a>"
+    );
+    assert_eq!(
+        render_inline("[secret](http://127.0.0.1/secret)"),
+        "[secret](http://127.0.0.1/secret)"
+    );
+    assert_eq!(render_inline("// hidden note"), "// hidden note");
+    assert_eq!(render_inline("# Title"), "# Title");
+    assert_eq!(render_inline("- one"), "- one");
+    assert_eq!(render_inline("| A | B |"), "| A | B |");
+    assert_eq!(
+        render_inline("```rust\nfn main() {}\n```"),
+        "```rust\nfn main() {}\n```"
+    );
+}
+
 fn renderer_samples() -> &'static [(&'static str, &'static str)] {
     &[
+        ("heading", "# Header"),
         ("emphasis", "**bold** and *italic*"),
         ("list", "- one\n- two"),
         ("task", "- [ ] open\n- [x] done"),
@@ -2093,6 +2256,10 @@ fn renderer_samples() -> &'static [(&'static str, &'static str)] {
         ("private-link", "[secret](http://127.0.0.1/secret)"),
         ("comment", "visible\n// hidden note\nstill here"),
     ]
+}
+
+fn live_paint_sample(name: &str) -> bool {
+    matches!(name, "heading" | "list" | "fence" | "image" | "comment")
 }
 
 fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, i64)]) -> Vec<i64> {
@@ -2166,7 +2333,68 @@ fn writemark_editor_line_html(html: &[String]) -> Vec<String> {
     parse_json_string_array(&run_javascript("nonograph-line-html", &program))
 }
 
-fn writemark_render_markdown(samples: &[&str], rust_html: &[String]) -> Vec<String> {
+fn inline_lookup_keys(markdown: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |value: &str| {
+        if !keys.iter().any(|existing: &String| existing == value) {
+            keys.push(value.to_string());
+        }
+    };
+    push(markdown);
+    for line in markdown.split('\n') {
+        push(line);
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            push(rest.trim_start_matches('#').trim_start());
+        }
+        let mut quote = trimmed;
+        while let Some(rest) = quote.strip_prefix('>') {
+            quote = rest.trim_start();
+            push(quote);
+        }
+        for marker in ["- [ ] ", "- [x] ", "- [X] ", "- ", "+ ", "* "] {
+            if let Some(rest) = trimmed.strip_prefix(marker) {
+                push(rest);
+            }
+        }
+        if let Some(rest) = trimmed.find(". ").and_then(|at| {
+            let (number, _) = trimmed.split_at(at);
+            number.chars().all(|c| c.is_ascii_digit()).then_some(&trimmed[at + 2..])
+        }) {
+            push(rest);
+        }
+    }
+    keys
+}
+
+fn fence_highlight_pairs(markdown: &str) -> Vec<(String, Vec<String>)> {
+    let lines: Vec<&str> = markdown.split('\n').collect();
+    let mut pairs = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let opener = lines[index].trim_start();
+        if let Some(info) = opener.strip_prefix("```").filter(|info| !info.contains('`')) {
+            let language = info.split_whitespace().next().unwrap_or("").to_string();
+            index += 1;
+            let mut body = Vec::new();
+            while index < lines.len() && !lines[index].trim_start().starts_with("```") {
+                body.push(lines[index]);
+                index += 1;
+            }
+            let code = body.join("\n");
+            let html = highlight_code_lines(&language, &code, "base16-ocean.dark");
+            pairs.push((format!("{language}\n{code}"), html));
+        }
+        index += 1;
+    }
+    pairs
+}
+
+fn writemark_fixture_columns(
+    names: &[&str],
+    samples: &[&str],
+    rust_html: &[String],
+) -> Vec<(String, String)> {
     let source = include_str!("../../templates/writemark.js");
     let end = source
         .find("\nfunction textFromMarkdown")
@@ -2176,19 +2404,64 @@ fn writemark_render_markdown(samples: &[&str], rust_html: &[String]) -> Vec<Stri
         .map(|sample| json_string(sample))
         .collect::<Vec<_>>()
         .join(",");
+    let listed_names = names
+        .iter()
+        .map(|name| json_string(name))
+        .collect::<Vec<_>>()
+        .join(",");
     let pairs = samples
         .iter()
         .zip(rust_html)
         .map(|(sample, html)| format!("[{}, {}]", json_string(sample), json_string(html)))
         .collect::<Vec<_>>()
         .join(",");
+    let mut inline_keys = Vec::new();
+    for sample in samples {
+        for key in inline_lookup_keys(sample) {
+            if !inline_keys.iter().any(|existing: &String| existing == &key) {
+                inline_keys.push(key);
+            }
+        }
+    }
+    let inline_pairs = inline_keys
+        .iter()
+        .map(|key| {
+            format!(
+                "[{}, {}]",
+                json_string(key),
+                json_string(&render_inline(key))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let highlight_pairs = samples
+        .iter()
+        .flat_map(|sample| fence_highlight_pairs(sample))
+        .map(|(key, lines)| {
+            let listed = lines
+                .iter()
+                .map(|line| json_string(line))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{}, [{listed}]]", json_string(&key))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let program = format!(
-        "{slice}\nconst table = new Map([{pairs}]);\npageModule = {{ render_markdown(markdown, theme, maxUrl, external) {{ if (theme !== \"base16-ocean.dark\" || maxUrl !== 4096 || external !== true) return \"renderer-options-mismatch\"; const html = table.get(markdown); return html == null ? \"renderer-sample-mismatch\" : html; }} }};\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => renderMarkdown(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        "{slice}\nconst table = new Map([{pairs}]);\nconst inlineTable = new Map([{inline_pairs}]);\nconst highlightTable = new Map([{highlight_pairs}]);\npageModule = {{ render_markdown(markdown, theme, maxUrl, external) {{ if (theme !== \"base16-ocean.dark\" || maxUrl !== 4096 || external !== true) return \"renderer-options-mismatch\"; const html = table.get(markdown); return html == null ? \"renderer-sample-mismatch\" : html; }}, render_inline(markdown, maxUrl, external) {{ if (maxUrl !== 4096 || external !== true) return \"renderer-inline-options-mismatch\"; const html = inlineTable.get(markdown); return html == null ? \"renderer-inline-mismatch:\" + markdown : html; }}, highlight_code_lines(language, code, theme) {{ if (theme !== \"base16-ocean.dark\") return [\"highlight-options-mismatch\"]; const html = highlightTable.get(language + \"\\n\" + code); return html == null ? [\"highlight-missing:\" + language + \":\" + code] : html; }} }};\nconst samples = [{listed}];\nconst names = [{listed_names}];\nconst liveNames = new Set([\"heading\", \"list\", \"fence\", \"image\", \"comment\"]);\nconst rendered = JSON.stringify(samples.flatMap((sample, index) => [renderMarkdown(sample), liveNames.has(names[index]) ? liveDocumentHtml(sample, {{ syntaxTheme: \"base16-ocean.dark\", maxUrl: 4096, external: true, markdownFlavor: \"gfm\", spellcheck: \"true\", editable: \"true\", indentString: \"  \" }}) : \"\"]));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
         slice = &source[..end],
         pairs = pairs,
+        inline_pairs = inline_pairs,
+        highlight_pairs = highlight_pairs,
         listed = listed,
+        listed_names = listed_names,
     );
-    parse_json_string_array(&run_javascript("nonograph-render", &program))
+    let columns = parse_json_string_array(&run_javascript("nonograph-render", &program));
+    assert_eq!(columns.len(), samples.len() * 2);
+    columns
+        .chunks(2)
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect()
 }
 
 fn parse_json_string_array(text: &str) -> Vec<String> {
@@ -2247,25 +2520,69 @@ fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> St
 
 fn renderer_fixture_json() -> String {
     let samples = renderer_samples();
+    let names: Vec<&str> = samples.iter().map(|(name, _)| *name).collect();
     let markdown: Vec<&str> = samples.iter().map(|(_, markdown)| *markdown).collect();
     let rust_html: Vec<String> = markdown
         .iter()
         .map(|sample| render_markdown_with_config(sample, &RenderOptions::default()))
         .collect();
-    let writemark = writemark_render_markdown(&markdown, &rust_html);
-    assert_eq!(writemark.len(), samples.len());
+    let columns = writemark_fixture_columns(&names, &markdown, &rust_html);
+    assert_eq!(columns.len(), samples.len());
     let mut out = String::from("[\n");
-    for (index, ((name, markdown), editor)) in samples.iter().zip(&writemark).enumerate() {
+    for (index, ((name, markdown), (editor, live))) in samples.iter().zip(&columns).enumerate() {
         let rust_html = &rust_html[index];
         assert_eq!(editor, rust_html, "{name}");
+        assert!(
+            !live.contains("renderer-inline-mismatch") && !live.contains("highlight-missing"),
+            "{name}: {live}"
+        );
+        if *name == "heading" {
+            assert!(!live.contains("header-anchor"), "{live}");
+            assert!(rust_html.contains("header-anchor"));
+        }
+        if *name == "list" {
+            assert!(
+                live.contains("md-list-marker")
+                    && live.contains(">one</span>")
+                    && live.contains(">two</span>")
+                    && live.contains("•"),
+                "{live}"
+            );
+        }
+        if *name == "fence" {
+            assert!(!live.contains("wrap-button"), "{live}");
+            assert!(live.contains("md-code-line") && live.contains("style="), "{live}");
+            assert!(
+                live.contains("data-fence-role=\"open\"")
+                    && live.contains(">```rust</div>")
+                    && live.contains("data-fence-role=\"close\"")
+                    && live.contains(">```</div>"),
+                "{live}"
+            );
+            assert!(rust_html.contains("wrap-button"));
+        }
+        if *name == "image" {
+            assert!(live.contains("![alt](https://example.com/image.png)"));
+            assert!(live.contains("<img "));
+            assert!(!live.contains("media-caption"), "{live}");
+        }
+        if *name == "comment" {
+            assert!(live.contains(">// hidden note</div>"), "{live}");
+            assert!(!rust_html.contains("hidden note"));
+        }
         if index > 0 {
             out.push_str(",\n");
         }
         out.push_str("  {\n");
         out.push_str(&format!("    \"name\": {},\n", json_string(name)));
         out.push_str(&format!("    \"markdown\": {},\n", json_string(markdown)));
-        out.push_str(&format!("    \"rust\": {},\n", json_string(&rust_html)));
-        out.push_str(&format!("    \"writemark\": {}\n", json_string(editor)));
+        out.push_str(&format!("    \"rust\": {},\n", json_string(rust_html)));
+        if live_paint_sample(name) {
+            out.push_str(&format!("    \"writemark\": {},\n", json_string(editor)));
+            out.push_str(&format!("    \"live\": {}\n", json_string(live)));
+        } else {
+            out.push_str(&format!("    \"writemark\": {}\n", json_string(editor)));
+        }
         out.push_str("  }");
     }
     out.push_str("\n]\n");

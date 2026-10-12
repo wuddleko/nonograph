@@ -9,7 +9,7 @@ const LEGACY_TAG_NAME = "md-live-editor";
 const DEFAULTS = Object.freeze({
   mode: "live",
   markdownFlavor: "gfm",
-  tabBehavior: "accessibility-first",
+  tabBehavior: "editor-first",
   indentString: "  ",
   placeholder: "Write markdown...",
   renderDebounceMs: 100,
@@ -77,6 +77,16 @@ const NONOGRAPH_INLINE_RULES = [
   { marker: "#", tag: "span", className: "secret" },
 ];
 
+const MARKER_PAIRS = [
+  { marker: "**" },
+  {
+    marker: "*",
+    lineStartSpaceBreaksPair: true,
+    divider: { whenLineIs: "**", insert: "***" },
+  },
+  { marker: "`", literalAtLineStart: true },
+];
+
 // Replicate one safe_replace pass over `source`, returning the wrapped ranges as
 // { openStart, openEnd, closeStart, closeEnd } in source offsets. Semantics: find
 // the first delimiter, then the next matching delimiter; if the enclosed content
@@ -84,7 +94,7 @@ const NONOGRAPH_INLINE_RULES = [
 // scanning continues past it. Regions already claimed by earlier (higher-priority)
 // passes are skipped so markers inside them are treated as literal text, matching
 // the server which never re-wraps inside a produced tag's markers.
-function nonographPairsForMarker(source, marker, claimed) {
+function nonographPairsForMarker(source, marker, claimed, allowEmpty = false) {
   const pairs = [];
   const len = source.length;
   const isClaimed = pos => {
@@ -105,7 +115,7 @@ function nonographPairsForMarker(source, marker, claimed) {
     }
     if (closeStart === -1) { i = contentStart; continue; }
     const content = source.slice(contentStart, closeStart);
-    if (content.length === 0 || content.includes("\n")) { i = contentStart; continue; }
+    if (content.includes("\n") || (content.length === 0 && !allowEmpty)) { i = contentStart; continue; }
     const closeEnd = closeStart + marker.length;
     pairs.push({ openStart, openEnd: contentStart, closeStart, closeEnd });
     i = closeEnd;
@@ -153,6 +163,181 @@ function renderNonographEmphasis(source, markerHtml = () => "") {
   }
   html += escapeHtml(source.slice(cursor));
   return html;
+}
+
+function lineRangeAt(value, offset) {
+  const start = value.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const endIndex = value.indexOf("\n", offset);
+  const end = endIndex === -1 ? value.length : endIndex;
+  return { start, end, text: value.slice(start, end) };
+}
+
+function offsetInFence(value, offset) {
+  const lines = value.split("\n");
+  let open = null;
+  let pos = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const lineStart = pos;
+    const lineEnd = pos + line.length;
+    const fence = /^(\s{0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    const marker = fence?.[2] ?? "";
+    const info = fence ? fence[3].trim() : "";
+    const fenceOk = Boolean(fence) && !(marker[0] === "`" && info.includes("`"));
+    if (open) {
+      const closes = fenceOk && marker[0] === open.char && marker.length >= open.length && info === "";
+      if (offset >= lineStart && offset <= lineEnd) return true;
+      if (closes) open = null;
+    } else if (fenceOk && lineEnd < value.length) {
+      open = { char: marker[0], length: marker.length };
+      if (offset >= lineStart && offset <= lineEnd) return true;
+    }
+    pos = lineEnd + 1;
+  }
+  return false;
+}
+
+function offsetInInlineCode(value, offset) {
+  const line = lineRangeAt(value, offset);
+  const before = line.text.slice(0, Math.max(0, offset - line.start));
+  return ((before.match(/(?<!\\)`/g) || []).length % 2) === 1;
+}
+
+function atLineStart(value, offset) {
+  const line = lineRangeAt(value, offset);
+  return /^[ \t]{0,3}$/.test(line.text.slice(0, Math.max(0, offset - line.start)));
+}
+
+function canAutoCloseBefore(ch) {
+  return ch == null || !/[A-Za-z0-9_]/.test(ch);
+}
+
+function pairMarker(marker) {
+  return MARKER_PAIRS.find(entry => entry.marker === marker)?.marker ?? "";
+}
+
+function isPairKey(key) {
+  return MARKER_PAIRS.some(entry => entry.marker.includes(key));
+}
+
+function emptyMarkerPair(value, caret) {
+  for (const entry of MARKER_PAIRS) {
+    const marker = entry.marker;
+    if (caret < marker.length || !value.startsWith(marker, caret) || !value.startsWith(marker, caret - marker.length)) continue;
+    if (value[caret - marker.length - 1] === "\\") continue;
+    return marker;
+  }
+  return "";
+}
+
+function lineMarkerPairs(value, offset, allowEmpty = false) {
+  const line = lineRangeAt(value, offset);
+  const claimed = [];
+  const pairs = [];
+  const remember = (pair, marker) => {
+    pairs.push({
+      marker,
+      openStart: line.start + pair.openStart,
+      openEnd: line.start + pair.openEnd,
+      closeStart: line.start + pair.closeStart,
+      closeEnd: line.start + pair.closeEnd,
+    });
+    claimed.push([pair.openStart, pair.closeEnd]);
+  };
+  let i = 0;
+  const text = line.text;
+  while (i < text.length) {
+    if (text[i] === "\\") { i += 2; continue; }
+    if (text[i] !== "`") { i += 1; continue; }
+    let j = i + 1;
+    while (j < text.length && text[j] !== "`") j += 1;
+    if (j >= text.length) break;
+    if (j === i + 1) { i += 1; continue; }
+    remember({ openStart: i, openEnd: i + 1, closeStart: j, closeEnd: j + 1 }, "`");
+    i = j + 1;
+  }
+  for (const entry of MARKER_PAIRS) {
+    if (entry.marker === "`") continue;
+    for (const pair of nonographPairsForMarker(text, entry.marker, claimed, allowEmpty)) remember(pair, entry.marker);
+  }
+  return pairs;
+}
+
+function lineTrimIs(value, offset, text) {
+  return lineRangeAt(value, offset).text.trim() === text;
+}
+function enclosingMarkerExit(value, caret) {
+  if (offsetInFence(value, caret)) return null;
+  let pairs = lineMarkerPairs(value, caret, true);
+  if (offsetInInlineCode(value, caret)) pairs = pairs.filter(pair => pair.marker === "`");
+  const enclosing = pairs.filter(pair => caret >= pair.openEnd && caret <= pair.closeStart);
+  if (!enclosing.length) return null;
+  enclosing.sort((a, b) => (a.closeEnd - a.openStart) - (b.closeEnd - b.openStart) || b.openStart - a.openStart);
+  const pair = enclosing[0];
+  return { from: caret, to: caret, insert: "", start: pair.closeEnd, end: pair.closeEnd };
+}
+function markerPairEdit(value, start, end, key, action) {
+  const source = String(value ?? "");
+  const from = Math.max(0, Math.min(start, end));
+  const to = Math.max(0, Math.max(start, end));
+  if (offsetInFence(source, from)) return null;
+  if (action === "tab") return from === to ? enclosingMarkerExit(source, from) : null;
+  if (action === "backspace" || action === "delete") {
+    if (from !== to) return null;
+    const marker = emptyMarkerPair(source, from);
+    if (!marker) return null;
+    return { from: from - marker.length, to: from + marker.length, insert: "", start: from - marker.length, end: from - marker.length };
+  }
+  if (action === "space") {
+    if (from !== to || offsetInInlineCode(source, from)) return null;
+    const line = lineRangeAt(source, from);
+    const before = line.text.slice(0, from - line.start);
+    const after = line.text.slice(from - line.start);
+    for (const entry of MARKER_PAIRS) {
+      if (!entry.lineStartSpaceBreaksPair) continue;
+      const marker = entry.marker;
+      if (after !== marker || !before.endsWith(marker)) continue;
+      if (!/^[ \t]{0,3}$/.test(before.slice(0, -marker.length))) continue;
+      return { from, to: from + marker.length, insert: " ", start: from + 1, end: from + 1 };
+    }
+    return null;
+  }
+  if (action !== "insert" || String(key ?? "").length !== 1 || !isPairKey(key)) return null;
+  const inCode = offsetInInlineCode(source, from);
+  if (from !== to) {
+    if (inCode || source.slice(from, to).includes("\n")) return null;
+    const before = source[from - 1];
+    const after = source[to];
+    const longer = pairMarker(key + key);
+    if (before === key && after === key && source[from - 2] !== key && source[to + 1] !== key && longer) {
+      const inner = source.slice(from, to);
+      return { from: from - 1, to: to + 1, insert: `${longer}${inner}${longer}`, start: from + key.length, end: to + key.length };
+    }
+    if (before === key && after === key) return null;
+    if (!pairMarker(key)) return null;
+    return { from, to, insert: `${key}${source.slice(from, to)}${key}`, start: from + 1, end: to + 1 };
+  }
+  if (inCode && key !== "`") return null;
+  const around = emptyMarkerPair(source, from);
+  const longer = pairMarker(key + key);
+  if (around === key && longer) {
+    const divider = MARKER_PAIRS.find(entry => entry.marker === key)?.divider;
+    if (divider && lineTrimIs(source, from, divider.whenLineIs)) {
+      const at = from - around.length;
+      const end = at + divider.insert.length;
+      return { from: at, to: from + around.length, insert: divider.insert, start: end, end };
+    }
+    return { from: from - around.length, to: from + around.length, insert: longer + longer, start: from + key.length, end: from + key.length };
+  }
+  if (around && around[0] === key) return { from, to: from, insert: "", start: from + around.length, end: from + around.length };
+  const closer = lineMarkerPairs(source, from).find(pair => pair.closeStart === from && pair.marker[0] === key);
+  if (closer) return { from, to: from, insert: "", start: closer.closeEnd, end: closer.closeEnd };
+  if (inCode) return null;
+  if (!pairMarker(key) || source[from] === key) return null;
+  if (source[from - 1] === "\\") return null;
+  if (MARKER_PAIRS.find(entry => entry.marker === key)?.literalAtLineStart && atLineStart(source, from)) return null;
+  if (!canAutoCloseBefore(source[from])) return null;
+  return { from, to: from, insert: key + key, start: from + 1, end: from + 1 };
 }
 
 function now() { return Date.now(); }
@@ -705,6 +890,17 @@ function parseBlockquote(line) {
     fullContentStart,
   };
 }
+function contentSourceRange(line, contentStart, content) {
+  const text = String(line?.text ?? "");
+  const body = String(content ?? "");
+  let start = Number(contentStart) || 0;
+  if (text.slice(start, start + body.length) !== body) {
+    const found = body ? text.indexOf(body) : -1;
+    if (found >= 0) start = found;
+  }
+  const from = (Number(line?.start) || 0) + start;
+  return { from, to: from + body.length };
+}
 // Nonograph dividers are exactly ***, -*-, ---, or === on their own line
 // (mirrors process_dividers in src/parser.rs). Note: **** (four stars, e.g. from
 // bolding an empty line) is intentionally NOT a divider.
@@ -721,6 +917,18 @@ function isFenceLine(line) { return Boolean(getFenceInfo(line)); }
 function isFenceCloseLine(line, opener) {
   const info = getFenceInfo(line);
   return Boolean(info && opener && info.marker === opener.marker && info.length >= opener.length && info.language === "");
+}
+function isCommentLine(line) {
+  return String(line ?? "").trimStart().startsWith("// ");
+}
+function loneImageMarkdown(line) {
+  const source = String(line ?? "");
+  const start = source.search(/\S/);
+  if (start < 0) return null;
+  const image = parseInlineLinkAt(source, start);
+  if (!image || image.bang !== "!" || image.from !== start) return null;
+  if (source.slice(image.to).trim() !== "") return null;
+  return image;
 }
 function isFenceOpenerLine(line) { return Boolean(getFenceInfo(line)); }
 function parseSetextHeadingLevel(line) {
@@ -812,6 +1020,37 @@ function listDepthClass(depth) {
 }
 function unescapeTableCellText(cellText) {
   return String(cellText ?? "").replace(/\\([\\|])/g, "$1");
+}
+function unescapedCellOffset(raw, rel) {
+  let display = 0;
+  for (let i = 0; i < raw.length && i < rel;) {
+    if (raw[i] === "\\" && (raw[i + 1] === "|" || raw[i + 1] === "\\")) {
+      if (rel <= i + 1) return display;
+      display += 1;
+      i += 2;
+    } else {
+      display += 1;
+      i += 1;
+    }
+  }
+  return display;
+}
+function sourceIndexForUnescapedOffset(raw, unescapedOffset) {
+  let display = 0;
+  const target = Math.max(0, Number(unescapedOffset) || 0);
+  for (let i = 0; i < raw.length;) {
+    if (display >= target) return i;
+    if (raw[i] === "\\" && (raw[i + 1] === "|" || raw[i + 1] === "\\")) {
+      if (display + 1 >= target) return i + 2;
+      display += 1;
+      i += 2;
+    } else {
+      if (display + 1 >= target) return i + 1;
+      display += 1;
+      i += 1;
+    }
+  }
+  return raw.length;
 }
 
 function classifyLine(value, offset, lineInfo, opts = {}) {
@@ -1222,9 +1461,16 @@ function renderListFromBlocks(blocks, start, options) {
 function displayOffsetToSourceOffset(source, display, displayOffset) {
   const target = clamp(Number(displayOffset) || 0, 0, display.length);
   let shown = 0;
-  for (let i = 0; i < source.length; i += 1) {
-    if (shown === target) return i;
+  let i = 0;
+  while (i < source.length) {
+    if (shown === target) {
+      if (target < display.length) {
+        while (i < source.length && source[i] !== display[shown]) i += 1;
+      }
+      return i;
+    }
     if (shown < display.length && source[i] === display[shown]) shown += 1;
+    i += 1;
   }
   return source.length;
 }
@@ -1262,6 +1508,159 @@ function renderMarkdown(markdown, opts = {}) {
   const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
   const external = opts.external !== false;
   return page.render_markdown(String(markdown ?? ""), String(theme), maxUrl, external);
+}
+function renderInline(markdown, opts = {}) {
+  const page = pageModule;
+  if (!page || typeof page.render_inline !== "function") return "";
+  const parsedLimit = Number(opts.maxUrl);
+  const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
+  const external = opts.external !== false;
+  return page.render_inline(String(markdown ?? ""), maxUrl, external);
+}
+function highlightCodeLines(language, code, opts = {}) {
+  const page = pageModule;
+  if (!page) return null;
+  const theme = String(opts.syntaxTheme || "base16-ocean.dark");
+  const lang = String(language ?? "");
+  const source = String(code ?? "");
+  if (typeof page.highlight_code_lines === "function") return Array.from(page.highlight_code_lines(lang, source, theme) || []);
+  if (typeof page.highlight_code_line !== "function") return null;
+  if (!source) return [];
+  return source.split("\n").map((line, index, lines) => page.highlight_code_line(lang, index < lines.length - 1 ? `${line}\n` : line, theme));
+}
+function codeLineHtml(html) {
+  const stripped = String(html ?? "").replace(/\n(?=(?:<\/[^>]+>)*$)/, "");
+  return stripped ? stripped : "<br>";
+}
+function decodeHtmlAttribute(value) {
+  return String(value ?? "")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+function mediaFromInlineHtml(html) {
+  const source = String(html ?? "");
+  const img = /<img\b([^>]*)>/i.exec(source);
+  if (img) {
+    const src = /\bsrc="([^"]*)"/i.exec(img[1]);
+    if (!src) return null;
+    const alt = /\balt="([^"]*)"/i.exec(img[1]);
+    return { kind: "img", src: decodeHtmlAttribute(src[1]), alt: alt ? decodeHtmlAttribute(alt[1]) : "" };
+  }
+  const video = /<source\b([^>]*)>/i.exec(source);
+  if (video) {
+    const src = /\bsrc="([^"]*)"/i.exec(video[1]);
+    if (!src) return null;
+    const type = /\btype="([^"]*)"/i.exec(video[1]);
+    return { kind: "video", src: decodeHtmlAttribute(src[1]), type: type ? decodeHtmlAttribute(type[1]) : "" };
+  }
+  return null;
+}
+function codeLineRanges(block) {
+  if (block.codeLines?.length) return block.codeLines.map(line => ({ from: line.start, to: line.end, text: line.text }));
+  const at = block.opening ? block.opening.newlineEnd : block.to;
+  return [{ from: at, to: at, text: "" }];
+}
+function liveInlineHtml(markdown, opts) {
+  const text = String(markdown ?? "");
+  const html = renderInline(text, opts);
+  if (html) return html;
+  return text ? escapeHtml(text) : "<br>";
+}
+function codeFenceBlockHtml(block, opts = {}) {
+  const editable = opts.editable || "true";
+  const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
+  const language = String(block.language || "").trim();
+  const ranges = codeLineRanges(block);
+  const highlighted = highlightCodeLines(language, ranges.map(range => range.text).join("\n"), opts) || [];
+  const lines = ranges.map((range, index) => {
+    const body = codeLineHtml(highlighted[index] ?? (range.text ? escapeHtml(range.text) : ""));
+    return `<div class="md-code-line" part="code-line" data-editable="line" data-kind="code-fence" data-from="${range.from}" data-to="${range.to}" data-source-form="true" contenteditable="${editable}" spellcheck="false">${body}</div>`;
+  }).join("");
+  const fenceLine = (line, role) => {
+    if (!line) return "";
+    const text = line.text ? escapeHtml(line.text) : "<br>";
+    return `<div class="md-code-fence-line" part="code-fence" data-editable="line" data-kind="code-fence" data-fence-role="${role}" data-from="${line.start}" data-to="${line.end}" data-source-form="true" contenteditable="${editable}" spellcheck="false">${text}</div>`;
+  };
+  const afterAnchor = block.closing && block.newlineEnd === block.to
+    ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${spellcheck}" aria-label="After code block"><br></div>`
+    : "";
+  return `<div class="md-code-block" part="code-block" data-kind="code-fence" data-language="${escapeAttribute(language)}" contenteditable="false">${fenceLine(block.opening, "open")}<div class="md-code-lines">${lines}</div>${fenceLine(block.closing, "close")}</div>${afterAnchor}`;
+}
+function taskLineHtml(block, opts = {}, sourceForm = false) {
+  const editable = opts.editable || "true";
+  const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
+  const indent = opts.indentString || "  ";
+  const locked = Boolean(opts.disabled || opts.readonly);
+  const list = block.list;
+  const checkOffset = block.line.start + list.indent.length + `${list.marker} [`.length;
+  const range = contentSourceRange(block.line, list.contentStart, list.content);
+  const taskName = textFromMarkdown(list.content, opts) || "task";
+  const checkboxLabel = `${list.checked ? "Mark task incomplete" : "Mark task complete"}: ${taskName}`;
+  const depthClass = listDepthClass(Math.floor(list.indent.length / Math.max(1, indent.length)));
+  const body = sourceForm ? (list.content ? escapeHtml(list.content) : "<br>") : liveInlineHtml(list.content, opts);
+  const form = sourceForm ? ` data-source-form="true"` : "";
+  return `<div class="md-line md-task-line md-list ${depthClass}" part="line" data-kind="task-list-item" data-from="${block.line.start}" data-to="${block.line.end}"><input type="checkbox" part="checkbox" data-task-checkbox="true" data-check-offset="${checkOffset}" aria-label="${escapeAttribute(checkboxLabel)}" ${list.checked ? "checked" : ""} ${locked ? "disabled" : ""}><span class="md-task-source" data-editable="line" data-kind="task-list-item" data-from="${range.from}" data-to="${range.to}"${form} contenteditable="${editable}" spellcheck="${spellcheck}">${body}</span></div>`;
+}
+function liveDocumentHtml(markdown, opts = {}) {
+  const blocks = assignHeadingIds(parseBlocks(markdown, opts));
+  return blocks.map(block => liveBlockHtml(block, opts)).join("");
+}
+function liveBlockHtml(block, opts = {}) {
+  const editable = opts.editable || "true";
+  const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
+  const indent = opts.indentString || "  ";
+  const locked = Boolean(opts.disabled || opts.readonly);
+  const lineAttrs = (line, kind, extra = "", attrs = "", from = line.start, to = line.end) => `class="md-line ${extra}" part="line" data-editable="line" data-kind="${kind}" data-from="${from}" data-to="${to}" contenteditable="${editable}" spellcheck="${spellcheck}"${attrs ? ` ${attrs}` : ""}`;
+  if (block.type === "code-fence") return codeFenceBlockHtml(block, opts);
+  if (block.line && isCommentLine(block.line.text)) {
+    const line = block.line;
+    const html = line.text ? escapeHtml(line.text) : "<br>";
+    return `<div class="md-line md-comment" part="line" data-editable="line" data-kind="comment" data-from="${line.start}" data-to="${line.end}" data-source-form="true" contenteditable="${editable}" spellcheck="${spellcheck}">${html}</div>`;
+  }
+  if (block.line && loneImageMarkdown(block.line.text)) {
+    const line = block.line;
+    const media = mediaFromInlineHtml(renderInline(line.text, opts));
+    const body = line.text ? escapeHtml(line.text) : "<br>";
+    let mediaHtml = "";
+    if (media?.kind === "img" && media.src) mediaHtml = `<img src="${escapeAttribute(media.src)}" alt="${escapeAttribute(media.alt)}" contenteditable="false">`;
+    else if (media?.kind === "video" && media.src) mediaHtml = `<video controls contenteditable="false"><source src="${escapeAttribute(media.src)}" type="${escapeAttribute(media.type)}"></video>`;
+    return `<div class="md-line md-image" part="line" data-editable="line" data-kind="image" data-from="${line.start}" data-to="${line.end}" data-source-form="true" contenteditable="${editable}" spellcheck="${spellcheck}">${body}${mediaHtml}</div>`;
+  }
+  if (block.type === "blank") {
+    const placeholderAttrs = opts.emptyDocument ? `data-placeholder="${escapeAttribute(opts.placeholder || "")}"` : "";
+    const placeholderClass = opts.emptyDocument ? "md-empty-placeholder" : "";
+    return `<div ${lineAttrs(block.line, "blank", placeholderClass, placeholderAttrs)}>${block.line.text ? liveInlineHtml(block.line.text, opts) : "<br>"}</div>`;
+  }
+  if (block.type === "heading") {
+    const afterAnchor = block.setext && block.newlineEnd === block.to
+      ? `<div class="md-line md-setext-after" part="line" data-editable="virtual-setext-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${spellcheck}" aria-label="After heading"><br></div>`
+      : "";
+    const range = contentSourceRange(block.line, block.heading.contentStart, block.heading.content);
+    return `<div ${lineAttrs(block.line, "heading", `md-heading md-h${block.heading.level}`, `id="${escapeAttribute(block.heading.id)}"`, range.from, range.to)}>${liveInlineHtml(block.heading.content, opts)}</div>${afterAnchor}`;
+  }
+  if (block.type === "blockquote") {
+    const depth = Math.max(1, Number(block.quote.depth) || 1);
+    const visualDepth = Math.min(depth, 16);
+    const range = contentSourceRange(block.line, block.quote.contentStart, block.quote.content);
+    return `<div ${lineAttrs(block.line, "blockquote", `md-quote md-quote-depth-${visualDepth}`, `data-quote-depth="${depth}"`, range.from, range.to)}>${liveInlineHtml(block.quote.content, opts)}</div>`;
+  }
+  if (block.type === "horizontal-rule") {
+    return `<div ${lineAttrs(block.line, "horizontal-rule", "md-hr-line")} aria-label="Divider">${liveInlineHtml(block.line.text, opts)}</div>`;
+  }
+  if (block.type === "task-list-item") return taskLineHtml(block, opts, false);
+  if (block.type === "bullet-list-item" || block.type === "ordered-list-item") {
+    const list = block.list;
+    const depth = Math.floor(list.indent.length / Math.max(1, indent.length));
+    const range = contentSourceRange(block.line, list.contentStart, list.content);
+    const marker = block.type === "ordered-list-item" ? `${list.number}${list.delimiter || "."}` : "•";
+    const decorative = block.type === "bullet-list-item" ? ` aria-hidden="true"` : "";
+    return `<div class="md-line md-list md-list-row ${listDepthClass(depth)}" part="line" data-kind="${block.type}" data-from="${block.line.start}" data-to="${block.line.end}"><span class="md-list-marker" contenteditable="false"${decorative}>${escapeHtml(marker)}</span><span class="md-list-content" data-editable="line" data-kind="${block.type}" data-from="${range.from}" data-to="${range.to}" contenteditable="${editable}" spellcheck="${spellcheck}">${liveInlineHtml(list.content, opts)}</span></div>`;
+  }
+  if (block.type === "table") return "";
+  return `<div ${lineAttrs(block.line, "paragraph")}>${liveInlineHtml(block.line.text, opts)}</div>`;
 }
 function singleParagraphHtml(html) {
   const text = String(html ?? "").trim();
@@ -1340,6 +1739,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._pointerSelection = null;
     this._suppressLiveClick = false;
     this._focusWithin = false;
+    this._sourceFormKeyShown = "";
+    this._sourceFormLock = false;
     this._blockCacheValue = null;
     this._blockCache = null;
     this._liveBlocks = [];
@@ -1464,7 +1865,7 @@ class WritemarkEditorElement extends HTMLElement {
   get willValidate() { return this._internals?.willValidate ?? !this.disabled; }
 
   focus(options) { this._focusEditable(options); }
-  blur() { this._focusWithin = false; this._shadow?.activeElement?.blur?.(); this._sourceTextarea?.blur(); this._liveEditor?.blur(); this._hideSelectionToolbar?.(); }
+  blur() { this._focusWithin = false; this._shadow?.activeElement?.blur?.(); this._sourceTextarea?.blur(); this._liveEditor?.blur(); this._hideSelectionToolbar?.(); this._formatWhenIdle(); }
   select() { this.setSelectionRange(0, this._value.length); }
   setSelectionRange(start, end, direction = "none") {
     const s = clamp(Number(start) || 0, 0, this._value.length);
@@ -1475,6 +1876,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (this._liveEditor && !this._isSourceActive()) { this._ignoreSelectionChangeCount = 2; this._restoreLiveSelection(this._selection); }
     this._emitSelectionChange();
     this._scheduleCompletionUpdate();
+    this._syncSourceForm();
   }
   exec(actionId, args) { const result = this._runAction(actionId, args, { source: "api", apply: true }); return Boolean(result?.ok); }
   registerAction(action) {
@@ -1589,8 +1991,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._completionPopup.addEventListener("mousedown", e => e.preventDefault());
     this._completionPopup.addEventListener("click", e => { const item = e.target.closest("[data-index]"); if (!item) return; const index = Number(item.dataset.index); if (this._completion.items[index]?.disabled) return; this._completion.activeIndex = index; this._acceptCompletion("pointer"); });
     this._label.addEventListener("click", event => { event.preventDefault(); this._focusEditable(); });
-    this._shadow.addEventListener("focusin", () => { this._focusWithin = true; });
-    this._shadow.addEventListener("focusout", () => { queueMicrotask(() => { this._focusWithin = Boolean(this._shadow.activeElement); if (!this._focusWithin) this._hideSelectionToolbar?.(); }); });
+    this._shadow.addEventListener("focusin", () => { this._focusWithin = true; this._syncSourceForm(); });
+    this._shadow.addEventListener("focusout", () => { queueMicrotask(() => { this._focusWithin = Boolean(this._shadow.activeElement); if (!this._focusWithin) { this._hideSelectionToolbar?.(); this._formatWhenIdle(); } }); });
     this._shadow.addEventListener("selectionchange", () => this._onSelectionChanged?.());
   }
 
@@ -1716,15 +2118,31 @@ class WritemarkEditorElement extends HTMLElement {
     if (html) return singleParagraphHtml(html);
     return text ? escapeHtml(text) : "<br>";
   }
+  _inlineHtml(markdown) {
+    const text = String(markdown ?? "");
+    const html = renderInline(text, this._rendererOptions());
+    if (html) return html;
+    return text ? escapeHtml(text) : "<br>";
+  }
+  _usesInlinePaint(editable) {
+    if (!editable) return false;
+    if (editable.dataset.editable === "cell") return true;
+    return ["paragraph", "heading", "blockquote", "bullet-list-item", "ordered-list-item", "task-list-item", "horizontal-rule", "blank"].includes(editable.dataset.kind);
+  }
   _textFromHtml(html) {
     const template = document.createElement("template");
     template.innerHTML = String(html ?? "");
     return this._plainText(template.content);
   }
   _isEditingText(node) {
-    const parent = node?.parentElement;
-    if (!parent?.closest) return true;
-    return !parent.closest("button, .code-header, .line-numbers, svg");
+    let el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    while (el) {
+      if (el.matches?.("button, .code-header, .line-numbers, svg, img, video")) return false;
+      if (el.matches?.("[data-editable]")) return true;
+      if (el.getAttribute?.("contenteditable") === "false") return false;
+      el = el.parentElement;
+    }
+    return true;
   }
   _setValueInternal(next, opts = {}) {
     const previousValue = this._value;
@@ -1747,6 +2165,10 @@ class WritemarkEditorElement extends HTMLElement {
     if (!this._liveEditor) return;
     this._hasRenderedOnce = true;
     this._sourceTextarea.value = this._value;
+    if (restoreSelection && this._isSourceActive() && this._sourceTextarea) {
+      const sel = this._selection || { start: 0, end: 0, direction: "none" };
+      this._sourceTextarea.setSelectionRange(sel.start, sel.end, sel.direction || "none");
+    }
     if (this._isLiveVisible()) {
       this._renderLive({ previousValue, changes, force });
       this._liveDirty = false;
@@ -1787,6 +2209,7 @@ class WritemarkEditorElement extends HTMLElement {
       this._renderLiveVirtual(blocks, { anchorOffset: virtualAnchorOffset ?? this._selection.start, force });
       this._liveBlocks = blocks;
       this._rebuildLiveIndex();
+      this._sourceFormKeyShown = this._sourceFormKey();
       return;
     }
     this._virtualState = { ...this._virtualState, active: false, start: 0, end: blocks.length, total: blocks.length };
@@ -1794,6 +2217,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (!patched) this._renderLiveFull(blocks);
     this._liveBlocks = blocks;
     this._rebuildLiveIndex();
+    this._sourceFormKeyShown = this._sourceFormKey();
   }
   _renderLiveFull(blocks) {
     const html = blocks.map(block => this._renderLiveBlock(block)).join("");
@@ -1875,6 +2299,14 @@ class WritemarkEditorElement extends HTMLElement {
       node.dataset.from = String(blockFrom);
       node.dataset.to = String(blockTo);
     }
+    if (block.type !== "table" && node.matches?.("[data-source-form]") && !node.querySelector?.(".md-code-line")) {
+      if (block.type === "heading" && block.heading?.id) node.id = block.heading.id;
+      if (block.type === "code-fence") {
+        node.dataset.language = String(block.language || "");
+        return this._setEditableMetadata(node, block.from, block.to, this._lineEditable(), "false");
+      }
+      return this._setEditableMetadata(node, block.from, block.to);
+    }
     if (block.type === "table") {
       const cells = Array.from(node.querySelectorAll('.md-cell[data-editable="cell"]'));
       const cols = Math.max(block.header.cells.length, ...block.rows.map(row => row.cells.length), 1);
@@ -1893,23 +2325,43 @@ class WritemarkEditorElement extends HTMLElement {
       return true;
     }
     if (block.type === "code-fence") {
+      const lines = Array.from(node.querySelectorAll(":scope > .md-code-lines > .md-code-line"));
+      const expected = codeLineRanges(block);
+      if (lines.length !== expected.length) return false;
+      const open = node.querySelector(':scope > [data-fence-role="open"]');
+      const close = node.querySelector(':scope > [data-fence-role="close"]');
+      if (Boolean(open) !== Boolean(block.opening) || Boolean(close) !== Boolean(block.closing)) return false;
       node.dataset.language = String(block.language || "");
-      const editable = node.matches?.("[data-editable]") ? node : node.querySelector?.("[data-editable]");
-      if (!editable) return false;
-      return this._setEditableMetadata(editable, block.from, block.to, this._lineEditable(), "false");
+      if (open && !this._setEditableMetadata(open, block.opening.start, block.opening.end, this._lineEditable(), "false")) return false;
+      if (close && !this._setEditableMetadata(close, block.closing.start, block.closing.end, this._lineEditable(), "false")) return false;
+      lines.forEach((line, index) => {
+        this._setEditableMetadata(line, expected[index].from, expected[index].to, this._lineEditable(), "false");
+      });
+      return true;
     }
     if (block.type === "task-list-item") {
       const source = node.querySelector("[data-editable]");
       const checkbox = node.querySelector("[data-task-checkbox]");
       if (!source) return false;
       if (checkbox) checkbox.dataset.checkOffset = String(block.line.start + block.list.indent.length + `${block.list.marker} [`.length);
-      return this._setEditableMetadata(source, block.line.start + block.list.contentStart, block.line.end);
+      const range = contentSourceRange(block.line, block.list.contentStart, block.list.content);
+      return this._setEditableMetadata(source, range.from, range.to);
     }
     if (block.type === "heading") {
       const heading = node.matches?.(".md-heading") ? node : node.querySelector?.(".md-heading");
       if (!heading) return false;
       heading.id = block.heading.id;
-      return this._setEditableMetadata(heading, block.line.start, block.line.end);
+      const editable = heading.matches?.("[data-editable]") ? heading : heading.querySelector?.("[data-editable]");
+      if (!editable) return false;
+      const range = contentSourceRange(block.line, block.heading.contentStart, block.heading.content);
+      return this._setEditableMetadata(editable, range.from, range.to);
+    }
+    if (block.type === "blockquote" || block.type === "bullet-list-item" || block.type === "ordered-list-item") {
+      const editable = node.matches?.("[data-editable]") ? node : node.querySelector?.("[data-editable]");
+      const parsed = block.type === "blockquote" ? block.quote : block.list;
+      if (!editable || !block.line || !parsed) return false;
+      const range = contentSourceRange(block.line, parsed.contentStart, parsed.content);
+      return this._setEditableMetadata(editable, range.from, range.to);
     }
     const editable = node.matches?.("[data-editable]") ? node : node.querySelector?.("[data-editable]");
     if (editable && block.line) return this._setEditableMetadata(editable, block.line.start, block.line.end);
@@ -2066,55 +2518,144 @@ class WritemarkEditorElement extends HTMLElement {
       this._rebuildLiveIndex();
     });
   }
-  _renderLiveBlock(block) {
-    const options = this._rendererOptions();
-    const lineAttrs = (line, kind, extra = "", attrs = "") => `class="md-line ${extra}" part="line" data-editable="line" data-kind="${kind}" data-from="${line.start}" data-to="${line.end}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}"${attrs ? ` ${attrs}` : ""}`;
+  _sourceTextHtml(from, to) {
+    const text = this._value.slice(from, to);
+    return text ? escapeHtml(text) : "<br>";
+  }
+  _keepsSourceNewlines(editable) {
+    return editable?.dataset?.sourceForm === "true" && editable.dataset.editable !== "cell";
+  }
+  _visibleText(editable) {
+    const text = this._plainText(editable);
+    return this._keepsSourceNewlines(editable) ? text : text.replace(/\n/g, "");
+  }
+  _selectionFullyInside(from, to) {
+    if (!this._focusWithin || this.mode === "source") return false;
+    const sel = this._selection;
+    if (!sel) return false;
+    const start = Math.min(sel.start, sel.end);
+    const end = Math.max(sel.start, sel.end);
+    const blockFrom = Number(from) || 0;
+    const blockTo = Math.max(Number(to) || 0, blockFrom);
+    return start >= blockFrom && end <= blockTo;
+  }
+  _blockIsSourceForm(block) {
+    if (!block || block.type === "table" || block.type === "code-fence") return false;
+    if (isCommentLine(block.line?.text) || loneImageMarkdown(block.line?.text)) return false;
+    return this._selectionFullyInside(block.from, block.to);
+  }
+  _tableCellHolding(block, start, end) {
+    const consider = (cell, row, col) => {
+      if (!cell || !Number.isFinite(cell.from) || !Number.isFinite(cell.to)) return null;
+      const cellFrom = cell.from;
+      const cellTo = Math.max(cell.to, cell.from);
+      if (start >= cellFrom && end <= cellTo) return { cell, row, col };
+      return null;
+    };
+    const header = block.header?.cells || [];
+    for (let col = 0; col < header.length; col += 1) {
+      const hit = consider(header[col], -1, col);
+      if (hit) return hit;
+    }
+    const rows = block.rows || [];
+    for (let row = 0; row < rows.length; row += 1) {
+      const cells = rows[row].cells || [];
+      for (let col = 0; col < cells.length; col += 1) {
+        const hit = consider(cells[col], row, col);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+  _sourceFormKey() {
+    if (!this._focusWithin || this.mode === "source" || !this._selection) return "";
+    const blocks = this._liveBlocks?.length ? this._liveBlocks : this._blockCache;
+    if (!blocks?.length) return "";
+    const start = Math.min(this._selection.start, this._selection.end);
+    const end = Math.max(this._selection.start, this._selection.end);
+    const index = this._blockIndexForOffset(blocks, start);
+    const block = blocks[index];
+    if (!block || start < block.from || end > Math.max(block.to, block.from)) return "";
+    if (block.type === "code-fence" || isCommentLine(block.line?.text) || loneImageMarkdown(block.line?.text)) return "";
+    if (block.type === "table") {
+      const hit = this._tableCellHolding(block, start, end);
+      if (!hit) return "";
+      return `table:${block.from}:${hit.row}:${hit.col}:${hit.cell.from}`;
+    }
+    return `${index}:${block.type}:${block.from}`;
+  }
+  _syncSourceForm() {
+    if (!this._liveEditor || this.mode === "source" || this._sourceFormLock || this._pointerSelection || this._isComposing) return;
+    const key = this._sourceFormKey();
+    if (key === (this._sourceFormKeyShown ?? "")) return;
+    this._sourceFormLock = true;
+    this._sourceFormKeyShown = key;
+    try {
+      this._renderAll({ restoreSelection: true, force: true });
+    } finally {
+      this._sourceFormLock = false;
+    }
+  }
+  _formatWhenIdle() {
+    if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
+    if ((this._sourceFormKeyShown ?? "") === "") return;
+    this._sourceFormLock = true;
+    this._sourceFormKeyShown = "";
+    try {
+      this._renderAll({ restoreSelection: false, force: true });
+    } finally {
+      this._sourceFormLock = false;
+    }
+  }
+  _renderSourceFormBlock(block) {
+    const lineAttrs = (line, kind, extra = "", attrs = "", from = block.from, to = block.to) => `class="md-line ${extra}" part="line" data-editable="line" data-kind="${kind}" data-from="${from}" data-to="${to}" data-source-form="true" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}"${attrs ? ` ${attrs}` : ""}`;
+    const html = this._sourceTextHtml(block.from, block.to);
+    if (block.type === "code-fence") return codeFenceBlockHtml(block, this._livePaintOptions());
+    const line = block.line || { start: block.from, end: block.to };
     if (block.type === "blank") {
       const placeholderAttrs = this._value.length === 0 ? `data-placeholder="${escapeAttribute(this.placeholder)}"` : "";
       const placeholderClass = this._value.length === 0 ? "md-empty-placeholder" : "";
-      return `<div ${lineAttrs(block.line, "blank", placeholderClass, placeholderAttrs)}>${block.line.text ? this._pageHtml(block.line.text) : "<br>"}</div>`;
+      return `<div ${lineAttrs(line, "blank", `${placeholderClass} md-source-form`.trim(), placeholderAttrs)}>${html}</div>`;
     }
     if (block.type === "heading") {
       const afterAnchor = block.setext && block.newlineEnd === block.to
         ? `<div class="md-line md-setext-after" part="line" data-editable="virtual-setext-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After heading"><br></div>`
         : "";
-      const content = this._pageHtml(this._value.slice(block.from, block.to));
-      return `<div ${lineAttrs(block.line, "heading", `md-heading md-h${block.heading.level}`, `id="${escapeAttribute(block.heading.id)}"`)}>${content}</div>${afterAnchor}`;
+      return `<div ${lineAttrs(line, "heading", `md-heading md-h${block.heading.level} md-source-form`, `id="${escapeAttribute(block.heading.id)}"`)}>${html}</div>${afterAnchor}`;
     }
     if (block.type === "blockquote") {
       const depth = Math.max(1, Number(block.quote.depth) || 1);
       const visualDepth = Math.min(depth, 16);
-      return `<div ${lineAttrs(block.line, "blockquote", `md-quote md-quote-depth-${visualDepth}`, `data-quote-depth="${depth}"`)}>${this._pageHtml(block.line.text)}</div>`;
+      return `<div ${lineAttrs(line, "blockquote", `md-quote md-quote-depth-${visualDepth} md-source-form`, `data-quote-depth="${depth}"`)}>${html}</div>`;
     }
     if (block.type === "horizontal-rule") {
-      return `<div ${lineAttrs(block.line, "horizontal-rule", "md-hr-line")} aria-label="Divider">${this._pageHtml(block.line.text)}</div>`;
+      return `<div ${lineAttrs(line, "horizontal-rule", "md-hr-line md-source-form")} aria-label="Divider">${html}</div>`;
     }
-    if (block.type === "task-list-item") {
-      const list = block.list; const checkOffset = block.line.start + list.indent.length + `${list.marker} [`.length;
-      const contentFrom = block.line.start + list.contentStart;
-      const taskName = textFromMarkdown(list.content, options) || "task";
-      const checkboxLabel = `${list.checked ? "Mark task incomplete" : "Mark task complete"}: ${taskName}`;
-      const depthClass = listDepthClass(Math.floor(list.indent.length / Math.max(1, this.indentString.length)));
-      return `<div class="md-line md-task-line md-list ${depthClass}" part="line" data-kind="task-list-item" data-from="${block.line.start}" data-to="${block.line.end}"><input type="checkbox" part="checkbox" data-task-checkbox="true" data-check-offset="${checkOffset}" aria-label="${escapeAttribute(checkboxLabel)}" ${list.checked ? "checked" : ""} ${this.disabled || this.readonly ? "disabled" : ""}><span class="md-task-source" data-editable="line" data-from="${contentFrom}" data-to="${block.line.end}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${this._renderTaskLine(list)}</span></div>`;
-    }
+    if (block.type === "task-list-item") return taskLineHtml(block, this._livePaintOptions(), true);
     if (block.type === "bullet-list-item" || block.type === "ordered-list-item") {
-      const list = block.list; const depth = Math.floor(list.indent.length / Math.max(1, this.indentString.length));
-      return `<div ${lineAttrs(block.line, block.type, `md-list ${listDepthClass(depth)}`)}>${this._pageHtml(block.line.text)}</div>`;
+      const depth = Math.floor((block.list?.indent.length || 0) / Math.max(1, this.indentString.length));
+      return `<div ${lineAttrs(line, block.type, `md-list ${listDepthClass(depth)} md-source-form`)}>${html}</div>`;
     }
-    if (block.type === "code-fence") return this._renderCodeFence(block);
+    return `<div ${lineAttrs(line, "paragraph", "md-source-form")}>${html}</div>`;
+  }
+  _livePaintOptions() {
+    return {
+      ...this._rendererOptions(),
+      editable: this._lineEditable(),
+      spellcheck: this._sourceTextarea?.spellcheck ? "true" : "false",
+      indentString: this.indentString,
+      placeholder: this.placeholder,
+      emptyDocument: this._value.length === 0,
+      disabled: this.disabled,
+      readonly: this.readonly,
+    };
+  }
+  _renderLiveBlock(block) {
+    if (block.type !== "table" && this._blockIsSourceForm(block)) return this._renderSourceFormBlock(block);
     if (block.type === "table") return this._renderTable(block);
-    return `<div ${lineAttrs(block.line, "paragraph")}>${this._pageHtml(block.line.text)}</div>`;
+    return liveBlockHtml(block, this._livePaintOptions());
   }
   _lineEditable() { return (!this.disabled && !this.readonly) ? "true" : "false"; }
-  _renderTaskLine(list) { return this._pageHtml(list.content); }
-  _renderCodeFence(block) {
-    const editable = this._lineEditable();
-    const language = String(block.language || "").trim();
-    const afterAnchor = block.closing && block.newlineEnd === block.to
-      ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After code block"><br></div>`
-      : "";
-    return `<div class="md-code-block" part="code-block" data-editable="line" data-kind="code-fence" data-from="${block.from}" data-to="${block.to}" data-language="${escapeAttribute(language)}" contenteditable="${editable}" spellcheck="false">${this._pageHtml(this._value.slice(block.from, block.to))}</div>${afterAnchor}`;
-  }
   _renderTable(block) {
     const cols = Math.max(block.header.cells.length, ...block.rows.map(r => r.cells.length), 1);
     const alignments = Array.from({ length: cols }, (_, i) => tableAlignmentFromDelimiter(block.delimiter.cells[i]?.text));
@@ -2136,7 +2677,15 @@ class WritemarkEditorElement extends HTMLElement {
     const delColBtn = i => (editable && cols > 2) ? control("del-col", "Delete column", minus, ` data-index="${i}"`) : "";
     const delRowBtn = r => (editable && block.rows.length > 1) ? control("del-row", "Delete row", minus, ` data-index="${r}"`) : "";
     const lastCol = cols - 1;
-    const renderCell = (cell, tag, row, col, extra = "") => `<${tag}${tableAlignmentClass(alignments[col])}>${extra}<div class="md-cell" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${cell?.from ?? block.to}" data-to="${cell?.to ?? block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${this._pageHtml(unescapeTableCellText(cell?.text ?? ""))}</div></${tag}>`;
+    const renderCell = (cell, tag, row, col, extra = "") => {
+      const from = cell?.from ?? block.to;
+      const to = cell?.to ?? block.to;
+      const sourceForm = this._selectionFullyInside(from, to);
+      const unescaped = unescapeTableCellText(cell?.text ?? "");
+      const body = sourceForm ? (unescaped ? escapeHtml(unescaped) : "<br>") : this._inlineHtml(unescaped);
+      const form = sourceForm ? ` data-source-form="true"` : "";
+      return `<${tag}${tableAlignmentClass(alignments[col])}>${extra}<div class="md-cell${sourceForm ? " md-source-form" : ""}" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${from}" data-to="${to}"${form} contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${body}</div></${tag}>`;
+    };
     const header = `<thead><tr>${Array.from({ length: cols }, (_, i) => renderCell(block.header.cells[i] ?? { text: "", from: block.header.end, to: block.header.end }, "th", -1, i, `${delColBtn(i)}${i === lastCol ? addColBtn : ""}`)).join("")}</tr></thead>`;
     const hasRealRows = block.rows.length > 0;
     const bodyRows = hasRealRows ? block.rows : [{ cells: Array.from({ length: cols }, () => ({ text: "", from: block.delimiter.end, to: block.delimiter.end })) }];
@@ -2220,14 +2769,24 @@ class WritemarkEditorElement extends HTMLElement {
     const before = this._beforeInputSnapshot;
     const from = Number(editable.dataset.from); const to = Number(editable.dataset.to);
     const sourceSlice = this._value.slice(from, to);
-    const rendered = pageModule ? renderMarkdown(sourceSlice, this._rendererOptions()) : "";
-    const oldDisplay = rendered ? this._textFromHtml(rendered).replace(/\n/g, "") : null;
-    let raw = this._plainText(editable).replace(/\n/g, "");
+    const sourceForm = editable.dataset.sourceForm === "true";
+    const literalLine = sourceForm || ["image", "comment", "code-fence"].includes(editable.dataset.kind);
+    let raw = this._plainText(editable);
+    if (!this._keepsSourceNewlines(editable)) raw = raw.replace(/\n/g, "");
     let mappedCursor = null;
-    if (editable.dataset.editable !== "cell" && oldDisplay != null && oldDisplay !== sourceSlice) {
-      const edit = sourceEditFromDisplay(sourceSlice, oldDisplay, raw);
-      raw = edit.value;
-      mappedCursor = edit.cursor;
+    if (!literalLine) {
+      const inlinePaint = this._usesInlinePaint(editable);
+      const inlineSource = editable.dataset.editable === "cell" ? unescapeTableCellText(sourceSlice) : sourceSlice;
+      const compareSource = inlinePaint ? inlineSource : sourceSlice;
+      const rendered = pageModule
+        ? (inlinePaint ? renderInline(compareSource, this._rendererOptions()) : renderMarkdown(sourceSlice, this._rendererOptions()))
+        : "";
+      const oldDisplay = rendered ? this._textFromHtml(rendered).replace(/\n/g, "") : null;
+      if (oldDisplay != null && oldDisplay !== compareSource && (inlinePaint || editable.dataset.editable !== "cell")) {
+        const edit = sourceEditFromDisplay(compareSource, oldDisplay, raw);
+        raw = edit.value;
+        mappedCursor = edit.cursor;
+      }
     }
     const liveSelection = this._getLiveSelection(editable);
     const changedDisplay = inputTarget
@@ -2237,7 +2796,7 @@ class WritemarkEditorElement extends HTMLElement {
       ? changedDisplay.from + changedDisplay.insert.length
       : null;
     const tableDisplayCursor = editable.dataset.editable === "cell"
-      ? (this._displayOffsetFromSelection(editable) ?? inferredDisplayCursor)
+      ? (mappedCursor != null ? mappedCursor : (this._displayOffsetFromSelection(editable) ?? inferredDisplayCursor))
       : null;
     const tableEdit = editable.dataset.editable === "cell" ? this._tableCellInputEdit(editable, raw, tableDisplayCursor) : null;
     if (tableEdit) {
@@ -2330,11 +2889,18 @@ class WritemarkEditorElement extends HTMLElement {
       const displayStart = this._displayOffsetFromSourceOffset(editable, start);
       const displayEnd = this._displayOffsetFromSourceOffset(editable, end);
       const nextRaw = raw.slice(0, displayStart) + insert + raw.slice(displayEnd);
-      const tableEdit = this._tableCellInputEdit(
-        editable,
-        nextRaw,
-        displayStart + insert.length
-      );
+      const cellRange = this._editableSourceRange(editable);
+      const inlineSource = cellRange ? unescapeTableCellText(this._value.slice(cellRange.from, cellRange.to)) : "";
+      const rendered = renderInline(inlineSource, this._rendererOptions());
+      const oldDisplay = rendered ? this._textFromHtml(rendered).replace(/\n/g, "") : inlineSource;
+      let cellText = nextRaw;
+      let cellCursor = displayStart + insert.length;
+      if (editable.dataset.sourceForm !== "true" && oldDisplay !== inlineSource) {
+        const edit = sourceEditFromDisplay(inlineSource, oldDisplay, nextRaw);
+        cellText = edit.value;
+        cellCursor = edit.cursor;
+      }
+      const tableEdit = this._tableCellInputEdit(editable, cellText, cellCursor);
       if (!tableEdit) return false;
       event.preventDefault();
       this._applyFallbackInput(
@@ -2390,7 +2956,7 @@ class WritemarkEditorElement extends HTMLElement {
   _plainText(el) {
     if (!el) return "";
     let text = "";
-    if (el.querySelector?.("button, .code-header, .line-numbers")) {
+    if (el.querySelector?.("button, .code-header, .line-numbers, img, video, [contenteditable='false']")) {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
         acceptNode: (node) => this._isEditingText(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
       });
@@ -2417,48 +2983,30 @@ class WritemarkEditorElement extends HTMLElement {
     const rel = clamp(Number(sourceOffset) - range.from, 0, range.to - range.from);
     if (raw == null) {
       const source = this._value.slice(range.from, range.to);
-      const display = this._plainText(editable).replace(/\n/g, "");
+      const display = this._visibleText(editable);
       if (display === source) return clamp(rel, 0, display.length);
       return sourceOffsetToDisplayOffset(source, display, rel);
     }
-    let display = 0;
-    for (let i = 0; i < raw.length && i < rel;) {
-      if (raw[i] === "\\" && (raw[i + 1] === "|" || raw[i + 1] === "\\")) {
-        if (rel <= i + 1) return display;
-        display += 1;
-        i += 2;
-      } else {
-        display += 1;
-        i += 1;
-      }
-    }
-    return clamp(display, 0, this._plainText(editable).length);
+    const unescaped = unescapeTableCellText(raw);
+    const unescapedOffset = unescapedCellOffset(raw, rel);
+    const display = this._visibleText(editable);
+    if (display === unescaped) return clamp(unescapedOffset, 0, display.length);
+    return sourceOffsetToDisplayOffset(unescaped, display, unescapedOffset);
   }
   _sourceOffsetFromDisplayOffset(editable, displayOffset) {
     const range = this._editableSourceRange(editable);
     if (!range) return null;
     const raw = this._cellRawSource(editable);
-    const plain = this._plainText(editable).replace(/\n/g, "");
+    const plain = this._visibleText(editable);
     const target = clamp(Number(displayOffset) || 0, 0, plain.length);
     if (raw == null) {
       const source = this._value.slice(range.from, range.to);
       if (plain === source) return clamp(range.from + target, range.from, Math.max(range.to, range.from + plain.length));
       return range.from + displayOffsetToSourceOffset(source, plain, target);
     }
-    let display = 0;
-    for (let i = 0; i < raw.length;) {
-      if (display >= target) return range.from + i;
-      if (raw[i] === "\\" && (raw[i + 1] === "|" || raw[i + 1] === "\\")) {
-        if (display + 1 >= target) return range.from + i + 2;
-        display += 1;
-        i += 2;
-      } else {
-        if (display + 1 >= target) return range.from + i + 1;
-        display += 1;
-        i += 1;
-      }
-    }
-    return range.to;
+    const unescaped = unescapeTableCellText(raw);
+    const unescapedOffset = plain === unescaped ? target : displayOffsetToSourceOffset(unescaped, plain, target);
+    return range.from + sourceIndexForUnescapedOffset(raw, unescapedOffset);
   }
   _closestEditable(target) { return target?.closest?.("[data-editable]") ?? null; }
   _fragmentIdForLink(link) {
@@ -2608,6 +3156,7 @@ class WritemarkEditorElement extends HTMLElement {
       this._emitSelectionChange();
       if (!this._isComposing) this._scheduleCompletionUpdate();
     }
+    this._syncSourceForm();
   }
 
   _setLivePointerSelection(anchor, focus) {
@@ -2911,6 +3460,10 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _onSelectionChanged() {
+    if (this._sourceFormLock) {
+      if (this._ignoreSelectionChangeCount > 0) this._ignoreSelectionChangeCount -= 1;
+      return;
+    }
     if (this._ignoreSelectionChangeCount > 0) {
       this._ignoreSelectionChangeCount -= 1;
       this._emitSelectionChange();
@@ -2920,6 +3473,7 @@ class WritemarkEditorElement extends HTMLElement {
     }
     this._structuredSelection = null;
     this._selection = this._getCurrentSelection();
+    if (!this._isComposing) this._syncSourceForm();
     this._emitSelectionChange();
     if (!this._isComposing) this._scheduleCompletionUpdate();
     this._updateSelectionToolbar();
@@ -3044,7 +3598,8 @@ class WritemarkEditorElement extends HTMLElement {
     const range = document.createRange();
     range.selectNodeContents(editable);
     try { range.setEnd(node, sel.focusOffset); } catch { return null; }
-    return range.toString().replace(/\u00a0/g, " ").replace(/\n/g, "").length;
+    const text = range.toString().replace(/\u00a0/g, " ");
+    return this._keepsSourceNewlines(editable) ? text.length : text.replace(/\n/g, "").length;
   }
   _editingOffset(editable, endNode, endOffset) {
     const walker = document.createTreeWalker(editable, NodeFilter.SHOW_TEXT, {
@@ -3053,7 +3608,8 @@ class WritemarkEditorElement extends HTMLElement {
     let count = 0;
     while (walker.nextNode()) {
       const node = walker.currentNode;
-      const value = node.nodeValue.replace(/\u00a0/g, " ").replace(/\n/g, "");
+      const raw = node.nodeValue.replace(/\u00a0/g, " ");
+      const value = this._keepsSourceNewlines(editable) ? raw : raw.replace(/\n/g, "");
       if (node === endNode) return count + Math.min(endOffset, value.length);
       count += value.length;
     }
@@ -3066,7 +3622,8 @@ class WritemarkEditorElement extends HTMLElement {
     }
     const range = document.createRange(); range.selectNodeContents(editable);
     try { range.setEnd(node, offset); } catch { return from; }
-    const text = range.toString().replace(/\u00a0/g, " ").replace(/\n/g, "");
+    let text = range.toString().replace(/\u00a0/g, " ");
+    if (!this._keepsSourceNewlines(editable)) text = text.replace(/\n/g, "");
     return this._sourceOffsetFromDisplayOffset(editable, text.length) ?? from;
   }
   _restoreLiveSelection(selection = this._selection) {
@@ -3200,6 +3757,37 @@ class WritemarkEditorElement extends HTMLElement {
     this._afterValueChanged({ source, restoreSelection: true, previousValue, changes: diffTextChange(previousValue, this._value) });
   }
 
+  _maybeHandleMarkerPair(event) {
+    if (this.readonly || this.disabled || this._isComposing || this._completion.open) return false;
+    if (event.ctrlKey || event.metaKey || event.altKey) return false;
+    let action = "";
+    let key = "";
+    if (event.key === "Backspace") action = "backspace";
+    else if (event.key === "Delete") action = "delete";
+    else if (event.key === " ") action = "space";
+    else if (event.key.length === 1) { action = "insert"; key = event.key; }
+    else return false;
+    const selection = this._getCurrentSelection();
+    const edit = markerPairEdit(this._value, selection.start, selection.end, key, action);
+    if (!edit) return false;
+    event.preventDefault();
+    if (edit.insert === "" && edit.from === edit.to) {
+      this.setSelectionRange(edit.start, edit.end);
+      return true;
+    }
+    const ctx = this._getContext();
+    const direction = edit.start === edit.end ? "none" : "forward";
+    const result = ok(tx(
+      ctx,
+      "editor.markerPair",
+      [{ from: edit.from, to: edit.to, insert: edit.insert }],
+      { start: edit.start, end: edit.end, direction },
+      action === "backspace" || action === "delete" ? "delete" : "typing"
+    ));
+    this._applyActionResult("editor.markerPair", result, { source: "keyboard" });
+    return true;
+  }
+
   _onKeyDown(event) {
     const isMac = /Mac|iPhone|iPad|iPod/.test(globalThis.navigator?.platform ?? "");
     const mod = isMac ? event.metaKey : event.ctrlKey;
@@ -3240,6 +3828,8 @@ class WritemarkEditorElement extends HTMLElement {
       if (event.key === "PageUp") { event.preventDefault(); this._moveCompletion(-5); return; }
       if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); this._runAction("completion.accept", undefined, { source: "keyboard", apply: true }); return; }
     }
+
+    if (this._maybeHandleMarkerPair(event)) return;
 
     if (this._maybeHandleTableLineBoundaryKey(event, activeCell)) return;
     if (this._maybeHandleLineBoundaryKey(event, activeCell, activeEditable)) return;
@@ -3324,6 +3914,15 @@ class WritemarkEditorElement extends HTMLElement {
 
     if (event.key === "Tab") {
       if (this.readonly || this.disabled) return;
+      if (!event.shiftKey && !event.altKey && !mod) {
+        const selection = this._getCurrentSelection();
+        const edit = markerPairEdit(this._value, selection.start, selection.end, "", "tab");
+        if (edit) {
+          event.preventDefault();
+          this.setSelectionRange(edit.start, edit.end);
+          return;
+        }
+      }
       if (activeCell) { event.preventDefault(); this._handleTableTab(activeCell, event.shiftKey ? -1 : 1); return; }
       const id = event.shiftKey ? "editor.smartOutdent" : "editor.smartTab";
       const result = this._runAction(id, undefined, { source: "keyboard", apply: false });
@@ -3929,7 +4528,7 @@ class WritemarkEditorElement extends HTMLElement {
 
   _installBuiltInProviders() {
     this.registerCompletionProvider({ id: "slash", priority: 100, triggers: ["/"], match: ctx => this._matchSlash(ctx), getItems: match => this._getSlashItems(match), apply: (item, match, ctx) => this._applySlashItem(item, match, ctx) });
-    this.registerCompletionProvider({ id: "code-language", priority: 60, triggers: ["```", "~~~"], match: ctx => this._matchCodeLanguage(ctx), getItems: match => this._getLanguageItems(match), apply: (item, match, ctx) => { const insert = `${match.sequence || "```"}${item.label}`; const cursor = match.from + insert.length; return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert }], { start: cursor, end: cursor, direction: "none" }, "completion"), `Language ${item.label}.`); } });
+    this.registerCompletionProvider({ id: "code-language", priority: 60, triggers: ["```", "~~~"], match: ctx => this._matchCodeLanguage(ctx), getItems: match => this._getLanguageItems(match), apply: (item, match, ctx) => this._applyCodeLanguage(item, match, ctx) });
   }
   _getLanguageItems(match) {
     const q = match.query.toLowerCase(); const alias = ALIASES.get(q);
@@ -3966,8 +4565,7 @@ class WritemarkEditorElement extends HTMLElement {
   _smartTab(ctx) {
     if (ctx.completion?.open) return this._acceptCompletion("tab");
     const anyList = ctx.selectedLines.some(line => parseListItem(line.text, ctx.config)); if (anyList) return this._indentLines(ctx, ctx.config.indentString);
-    if (ctx.block.kind === "fenced-code") return insertionTransaction(ctx, "editor.smartTab", ctx.config.indentString, ctx.config.indentString.length, "indent");
-    if (ctx.config.tabBehavior === "editor-first") return insertionTransaction(ctx, "editor.smartTab", ctx.config.indentString, ctx.config.indentString.length, "indent");
+    if (ctx.block.kind === "fenced-code" || ctx.config.tabBehavior === "editor-first") return insertionTransaction(ctx, "editor.smartTab", ctx.config.indentString, ctx.config.indentString.length, "indent");
     return fail("not-applicable", "Tab should move focus in accessibility-first mode.");
   }
   _smartOutdent(ctx) { const any = ctx.selectedLines.some(line => this._lineOutdentAmount(line.text) > 0); if (any) return this._outdentLines(ctx); return fail("not-applicable"); }
@@ -4029,11 +4627,20 @@ class WritemarkEditorElement extends HTMLElement {
     const opening = block?.opening;
     if (!opening) return fail("not-applicable");
     const clean = String(language ?? "").replace(/[`~\\\r\n]/g, "").trim().replace(/\s+/g, "-");
-    const match = /^(\s*(?:`{3,}|~{3,}))\s*([^`~]*)$/.exec(opening.text);
-    const prefix = match?.[1] ?? "```";
-    const insert = `${prefix}${clean}`;
-    const cursor = opening.start + insert.length;
+    const parsed = /^(\s*)(`{3,}|~{3,})([ \t]*)(\S*)(.*)$/.exec(opening.text);
+    if (!parsed) return fail("not-applicable");
+    const gap = clean ? parsed[3] : "";
+    const rest = clean ? (parsed[5] || "") : "";
+    const insert = `${parsed[1]}${parsed[2]}${gap}${clean}${rest}`;
+    const cursor = opening.start + parsed[1].length + parsed[2].length + gap.length + clean.length;
     return ok(tx(ctx, "code.setLanguage", [{ from: opening.start, to: opening.end, insert }], { start: cursor, end: cursor, direction: "none" }, "code"), clean ? `Language ${clean}.` : "Language cleared.");
+  }
+  _applyCodeLanguage(item, match, ctx) {
+    const fence = this._findBlockAtOffset(match.from, "code-fence");
+    if (fence?.opening && match.from >= fence.opening.start && match.to <= fence.opening.end) return this._setCodeLanguageResult(ctx, fence, item.label);
+    const insert = `${match.sequence || "```"}${item.label}`;
+    const cursor = match.from + insert.length;
+    return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert }], { start: cursor, end: cursor, direction: "none" }, "completion"), `Language ${item.label}.`);
   }
   _toggleCodeFence(ctx, args = {}) { const language = String(args.language ?? "").trim(); const langPart = language ? language : ""; if (ctx.selectionStart !== ctx.selectionEnd) { const selected = ctx.value.slice(ctx.selectionStart, ctx.selectionEnd); const insert = `\`\`\`${langPart}\n${selected}\n\`\`\``; const cursor = ctx.selectionStart + 4 + langPart.length + selected.length; return ok(tx(ctx, "block.codeFence", [{ from: ctx.selectionStart, to: ctx.selectionEnd, insert }], { start: cursor, end: cursor, direction: "none" }, "block"), "Code block."); } const insert = `\`\`\`${langPart}\n\n\`\`\``; const cursor = ctx.selectionStart + 4 + langPart.length; return ok(tx(ctx, "block.codeFence", [{ from: ctx.selectionStart, to: ctx.selectionEnd, insert }], { start: cursor, end: cursor, direction: "none" }, "block"), "Code block."); }
   _insertHorizontalRule(ctx) { const lead = ctx.selectionStart > 0 && ctx.value[ctx.selectionStart - 1] !== "\n" ? "\n" : ""; const trail = ctx.selectionStart < ctx.value.length && ctx.value[ctx.selectionStart] !== "\n" ? "\n" : "\n"; const insert = `${lead}---${trail}`; return insertionTransaction(ctx, "block.horizontalRule", insert, insert.length, "block"); }
@@ -4066,7 +4673,14 @@ class WritemarkEditorElement extends HTMLElement {
     return ok(tx(ctx, "completion.accept", [{ from, to: match.to, insert }], { start: from + off, end: from + off + len, direction: "none" }, "slash"), item.label);
   }
   _slashReplacementForAction(actionId) { return { "block.paragraph": { insert: "", selectionOffset: 0 }, "block.heading.1": { insert: "# ", selectionOffset: 2 }, "block.heading.2": { insert: "## ", selectionOffset: 3 }, "block.heading.3": { insert: "### ", selectionOffset: 4 }, "block.heading.4": { insert: "#### ", selectionOffset: 5 }, "block.bulletList": { insert: "- ", selectionOffset: 2 }, "block.orderedList": { insert: "1. ", selectionOffset: 3 }, "block.taskList": { insert: "- [ ] ", selectionOffset: 6 }, "block.blockquote": { insert: "> ", selectionOffset: 2 }, "block.codeFence": { insert: "```\n\n```", selectionOffset: 4 }, "block.horizontalRule": { insert: "---\n", selectionOffset: 4 }, "block.table": { insert: "| Column 1 | Column 2 | Column 3 |\n| --- | --- | --- |\n| Cell 1 | Cell 2 | Cell 3 |", selectionOffset: 2, selectionLength: "Column 1".length }, "inline.link": { insert: "[]()", selectionOffset: 3 }, "inline.image": { insert: "![]()", selectionOffset: 4 }, "inline.bold": { insert: "****", selectionOffset: 2 }, "inline.italic": { insert: "**", selectionOffset: 1 }, "inline.code": { insert: "``", selectionOffset: 1 }, "inline.underline": { insert: "__", selectionOffset: 1 }, "inline.strikethrough": { insert: "~~", selectionOffset: 1 }, "inline.superscript": { insert: "^^", selectionOffset: 1 }, "inline.highlight": { insert: "====", selectionOffset: 2 }, "inline.secret": { insert: "##", selectionOffset: 1 } }[actionId] || null; }
-  _matchCodeLanguage(ctx) { if (ctx.block.kind === "fenced-code") return null; const before = ctx.currentLine.text.slice(0, ctx.selectionStart - ctx.currentLine.start); const m = /^(\s*)(`{3,}|~{3,})([\w+-]*)$/.exec(before); if (!m || LANGUAGES.includes(m[3].toLowerCase())) return null; return { from: ctx.currentLine.start + m[1].length, to: ctx.selectionStart, trigger: m[2], sequence: m[2], query: m[3], providerId: "code-language" }; }
+  _matchCodeLanguage(ctx) {
+    const fence = this._findBlockAtOffset(ctx.selectionStart, "code-fence");
+    if (fence?.opening && ctx.currentLine.start !== fence.opening.start) return null;
+    const before = ctx.currentLine.text.slice(0, ctx.selectionStart - ctx.currentLine.start);
+    const m = /^(\s*)(`{3,}|~{3,})([\w+-]*)$/.exec(before);
+    if (!m || LANGUAGES.includes(m[3].toLowerCase())) return null;
+    return { from: ctx.currentLine.start + m[1].length, to: ctx.selectionStart, trigger: m[2], sequence: m[2], query: m[3], providerId: "code-language" };
+  }
 
   _scheduleCompletionUpdate({ immediate = false } = {}) {
     if (this.disabled || this.readonly || this._isComposing) return;

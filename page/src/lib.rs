@@ -89,3 +89,21 @@ pub fn render_markdown(
     };
     nonograph_parser::render_markdown_with_config(markdown, &options)
 }
+
+#[wasm_bindgen]
+pub fn render_inline(markdown: &str, max_url_length: u32, external_link_security: bool) -> String {
+    let mut options = nonograph_parser::RenderOptions::default();
+    options.max_url_length = max_url_length as usize;
+    options.external_link_security = external_link_security;
+    nonograph_parser::render_inline_with_config(markdown, &options)
+}
+
+#[wasm_bindgen]
+pub fn highlight_code_line(language: &str, line: &str, syntax_theme: &str) -> String {
+    nonograph_parser::highlight_code_line(language, line, syntax_theme)
+}
+
+#[wasm_bindgen]
+pub fn highlight_code_lines(language: &str, code: &str, syntax_theme: &str) -> Vec<String> {
+    nonograph_parser::highlight_code_lines(language, code, syntax_theme)
+}
