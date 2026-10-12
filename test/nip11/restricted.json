@@ -1,0 +1,6 @@
+{
+  "name": "restricted",
+  "limitation": {
+    "restricted_writes": true
+  }
+}

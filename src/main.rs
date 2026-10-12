@@ -6,6 +6,8 @@ pub(crate) mod config;
 #[allow(dead_code)]
 mod crawl;
 pub(crate) mod csrf;
+#[allow(dead_code)]
+mod nip11;
 pub(crate) mod nostr;
 mod pages;
 pub(crate) mod relay_set;

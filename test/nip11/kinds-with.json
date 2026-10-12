@@ -1,0 +1,6 @@
+{
+  "name": "kinds-with",
+  "limitation": {
+    "kinds": [1, 30323]
+  }
+}

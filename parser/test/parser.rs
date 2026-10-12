@@ -949,7 +949,12 @@ fn highlight_code_line_matches_fence_spans() {
     let rendered = render_markdown(&format!("```rust\n{code}\n```"));
     let joined = lines
         .iter()
-        .map(|line| format!("<span class=\"code-line\">{}</span>", strip_style_attrs(line)))
+        .map(|line| {
+            format!(
+                "<span class=\"code-line\">{}</span>",
+                strip_style_attrs(line)
+            )
+        })
         .collect::<String>();
     assert!(rendered.contains(&joined), "{rendered}");
     assert!(lines[0].contains("style="));
@@ -1548,7 +1553,10 @@ fn editor_line_uses_the_inside_of_one_paragraph() {
         ("hello", "hello"),
         ("First line \nSecond", "First line <br>Second"),
         ("hello ", "hello "),
-        ("**bold** and *italic*", "<strong>bold</strong> and <em>italic</em>"),
+        (
+            "**bold** and *italic*",
+            "<strong>bold</strong> and <em>italic</em>",
+        ),
     ];
     let kept = [
         "# Title",
@@ -2359,7 +2367,10 @@ fn inline_lookup_keys(markdown: &str) -> Vec<String> {
         }
         if let Some(rest) = trimmed.find(". ").and_then(|at| {
             let (number, _) = trimmed.split_at(at);
-            number.chars().all(|c| c.is_ascii_digit()).then_some(&trimmed[at + 2..])
+            number
+                .chars()
+                .all(|c| c.is_ascii_digit())
+                .then_some(&trimmed[at + 2..])
         }) {
             push(rest);
         }
@@ -2373,7 +2384,10 @@ fn fence_highlight_pairs(markdown: &str) -> Vec<(String, Vec<String>)> {
     let mut index = 0;
     while index < lines.len() {
         let opener = lines[index].trim_start();
-        if let Some(info) = opener.strip_prefix("```").filter(|info| !info.contains('`')) {
+        if let Some(info) = opener
+            .strip_prefix("```")
+            .filter(|info| !info.contains('`'))
+        {
             let language = info.split_whitespace().next().unwrap_or("").to_string();
             index += 1;
             let mut body = Vec::new();
@@ -2551,7 +2565,10 @@ fn renderer_fixture_json() -> String {
         }
         if *name == "fence" {
             assert!(!live.contains("wrap-button"), "{live}");
-            assert!(live.contains("md-code-line") && live.contains("style="), "{live}");
+            assert!(
+                live.contains("md-code-line") && live.contains("style="),
+                "{live}"
+            );
             assert!(
                 live.contains("data-fence-role=\"open\"")
                     && live.contains(">```rust</div>")

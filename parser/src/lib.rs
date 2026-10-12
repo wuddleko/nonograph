@@ -1085,7 +1085,8 @@ fn render_code_block(
     code_content: &str,
     line_count: u32,
 ) -> String {
-    let (syntax, auto_detected, css_lang) = code_syntax(syntax_set, original_language, code_content);
+    let (syntax, auto_detected, css_lang) =
+        code_syntax(syntax_set, original_language, code_content);
     let highlighted_code = highlight_with_syntax(syntax_set, theme, syntax, code_content)
         .into_iter()
         .map(|line| format!("<span class=\"code-line\">{line}</span>"))
@@ -1235,10 +1236,7 @@ pub fn highlight_code_lines(language: &str, code: &str, syntax_theme: &str) -> V
     highlight_with_syntax(syntax_set, theme, syntax, code)
 }
 
-fn theme_for<'a>(
-    themes: &'a ThemeSet,
-    name: &str,
-) -> &'a syntect::highlighting::Theme {
+fn theme_for<'a>(themes: &'a ThemeSet, name: &str) -> &'a syntect::highlighting::Theme {
     themes.themes.get(name).unwrap_or_else(|| {
         eprintln!(
             "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
@@ -1252,11 +1250,7 @@ fn code_syntax<'a>(
     syntax_set: &'a SyntaxSet,
     original_language: &str,
     code_content: &str,
-) -> (
-    &'a syntect::parsing::SyntaxReference,
-    bool,
-    String,
-) {
+) -> (&'a syntect::parsing::SyntaxReference, bool, String) {
     let (css_lang, syntect_language) = language_names(original_language);
     let (syntax, auto_detected) = if let Some(s) = syntax_set.find_syntax_by_name(syntect_language)
     {

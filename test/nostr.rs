@@ -901,6 +901,234 @@ fn assign_relay_opens_tls_through_socks_for_the_relay_url() {
     assert!(take_held(relay).is_none());
 }
 
+#[test]
+fn fetch_nip11_reads_the_document_over_socks_and_classifies_it() {
+    let open = include_str!("nip11/open.json");
+    let (body, request) =
+        fetch_saved_nip11("wss://warm.example/path", &nip11_response("200 OK", open));
+    assert!(request.starts_with("GET /path HTTP/1.1\r\n"));
+    assert!(request.contains("Host: warm.example\r\n"));
+    assert!(request.contains("Accept: application/nostr+json\r\n"));
+    assert!(!request.contains("Upgrade"));
+    assert!(!request.contains("websocket"));
+    assert_eq!(body.as_deref(), Some(open));
+    let document: serde_json::Value = serde_json::from_str(open).unwrap();
+    assert!(crate::nip11::document_is_public(&document));
+
+    let auth = include_str!("nip11/auth.json");
+    let (body, _) = fetch_saved_nip11("wss://warm.example/path", &nip11_response("200 OK", auth));
+    assert_eq!(body.as_deref(), Some(auth));
+    let document: serde_json::Value = serde_json::from_str(auth).unwrap();
+    assert!(!crate::nip11::document_is_public(&document));
+
+    let (body, _) = fetch_saved_nip11(
+        "wss://warm.example",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+    );
+    assert_eq!(body.as_deref(), Some("{}"));
+    let document: serde_json::Value = serde_json::from_str("{}").unwrap();
+    assert!(crate::nip11::document_is_public(&document));
+}
+
+#[test]
+fn fetch_nip11_misses_when_the_relay_sends_no_document() {
+    let (body, request) = fetch_saved_nip11(
+        "wss://warm.example",
+        &nip11_response("404 Not Found", "missing"),
+    );
+    assert!(request.starts_with("GET / HTTP/1.1\r\n"));
+    assert!(body.is_none());
+    assert!(fetch_nip11(
+        "wss://warm.example",
+        Instant::now() + Duration::from_secs(2),
+        RelaySocks::Disabled,
+    )
+    .is_none());
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = listener.local_addr().unwrap();
+    assert!(fetch_nip11(
+        "wss://127.0.0.1",
+        Instant::now() + Duration::from_secs(2),
+        RelaySocks::Proxy(proxy),
+    )
+    .is_none());
+    assert!(listener.accept().is_err());
+
+    let huge = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+        NIP11_BODY_MAX + 1
+    );
+    assert!(decode_http_message(huge.as_bytes(), false).is_err());
+    assert!(
+        decode_http_message(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{", false)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        decode_http_message(b"HTTP/1.1 200 OK\r\n\r\n{}", true)
+            .unwrap()
+            .as_deref(),
+        Some("{}")
+    );
+}
+
+#[test]
+fn the_list_request_asks_for_kind_10002() {
+    let payload = list_req("list");
+    let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(value[0], "REQ");
+    assert_eq!(value[1], "list");
+    assert_eq!(value[2]["kinds"][0], 10002);
+    assert!(value[2].get("ids").is_none());
+    assert!(value[2].get("authors").is_none());
+    assert!(value[2].get("limit").is_none());
+}
+
+#[test]
+fn saved_event_and_eose_frames_fill_the_relay_list() {
+    let mut read = ListRead::answered();
+    assert!(!read.push(
+        "list",
+        r#"["EVENT","other",{"kind":10002,"tags":[["r","wss://other.example"]],"content":""}]"#
+    ));
+    assert!(read.urls.is_empty());
+    assert!(!read.push("list", include_str!("list/10002-event.json")));
+    assert_eq!(
+        read.urls,
+        vec![
+            "wss://relay.damus.io".to_string(),
+            "wss://nos.lol".to_string(),
+            "wss://relay.primal.net".to_string(),
+        ]
+    );
+    assert!(!read.push("list", include_str!("list/10002-event.json")));
+    assert_eq!(read.urls.len(), 3);
+    assert!(read.push("list", include_str!("list/10002-eose.json")));
+    let list = read.finish();
+    assert!(list.socket_answered);
+    assert_eq!(list.urls.len(), 3);
+}
+
+#[test]
+fn an_auth_frame_leaves_the_answered_socket_empty() {
+    let mut read = ListRead::answered();
+    assert!(!read.push("list", include_str!("list/auth.json")));
+    assert!(read.socket_answered);
+    assert!(read.urls.is_empty());
+    assert!(!read.finished);
+
+    let mut closed = ListRead::answered();
+    assert!(closed.push("list", r#"["CLOSED","list","auth-required: we need auth"]"#));
+    let list = closed.finish();
+    assert!(list.socket_answered);
+    assert!(list.urls.is_empty());
+}
+
+#[test]
+fn an_ok_frame_accepts_the_30323_probe() {
+    let note = minimal_probe_note(1_700_000_000);
+    let parsed: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    assert_eq!(parsed["kind"], 30323);
+    assert_eq!(parsed["content"], "");
+    assert_eq!(parsed["tags"], serde_json::json!([]));
+    let frame = format!(r#"["OK","{}",true,""]"#, note.id_hex());
+    let probe = probe_from_ok(&frame, &note.id_hex()).unwrap();
+    assert_eq!(probe.name, "30323");
+    assert!(probe.accepted);
+    assert_eq!(probe.detail, "OK");
+}
+
+#[test]
+fn a_blocked_frame_refuses_the_30323_probe() {
+    let note = minimal_probe_note(1_700_000_000);
+    let frame = format!(
+        r#"["OK","{}",false,"blocked: kind 30323 is not accepted"]"#,
+        note.id_hex()
+    );
+    let probe = probe_from_ok(&frame, &note.id_hex()).unwrap();
+    assert_eq!(probe.name, "30323");
+    assert!(!probe.accepted);
+    assert_eq!(probe.detail, "blocked: kind 30323 is not accepted");
+}
+
+#[test]
+fn a_missing_or_closed_document_skips_the_probe() {
+    let deadline = Instant::now();
+    assert!(probe_kind("wss://warm.example", None, deadline).is_empty());
+    let auth: serde_json::Value = serde_json::from_str(include_str!("nip11/auth.json")).unwrap();
+    assert!(probe_kind("wss://warm.example", Some(&auth), deadline).is_empty());
+    let kinds: serde_json::Value =
+        serde_json::from_str(include_str!("nip11/kinds-without.json")).unwrap();
+    assert!(probe_kind("wss://warm.example", Some(&kinds), deadline).is_empty());
+}
+
+#[test]
+fn a_list_read_stays_unanswered_when_the_socket_never_opens() {
+    let list = read_relay_list(
+        "wss://warm.example",
+        Instant::now() + Duration::from_secs(2),
+        RelaySocks::Disabled,
+    );
+    assert!(!list.socket_answered);
+    assert!(list.urls.is_empty());
+}
+
+fn nip11_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/nostr+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn fetch_saved_nip11(relay: &str, response: &str) -> (Option<String>, String) {
+    use_invalid_test_certs();
+    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = listener.local_addr().unwrap();
+    let (seen_tx, seen_rx) = mpsc::channel();
+    let response = response.to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        if read_socks_connect(&mut stream).is_none() {
+            return;
+        }
+        let Ok(mut tls) = acceptor.accept(stream) else {
+            return;
+        };
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while request.len() < 8192 {
+            if tls.read(&mut byte).ok().unwrap_or(0) == 0 {
+                break;
+            }
+            request.push(byte[0]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let _ = seen_tx.send(String::from_utf8_lossy(&request).into_owned());
+        let _ = tls.write_all(response.as_bytes());
+        let _ = tls.flush();
+    });
+    let body = fetch_nip11(
+        relay,
+        Instant::now() + Duration::from_secs(2),
+        RelaySocks::Proxy(proxy),
+    );
+    let request = seen_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or_default();
+    (body, request)
+}
+
 fn read_socks_connect(stream: &mut std::net::TcpStream) -> Option<(String, String, u16)> {
     use std::io::{Read, Write};
     let mut hello = [0u8; 3];

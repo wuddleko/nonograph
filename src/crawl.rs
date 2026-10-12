@@ -1,7 +1,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use crawler::{due, load, run_batch, Queue, VisitHook};
+use crawler::{due, load, run_batch, Queue, Visit, VisitHook};
+use serde_json::Value;
+
+use crate::nostr::{fetch_nip11, probe_kind, read_relay_list, RelayList, RelaySocks};
 
 pub(crate) const DOORS: [&str; 3] = [
     "wss://relay.primal.net",
@@ -35,6 +39,66 @@ where
 {
     let mut queue = batch_queue(path, now);
     run_batch(&mut queue, WORKERS, now, make_hook, path)
+}
+
+pub(crate) struct CrawlVisit<R> {
+    timeout_secs: u64,
+    read: R,
+}
+
+pub(crate) struct LiveRead {
+    socks: RelaySocks,
+}
+
+impl CrawlVisit<LiveRead> {
+    pub(crate) fn new(timeout_secs: u64, socks: RelaySocks) -> Self {
+        Self {
+            timeout_secs,
+            read: LiveRead { socks },
+        }
+    }
+}
+
+trait RelayRead {
+    fn read_list(&mut self, url: &str, deadline: Instant) -> RelayList;
+    fn read_nip11(&mut self, url: &str, deadline: Instant) -> Option<String>;
+}
+
+impl RelayRead for LiveRead {
+    fn read_list(&mut self, url: &str, deadline: Instant) -> RelayList {
+        read_relay_list(url, deadline, self.socks)
+    }
+
+    fn read_nip11(&mut self, url: &str, deadline: Instant) -> Option<String> {
+        fetch_nip11(url, deadline, self.socks)
+    }
+}
+
+impl<R: RelayRead> VisitHook for CrawlVisit<R> {
+    fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
+        let deadline = Instant::now() + Duration::from_secs(self.timeout_secs.max(1));
+        let list = self.read.read_list(url, deadline);
+        let nip11 = nip11_document(self.read.read_nip11(url, deadline));
+        let probes = probe_kind(url, nip11.as_ref(), deadline);
+        (
+            Visit {
+                at: now,
+                socket_answered: list.socket_answered,
+                nip11,
+                probes,
+            },
+            list.urls,
+        )
+    }
+}
+
+fn nip11_document(body: Option<String>) -> Option<Value> {
+    let value: Value = serde_json::from_str(&body?).ok()?;
+    if value.is_object() {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +242,91 @@ mod tests {
             .iter()
             .filter(|row| row.url != "wss://later.example")
             .all(|row| row.visit.as_ref().is_some_and(|visit| visit.at == NOW)));
+    }
+
+    struct Saved {
+        body: String,
+        urls: Vec<String>,
+        calls: Vec<&'static str>,
+        deadlines: Vec<Instant>,
+    }
+
+    impl RelayRead for Saved {
+        fn read_list(&mut self, _url: &str, deadline: Instant) -> crate::nostr::RelayList {
+            self.calls.push("list");
+            self.deadlines.push(deadline);
+            crate::nostr::RelayList {
+                socket_answered: true,
+                urls: self.urls.clone(),
+            }
+        }
+
+        fn read_nip11(&mut self, _url: &str, deadline: Instant) -> Option<String> {
+            self.calls.push("nip11");
+            self.deadlines.push(deadline);
+            Some(self.body.clone())
+        }
+    }
+
+    #[test]
+    fn a_non_public_document_is_stored_with_its_urls_and_no_probe() {
+        let body = include_str!("../test/nip11/auth.json").to_owned();
+        let document: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let mut hook = CrawlVisit {
+            timeout_secs: 30,
+            read: Saved {
+                body,
+                urls: vec![
+                    "wss://relay.damus.io".to_owned(),
+                    "wss://nos.lol".to_owned(),
+                ],
+                calls: Vec::new(),
+                deadlines: Vec::new(),
+            },
+        };
+        let mut queue = Queue::new(Pool { rows: Vec::new() });
+        assert!(queue.push("wss://auth.example", NOW));
+
+        assert_eq!(
+            queue.visit_one(&mut hook, NOW).as_deref(),
+            Some("wss://auth.example")
+        );
+
+        assert_eq!(hook.read.calls, ["list", "nip11"]);
+        assert_eq!(hook.read.deadlines[0], hook.read.deadlines[1]);
+        let row = queue
+            .pool()
+            .rows
+            .iter()
+            .find(|row| row.url == "wss://auth.example")
+            .unwrap();
+        let visit = row.visit.as_ref().unwrap();
+        assert_eq!(visit.at, NOW);
+        assert!(visit.socket_answered);
+        assert_eq!(visit.nip11.as_ref(), Some(&document));
+        assert!(visit.probes.is_empty());
+        assert!(queue
+            .pool()
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://relay.damus.io"));
+        assert!(queue
+            .pool()
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://nos.lol"));
+    }
+
+    #[test]
+    fn a_missed_socket_still_returns_the_visit() {
+        let mut hook = CrawlVisit::new(30, crate::nostr::RelaySocks::Disabled);
+        let started = Instant::now();
+        let (visit, urls) = hook.visit("wss://warm.example", NOW);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(visit.at, NOW);
+        assert!(!visit.socket_answered);
+        assert!(visit.nip11.is_none());
+        assert!(visit.probes.is_empty());
+        assert!(urls.is_empty());
     }
 }

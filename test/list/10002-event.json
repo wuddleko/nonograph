@@ -1,0 +1,12 @@
+["EVENT", "list", {
+  "kind": 10002,
+  "tags": [
+    ["r", "wss://Relay.Damus.io/"],
+    ["r", "wss://nos.lol", "read"],
+    ["r", "wss://relay.primal.net/", "write"],
+    ["p", "wss://skipped.example"],
+    ["r", "wss://relay.damus.io"],
+    ["r", "ws://bad.example"]
+  ],
+  "content": ""
+}]

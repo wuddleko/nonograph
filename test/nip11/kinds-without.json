@@ -1,0 +1,6 @@
+{
+  "name": "kinds-without",
+  "limitation": {
+    "kinds": [1, 3, 30023]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "open",
+  "supported_nips": [1, 11],
+  "limitation": {
+    "max_message_length": 16384,
+    "auth_required": false,
+    "payment_required": false,
+    "restricted_writes": false
+  }
+}

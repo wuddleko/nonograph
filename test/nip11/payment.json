@@ -1,0 +1,6 @@
+{
+  "name": "payment",
+  "limitation": {
+    "payment_required": true
+  }
+}
