@@ -16,6 +16,7 @@ fn static_assets_are_cacheable_and_html_is_not() {
         WRITEMARK_JS_PATH,
         WRITEMARK_CSS_PATH,
         NOTICE_CSS_PATH,
+        THEME_JS_PATH,
     ] {
         assert_eq!(
             cache_control_for_path(path),
@@ -857,6 +858,39 @@ fn mode_link_points_at_the_other_view() {
     assert_eq!(mode_label(false), "nojs");
     assert_eq!(mode_href(true, "abc"), "/abc");
     assert_eq!(mode_label(true), "js");
+}
+
+#[test]
+fn theme_toggle_is_saved_only_when_script_is_allowed() {
+    let config = crate::config::Config::default();
+    let engine = crate::template::TemplateEngine::new("templates");
+    let js = engine
+        .render("home", &home_context(&config, false, None, None))
+        .unwrap();
+    assert!(js.contains("class=\"theme-toggle\""));
+    assert!(js.contains("<script src=\"/theme.js?v="));
+    assert!(include_str!("../templates/theme.js").contains("nonograph-theme"));
+    assert!(!js.contains("&lt;script"));
+    let nojs = engine
+        .render("home", &home_context(&config, true, None, None))
+        .unwrap();
+    assert!(nojs.contains("class=\"theme-toggle\""));
+    assert!(!nojs.contains("theme.js"));
+    assert!(!nojs.contains("<script"));
+
+    let post = engine.render("post", &sample_post_context(false)).unwrap();
+    assert!(post.contains("<script src=\"/theme.js?v="));
+    let post_nojs = engine.render("post", &sample_post_context(true)).unwrap();
+    assert!(post_nojs.contains("class=\"theme-toggle\""));
+    assert!(!post_nojs.contains("<script"));
+
+    let event_id = "ab".repeat(32);
+    let opened = sealed_shell("{}", "0123456789abcdef0123", &event_id, &[], "", &config);
+    assert!(opened.contains("<script src=\"/theme.js?v="));
+    assert!(!opened.contains("</script><script"));
+    let locked = sealed_shell("", "0123456789abcdef0123", &event_id, &[], "", &config);
+    assert!(locked.contains("class=\"theme-toggle\""));
+    assert!(!locked.contains("<script"));
 }
 
 #[test]

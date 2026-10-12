@@ -812,6 +812,19 @@ export function sealedReadingFooter() {
         link.textContent = label;
         footer.appendChild(link);
     }
+    const theme = document.createElement("button");
+    theme.type = "button";
+    theme.className = "theme-toggle";
+    theme.setAttribute("aria-label", "Dark mode");
+    const toDark = document.createElement("span");
+    toDark.className = "theme-to-dark";
+    toDark.textContent = "dark";
+    const toLight = document.createElement("span");
+    toLight.className = "theme-to-light";
+    toLight.textContent = "light";
+    theme.appendChild(toDark);
+    theme.appendChild(toLight);
+    footer.appendChild(theme);
     document.querySelectorAll("body > p").forEach((paragraph) => {
         if (paragraph.id === "sealed-preview") {
             return;

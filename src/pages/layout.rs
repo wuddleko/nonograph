@@ -62,6 +62,14 @@ pub(crate) fn fill_layout(context: &mut HashMap<String, String>, nojs: bool, pub
     context.insert("mode_href".to_string(), mode_href(nojs, public_id));
     context.insert("mode_label".to_string(), mode_label(nojs).to_string());
     context.insert("fallback_css".to_string(), post_fallback_css(nojs, version));
+    context.insert(
+        "theme_boot".to_string(),
+        if nojs {
+            String::new()
+        } else {
+            theme_boot(version)
+        },
+    );
 }
 
 pub(super) fn join_public_origin(origin: &str, path: &str) -> String {
@@ -86,6 +94,10 @@ pub(crate) fn mode_label(nojs: bool) -> &'static str {
     } else {
         "nojs"
     }
+}
+
+pub(crate) fn theme_boot(version: &str) -> String {
+    format!(r#"<script src="/theme.js?v={version}"></script>"#)
 }
 
 fn query_escape(text: &str) -> String {

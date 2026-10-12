@@ -380,6 +380,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::writemark_js,
                 pages::writemark_css,
                 pages::notice_css,
+                pages::theme_js,
             ],
         );
 

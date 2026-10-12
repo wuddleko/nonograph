@@ -193,6 +193,14 @@ fn home_form_context(
             super::assets::home_scripts(version)
         },
     );
+    context.insert(
+        "theme_boot".to_string(),
+        if nojs {
+            String::new()
+        } else {
+            super::layout::theme_boot(version)
+        },
+    );
     let relays = relays_for_public_fetch(&[], &config.nostr.relays);
     context.insert(
         "relays_sidebar".to_string(),

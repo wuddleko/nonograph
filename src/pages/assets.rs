@@ -19,6 +19,7 @@ pub const HOME_NOSCRIPT_CSS_PATH: &str = "/home-noscript.css";
 pub const WRITEMARK_JS_PATH: &str = "/writemark.js";
 pub const WRITEMARK_CSS_PATH: &str = "/writemark.css";
 pub const NOTICE_CSS_PATH: &str = "/notice.css";
+pub const THEME_JS_PATH: &str = "/theme.js";
 
 pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
 const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
@@ -42,7 +43,8 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         | HOME_NOSCRIPT_CSS_PATH
         | WRITEMARK_JS_PATH
         | WRITEMARK_CSS_PATH
-        | NOTICE_CSS_PATH => LONG_CACHE,
+        | NOTICE_CSS_PATH
+        | THEME_JS_PATH => LONG_CACHE,
         _ => "no-store, max-age=0",
     }
 }
@@ -107,6 +109,7 @@ struct Assets {
     writemark_js: String,
     writemark_css: String,
     notice_css: String,
+    theme_js: String,
 }
 
 pub fn warm() {
@@ -137,6 +140,7 @@ fn assets() -> &'static Assets {
         let writemark_js = read("writemark.js");
         let writemark_css = read("writemark.css");
         let notice_css = read("notice.css");
+        let theme_js = read("theme.js");
         let version = asset_version(&[
             &home_css,
             &home_js,
@@ -149,6 +153,7 @@ fn assets() -> &'static Assets {
             &writemark_js,
             &writemark_css,
             &notice_css,
+            &theme_js,
         ]);
         Assets {
             version,
@@ -163,6 +168,7 @@ fn assets() -> &'static Assets {
             writemark_js,
             writemark_css,
             notice_css,
+            theme_js,
         }
     })
 }
@@ -252,6 +258,11 @@ pub fn writemark_css() -> (ContentType, &'static str) {
 #[get("/notice.css")]
 pub fn notice_css() -> (ContentType, &'static str) {
     (ContentType::CSS, assets().notice_css.as_str())
+}
+
+#[get("/theme.js")]
+pub fn theme_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, assets().theme_js.as_str())
 }
 
 const ROBOTS_TXT: &str = include_str!("../../robots.txt");

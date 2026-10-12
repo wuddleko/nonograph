@@ -11,13 +11,21 @@
                 background: var(--ground);
                 color-scheme: light;
             }
+            html[data-theme="dark"] {
+                --ground: #000;
+                --ink: #fff;
+                color-scheme: dark;
+            }
+            html[data-theme="dark"] .selection-highlight {
+                color: #000;
+            }
             @media (prefers-color-scheme: dark) {
-                html {
+                html:not([data-theme="light"]) {
                     --ground: #000;
                     --ink: #fff;
                     color-scheme: dark;
                 }
-                .selection-highlight {
+                html:not([data-theme="light"]) .selection-highlight {
                     color: #000;
                 }
             }
@@ -983,6 +991,54 @@
                 color: var(--ink);
                 text-decoration: underline;
             }
+            .footer .theme-toggle {
+                display: none;
+                margin: 0 12px;
+                padding: 0;
+                border: 0;
+                border-radius: 0;
+                background: none;
+                box-shadow: none;
+                color: var(--quiet);
+                font-family: inherit;
+                font-size: inherit;
+                font-weight: 400;
+                letter-spacing: 0;
+                line-height: inherit;
+                text-transform: none;
+                white-space: nowrap;
+                vertical-align: baseline;
+                cursor: pointer;
+                -webkit-appearance: none;
+                appearance: none;
+            }
+            html.js .footer .theme-toggle {
+                display: inline;
+            }
+            .footer .theme-toggle:hover,
+            .footer .theme-toggle:focus-visible,
+            .footer .theme-toggle:active {
+                background: none;
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .theme-toggle .theme-to-light {
+                display: none;
+            }
+            html[data-theme="dark"] .theme-toggle .theme-to-dark {
+                display: none;
+            }
+            html[data-theme="dark"] .theme-toggle .theme-to-light {
+                display: inline;
+            }
+            @media (prefers-color-scheme: dark) {
+                html:not([data-theme="light"]) .theme-toggle .theme-to-dark {
+                    display: none;
+                }
+                html:not([data-theme="light"]) .theme-toggle .theme-to-light {
+                    display: inline;
+                }
+            }
             .footer a.nostr-id {
                 overflow-wrap: anywhere;
                 word-break: break-all;
@@ -995,7 +1051,8 @@
                     font-size: 15px;
                     padding: 8px 20px 16px;
                 }
-                .footer a {
+                .footer a,
+                .footer .theme-toggle {
                     margin: 0 8px;
                 }
             }

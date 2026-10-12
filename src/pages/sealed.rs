@@ -62,6 +62,11 @@ pub(crate) fn sealed_shell(
     config: &Config,
 ) -> String {
     let version = super::assets::version();
+    let theme_boot = if event_json.is_empty() {
+        String::new()
+    } else {
+        super::layout::theme_boot(version)
+    };
     let options = render_options(config);
     let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
     let external = if options.external_link_security {
@@ -83,6 +88,7 @@ pub(crate) fn sealed_shell(
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {theme_boot}
     <title>{title}</title>
     <link rel="icon" href="data:," />
     <meta property="og:title" content="{title}" />
@@ -113,6 +119,7 @@ pub(crate) fn sealed_shell(
         <a href="/legal">legal</a>
         <a href="/api">api</a>
         <a href="https://github.com/wuddleko/nonograph">source code</a>
+        <button type="button" class="theme-toggle" aria-label="Dark mode"><span class="theme-to-dark">dark</span><span class="theme-to-light">light</span></button>
     </div>
     {event}
 </body>
@@ -122,6 +129,7 @@ pub(crate) fn sealed_shell(
         form = sealed_open_form(locator, event_id, hints, key_error),
         event = event,
         version = version,
+        theme_boot = theme_boot,
         theme = theme,
         max_url = options.max_url_length,
         external = external,

@@ -1,0 +1,40 @@
+{
+  "rows": [
+    {
+      "url": "wss://relay.primal.net",
+      "first_seen": 1791841201,
+      "next_try": 1791842101,
+      "failures": 1,
+      "visit": {
+        "at": 1791841201,
+        "socket_answered": false,
+        "nip11": null,
+        "probes": []
+      }
+    },
+    {
+      "url": "wss://nos.lol",
+      "first_seen": 1791841201,
+      "next_try": 1791842101,
+      "failures": 1,
+      "visit": {
+        "at": 1791841201,
+        "socket_answered": false,
+        "nip11": null,
+        "probes": []
+      }
+    },
+    {
+      "url": "wss://relay.damus.io",
+      "first_seen": 1791841201,
+      "next_try": 1791842101,
+      "failures": 1,
+      "visit": {
+        "at": 1791841201,
+        "socket_answered": false,
+        "nip11": null,
+        "probes": []
+      }
+    }
+  ]
+}
