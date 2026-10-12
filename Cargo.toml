@@ -4,7 +4,7 @@ version = "0.4.6"
 edition = "2021"
 
 [workspace]
-members = ["parser", "page", "nip44"]
+members = ["parser", "page", "nip44", "crawler"]
 
 [dependencies]
 rocket = { version = "0.5", features = ["json"] }
