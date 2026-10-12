@@ -1,7 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::schedule::{is_due, schedule};
-use crate::{canonical_public_relay, Pool, Row, Visit};
+use crate::{canonical_public_relay, Pool, Row, Visit, VisitHook};
 
 #[derive(Debug)]
 pub struct Queue {
@@ -34,6 +34,13 @@ impl Queue {
     pub fn pop(&mut self) -> Option<String> {
         let url = self.ready.pop_front()?;
         self.in_flight.insert(url.clone());
+        Some(url)
+    }
+
+    pub fn visit_one(&mut self, hook: &mut impl VisitHook, now: i64) -> Option<String> {
+        let url = self.pop()?;
+        let (visit, discovered) = hook.visit(&url, now);
+        self.finish(&url, visit, discovered, now);
         Some(url)
     }
 

@@ -2,11 +2,13 @@ mod list;
 mod queue;
 mod relay_url;
 mod schedule;
+mod visit;
 
 pub use list::{list_urls, list_urls_with};
 pub use queue::Queue;
 pub use relay_url::canonical_public_relay;
 pub use schedule::{due, schedule};
+pub use visit::VisitHook;
 
 use std::fs;
 use std::io;
@@ -82,3 +84,7 @@ mod due_tests;
 #[cfg(test)]
 #[path = "../test/queue.rs"]
 mod queue_tests;
+
+#[cfg(test)]
+#[path = "../test/visit.rs"]
+mod visit_tests;
