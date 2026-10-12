@@ -1169,21 +1169,21 @@ fn format_paragraphs_with_headers(text: &str) -> String {
                 if line_trimmed.starts_with("{{FENCEDBLOCK") || line_trimmed.starts_with("<table>")
                 {
                     if !current_paragraph.is_empty() {
-                        result.push_str(&format!("<p>{}</p>\n", current_paragraph.trim()));
+                        result.push_str(&format!("<p>{}</p>\n", current_paragraph.trim_start()));
                         current_paragraph.clear();
                     }
                     result.push_str(line_trimmed);
                     result.push('\n');
-                } else if !line_trimmed.is_empty() {
+                } else if let Some(kept) = paragraph_line(line) {
                     if !current_paragraph.is_empty() {
                         current_paragraph.push_str("<br>");
                     }
-                    current_paragraph.push_str(line_trimmed);
+                    current_paragraph.push_str(kept);
                 }
             }
 
             if !current_paragraph.is_empty() {
-                result.push_str(&format!("<p>{}</p>", current_paragraph.trim()));
+                result.push_str(&format!("<p>{}</p>", current_paragraph.trim_start()));
             }
         } else if trimmed.starts_with("{{FENCEDBLOCK")
             || trimmed.starts_with("<img ")
@@ -1196,16 +1196,16 @@ fn format_paragraphs_with_headers(text: &str) -> String {
             let mut paragraph_content = String::new();
 
             for (j, line) in lines.iter().enumerate() {
-                let trimmed_line = line.trim();
-                if !trimmed_line.is_empty() {
-                    paragraph_content.push_str(trimmed_line);
-                    if j < lines.len() - 1
-                        && lines
-                            .get(j + 1)
-                            .map_or(false, |next| !next.trim().is_empty())
-                    {
-                        paragraph_content.push_str("<br>");
-                    }
+                let Some(kept) = paragraph_line(line) else {
+                    continue;
+                };
+                paragraph_content.push_str(kept);
+                if j < lines.len() - 1
+                    && lines
+                        .get(j + 1)
+                        .map_or(false, |next| !next.trim().is_empty())
+                {
+                    paragraph_content.push_str("<br>");
                 }
             }
 
@@ -1224,6 +1224,14 @@ fn format_paragraphs_with_headers(text: &str) -> String {
     result = result.replace("\n\n\n", "\n\n");
 
     clear_breaks_before_tables(result)
+}
+
+fn paragraph_line(line: &str) -> Option<&str> {
+    if line.trim().is_empty() {
+        None
+    } else {
+        Some(line.trim_start())
+    }
 }
 
 fn clear_breaks_before_tables(mut input: String) -> String {

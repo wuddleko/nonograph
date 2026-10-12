@@ -1247,6 +1247,12 @@ function sourceEditFromDisplay(source, oldDisplay, newDisplay) {
     cursor: from + change.insert.length,
   };
 }
+function cursorAfterLineInput(displayCursor, mappedCursor, sourceCursor, fallbackCursor) {
+  if (mappedCursor != null) return mappedCursor;
+  if (displayCursor != null) return displayCursor;
+  if (sourceCursor != null) return sourceCursor;
+  return fallbackCursor;
+}
 let pageModule = null;
 function renderMarkdown(markdown, opts = {}) {
   const page = pageModule;
@@ -1256,6 +1262,13 @@ function renderMarkdown(markdown, opts = {}) {
   const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
   const external = opts.external !== false;
   return page.render_markdown(String(markdown ?? ""), String(theme), maxUrl, external);
+}
+function singleParagraphHtml(html) {
+  const text = String(html ?? "").trim();
+  if (!text.startsWith("<p>") || !text.endsWith("</p>")) return html;
+  const inner = text.slice("<p>".length, -"</p>".length);
+  if (inner.includes("<p>") || inner.includes("</p>")) return html;
+  return inner;
 }
 function textFromMarkdown(markdown, opts = {}) {
   const extracted = extractReferenceDefinitions(markdown, opts.references);
@@ -1700,7 +1713,7 @@ class WritemarkEditorElement extends HTMLElement {
   _pageHtml(markdown) {
     const text = String(markdown ?? "");
     const html = renderMarkdown(text, this._rendererOptions());
-    if (html) return html;
+    if (html) return singleParagraphHtml(html);
     return text ? escapeHtml(text) : "<br>";
   }
   _textFromHtml(html) {
@@ -2249,11 +2262,14 @@ class WritemarkEditorElement extends HTMLElement {
     }
     const previousValue = this._value;
     const nextValue = previousValue.slice(0, from) + insert + previousValue.slice(to);
-    const liveCursor = mappedCursor != null
-      ? mappedCursor
-      : (liveSelection?.end != null
-        ? liveSelection.end - from
-        : (inferredDisplayCursor ?? insert.length - virtualPrefixLength));
+    const displayCursor = this._displayOffsetFromSelection(editable);
+    const sourceCursor = liveSelection?.end != null ? liveSelection.end - from : null;
+    const liveCursor = cursorAfterLineInput(
+      displayCursor,
+      mappedCursor,
+      sourceCursor,
+      inferredDisplayCursor ?? insert.length - virtualPrefixLength,
+    );
     const cursor = clamp(from + virtualPrefixLength + liveCursor, from, from + insert.length);
     this._value = nextValue;
     this._selection = { start: cursor, end: cursor, direction: "none" };

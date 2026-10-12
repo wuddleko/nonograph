@@ -1487,6 +1487,67 @@ let x = 42;
 }
 
 #[test]
+fn paragraph_keeps_a_trailing_space() {
+    assert_eq!(render_markdown("hello "), "<p>hello </p>");
+    assert_eq!(render_markdown("hello  "), "<p>hello  </p>");
+    assert_eq!(
+        render_markdown("First line \nSecond"),
+        "<p>First line <br>Second</p>"
+    );
+    assert_eq!(render_markdown("  hello"), "<p>hello</p>");
+    assert_eq!(render_markdown("   "), "");
+}
+
+#[test]
+fn editor_line_uses_the_inside_of_one_paragraph() {
+    let painted = [
+        ("hello", "hello"),
+        ("First line \nSecond", "First line <br>Second"),
+        ("hello ", "hello "),
+        ("**bold** and *italic*", "<strong>bold</strong> and <em>italic</em>"),
+    ];
+    let kept = [
+        "# Title",
+        "- one",
+        "> quoted",
+        "```\ncode\n```",
+        "![alt](https://example.com/image.png)",
+        "First paragraph.\n\nSecond paragraph.",
+    ];
+    let mut html = Vec::new();
+    let mut expect = Vec::new();
+    for (markdown, inner) in painted {
+        let rendered = render_markdown(markdown);
+        assert!(
+            rendered.starts_with("<p>") && rendered.ends_with("</p>"),
+            "{markdown}: {rendered}"
+        );
+        html.push(rendered);
+        expect.push(inner.to_string());
+    }
+    for markdown in kept {
+        let rendered = render_markdown(markdown);
+        html.push(rendered.clone());
+        expect.push(rendered);
+    }
+    assert_eq!(writemark_editor_line_html(&html), expect);
+}
+
+#[test]
+fn cursor_follows_the_character_just_typed() {
+    let cases = [
+        (Some(1), None, Some(0), 0, 1),
+        (Some(4), None, Some(3), 4, 4),
+        (Some(3), None, Some(2), 3, 3),
+        (Some(6), Some(8), Some(5), 6, 8),
+        (None, None, Some(2), 4, 2),
+    ];
+    let got = writemark_line_cursors(&cases);
+    let expect: Vec<i64> = cases.iter().map(|(_, _, _, _, cursor)| *cursor).collect();
+    assert_eq!(got, expect);
+}
+
+#[test]
 fn test_paragraph_formatting() {
     // Test single paragraph
     let text = "This is a single paragraph.";
@@ -2032,6 +2093,77 @@ fn renderer_samples() -> &'static [(&'static str, &'static str)] {
         ("private-link", "[secret](http://127.0.0.1/secret)"),
         ("comment", "visible\n// hidden note\nstill here"),
     ]
+}
+
+fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, i64)]) -> Vec<i64> {
+    let source = include_str!("../../templates/writemark.js");
+    let end = source
+        .find("\nfunction textFromMarkdown")
+        .expect("cursorAfterLineInput ends before textFromMarkdown");
+    let listed = cases
+        .iter()
+        .map(|(display, mapped, source, fallback, _)| {
+            let js = |value: &Option<i64>| match value {
+                Some(n) => n.to_string(),
+                None => "null".to_string(),
+            };
+            format!(
+                "cursorAfterLineInput({}, {}, {}, {})",
+                js(display),
+                js(mapped),
+                js(source),
+                fallback
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let program = format!(
+        "{slice}\nconst rendered = JSON.stringify([{listed}]);\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        slice = &source[..end],
+        listed = listed,
+    );
+    let text = run_javascript("nonograph-line-cursor", &program);
+    let mut chars = text.trim().chars().peekable();
+    assert_eq!(chars.next(), Some('['), "cursor json: {text}");
+    let mut values = Vec::new();
+    loop {
+        while matches!(chars.peek(), Some(',' | ' ' | '\n' | '\r' | '\t')) {
+            chars.next();
+        }
+        match chars.peek().copied() {
+            Some(']') => break,
+            Some(c) if c == '-' || c.is_ascii_digit() => {
+                let mut number = String::new();
+                if c == '-' {
+                    number.push(chars.next().unwrap());
+                }
+                while matches!(chars.peek(), Some(d) if d.is_ascii_digit()) {
+                    number.push(chars.next().unwrap());
+                }
+                values.push(number.parse().expect("cursor number"));
+            }
+            other => panic!("cursor json at {other:?}: {text}"),
+        }
+    }
+    values
+}
+
+fn writemark_editor_line_html(html: &[String]) -> Vec<String> {
+    let source = include_str!("../../templates/writemark.js");
+    let end = source
+        .find("\nfunction textFromMarkdown")
+        .expect("singleParagraphHtml ends before textFromMarkdown");
+    let listed = html
+        .iter()
+        .map(|sample| json_string(sample))
+        .collect::<Vec<_>>()
+        .join(",");
+    let program = format!(
+        "{slice}\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => singleParagraphHtml(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        slice = &source[..end],
+        listed = listed,
+    );
+    parse_json_string_array(&run_javascript("nonograph-line-html", &program))
 }
 
 fn writemark_render_markdown(samples: &[&str], rust_html: &[String]) -> Vec<String> {
