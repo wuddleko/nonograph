@@ -3,6 +3,8 @@ extern crate rocket;
 
 mod access_log;
 pub(crate) mod config;
+#[allow(dead_code)]
+mod crawl;
 pub(crate) mod csrf;
 pub(crate) mod nostr;
 mod pages;

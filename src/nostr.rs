@@ -1293,10 +1293,7 @@ fn fetch_from_relays(
     note
 }
 
-fn take_first_note(
-    rx: mpsc::Receiver<Option<String>>,
-    deadline: Instant,
-) -> Option<String> {
+fn take_first_note(rx: mpsc::Receiver<Option<String>>, deadline: Instant) -> Option<String> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1310,12 +1307,7 @@ fn take_first_note(
     }
 }
 
-fn req_payload(
-    sub_id: &str,
-    event_id_hex: &str,
-    locator: &str,
-    payload_max: usize,
-) -> String {
+fn req_payload(sub_id: &str, event_id_hex: &str, locator: &str, payload_max: usize) -> String {
     let _ = (locator, payload_max);
     serde_json::json!([
         "REQ",
@@ -1360,8 +1352,7 @@ fn fetch_from_relay(
                 if text.len() > sealed_frame_max(payload_max) {
                     continue;
                 }
-                if let Some(event_json) =
-                    note_for_query(&text, event_id_hex, locator, payload_max)
+                if let Some(event_json) = note_for_query(&text, event_id_hex, locator, payload_max)
                 {
                     return Ok(Some(event_json));
                 }

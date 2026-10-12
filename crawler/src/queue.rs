@@ -37,6 +37,10 @@ impl Queue {
         Some(url)
     }
 
+    pub fn idle(&self) -> bool {
+        self.ready.is_empty() && self.in_flight.is_empty()
+    }
+
     pub fn visit_one(&mut self, hook: &mut impl VisitHook, now: i64) -> Option<String> {
         let url = self.pop()?;
         let (visit, discovered) = hook.visit(&url, now);

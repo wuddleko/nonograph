@@ -11,8 +11,8 @@ use crate::relay_set::relay_timeout;
 use crate::render_options;
 use crate::template;
 
-use super::layout::js_seal_href;
 use super::fetch_slot::PublicFetchSlot;
+use super::layout::js_seal_href;
 use super::{not_found_html, post_description, relays_for_public_fetch};
 
 #[cfg(test)]

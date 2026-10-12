@@ -237,3 +237,43 @@ fn a_discovered_url_already_waiting_or_in_flight_is_left_alone() {
     assert_eq!(queue.pop(), None);
     assert!(!queue.push("wss://b.example", NOW));
 }
+
+#[test]
+fn idle_is_an_empty_ready_list_with_nothing_in_flight() {
+    let mut queue = empty();
+    assert!(queue.idle());
+
+    queue.push("wss://a.example", NOW);
+    queue.push("wss://b.example", NOW);
+    assert!(!queue.idle());
+
+    queue.pop();
+    queue.pop();
+    assert!(!queue.idle());
+
+    queue.finish("wss://a.example", answered(), ["wss://c.example"], NOW);
+    assert!(!queue.idle());
+
+    queue.finish("wss://b.example", missed(), Vec::<&str>::new(), NOW);
+    assert!(!queue.idle());
+
+    queue.pop();
+    assert!(!queue.idle());
+    queue.finish("wss://c.example", answered(), Vec::<&str>::new(), NOW);
+    assert!(queue.idle());
+}
+
+#[test]
+fn a_cooling_row_left_unpushed_leaves_the_queue_idle() {
+    let queue = Queue::new(Pool {
+        rows: vec![Row {
+            url: "wss://a.example".to_owned(),
+            first_seen: 1_700_000_000,
+            next_try: NOW + 15 * 60,
+            failures: 1,
+            visit: Some(missed()),
+        }],
+    });
+
+    assert!(queue.idle());
+}

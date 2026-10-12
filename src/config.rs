@@ -197,8 +197,8 @@ impl Config {
             return Ok(Config::default());
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read Config.toml: {}", e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read Config.toml: {}", e))?;
         let config: Config =
             toml::from_str(&content).map_err(|e| format!("Failed to parse Config.toml: {}", e))?;
         config.normalized_public_origin()?;

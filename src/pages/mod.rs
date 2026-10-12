@@ -16,9 +16,6 @@ pub use assets::{
     WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH,
 };
 pub(crate) use assets::{post_scripts, PAGE_JS};
-pub(crate) use layout::{
-    fill_layout, mode_href, mode_label, not_found_html, post_description,
-};
 pub(crate) use fetch_slot::{
     release_public_fetch, try_acquire_public_fetch, PublicFetchSlot, MAX_PUBLIC_FETCHES,
 };
@@ -30,6 +27,7 @@ pub(crate) use home::{
     create_location, note_and_relays_for_publish, relays_for_circuit_pass, tab_relay_timeout_ms,
     NewPost, TorCircuitsBody,
 };
+pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
 pub(crate) use sealed::{
     fetch_sealed_by_id, nojs_open_fetched, nojs_opened_page, nojs_query_secret,
     nojs_sealed_response, sealed_shell,

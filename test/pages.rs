@@ -73,7 +73,10 @@ fn nojs_home_omits_scripts() {
     assert!(field.contains("data-syntax-theme=\"ocean&quot;dark\""));
     assert!(field.contains("data-max-url-length=\"4096\""));
     assert!(field.contains("data-external-links=\"false\""));
-    assert!(!nojs.get("content_field").unwrap().contains("data-syntax-theme"));
+    assert!(!nojs
+        .get("content_field")
+        .unwrap()
+        .contains("data-syntax-theme"));
     let writemark = include_str!("../templates/writemark.js");
     let load = writemark.find("async function loadPageModule(").unwrap();
     let load_end = writemark[load..]
@@ -464,9 +467,8 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
     let input = nojs.find("class=\"relay-url-input\"").unwrap();
     assert!(publish < input);
     let first_submit = nojs.find("<button type=\"submit\"").unwrap();
-    assert!(nojs[first_submit..].starts_with(
-        "<button type=\"submit\" form=\"publishForm\">Publish</button>"
-    ));
+    assert!(nojs[first_submit..]
+        .starts_with("<button type=\"submit\" form=\"publishForm\">Publish</button>"));
     assert!(!nojs.contains("relay-add-default"));
     assert!(!nojs[first_submit..first_submit + 80].contains("formaction"));
     let add = tag_after(
@@ -772,7 +774,11 @@ fn public_origin_is_optional_and_a_bad_one_is_fatal() {
     assert!(about.contains("property=\"og:url\" content=\"https://example.com/about\""));
 
     let temp = tempfile::tempdir().unwrap();
-    for bad in ["http://example.com", "https://abcd.onion", "javascript:alert(1)"] {
+    for bad in [
+        "http://example.com",
+        "https://abcd.onion",
+        "javascript:alert(1)",
+    ] {
         let mut rejected = crate::config::Config::default();
         rejected.server.public_origin = bad.to_string();
         let error = rejected.normalized_public_origin().unwrap_err();
@@ -888,9 +894,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(html.contains("id=\"sealed-key\""));
     assert!(html.contains(">Open</button>"));
     assert!(html.contains("The key is the part of the address after #."));
-    assert!(html.contains(&format!(
-        "action=\"/s/0123456789abcdef0123/{event_id}\""
-    )));
+    assert!(html.contains(&format!("action=\"/s/0123456789abcdef0123/{event_id}\"")));
     assert!(!html.contains("/nojs/s/"));
     assert!(!html.contains("?k="));
     assert!(html.contains(">legal</a>"));
@@ -999,9 +1003,15 @@ fn nojs_sealed_page_says_the_note_opens_in_the_browser() {
     let event_id = "ab".repeat(32);
     let key = "KkKeyValue99";
     let config = crate::config::Config::default();
-    let html = wait(nojs_sealed_response(locator, &event_id, Some(key), &[], &config))
-        .unwrap()
-        .0;
+    let html = wait(nojs_sealed_response(
+        locator,
+        &event_id,
+        Some(key),
+        &[],
+        &config,
+    ))
+    .unwrap()
+    .0;
     assert!(html.contains("id=\"sealed-open\""));
     assert!(html.contains("The key does not open this note."));
     assert!(html.contains(&format!("action=\"/s/{locator}/{event_id}\"")));
@@ -1174,7 +1184,10 @@ fn nojs_sealed_route_sets_no_referrer_and_no_store() {
     assert_eq!(refused.status(), Status::SeeOther);
     sealed_route_headers(&refused);
     let location = format!("/s/0123456789abcdef0123/{event_id}");
-    assert_eq!(refused.headers().get_one("Location"), Some(location.as_str()));
+    assert_eq!(
+        refused.headers().get_one("Location"),
+        Some(location.as_str())
+    );
     let refused_body = refused.into_string().unwrap_or_default();
     assert!(!refused_body.contains("?k="));
     assert!(!refused_body.contains("does not decrypt"));
@@ -1214,7 +1227,9 @@ fn nojs_sealed_address_redirects_to_the_one_link() {
     let key = "A".repeat(43);
     let with_key = format!("/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example#{key}");
     let moved = client
-        .get(format!("/nojs/s/{locator}/{event_id}?k={key}&r=wss://hint.example"))
+        .get(format!(
+            "/nojs/s/{locator}/{event_id}?k={key}&r=wss://hint.example"
+        ))
         .dispatch();
     assert_eq!(moved.status(), Status::SeeOther);
     assert_eq!(moved.headers().get_one("Location"), Some(with_key.as_str()));
@@ -1269,7 +1284,13 @@ fn nojs_sealed_fetch_uses_a_slot_and_a_missing_event_is_not_found() {
         assert!(refused.0.contains("id=\"sealed-open\""));
         assert!(!refused.0.contains("AA"));
 
-        match wait(nojs_sealed_response(locator, &event_id, Some(&key), &[], &config)) {
+        match wait(nojs_sealed_response(
+            locator,
+            &event_id,
+            Some(&key),
+            &[],
+            &config,
+        )) {
             Err((status, rocket::Either::Left(page))) if status == Status::ServiceUnavailable => {
                 assert_eq!(page.0, "Service unavailable");
                 assert!(!page.0.contains(&key));
@@ -1279,7 +1300,13 @@ fn nojs_sealed_fetch_uses_a_slot_and_a_missing_event_is_not_found() {
         }
 
         held.pop();
-        match wait(nojs_sealed_response(locator, &event_id, Some(&key), &[], &config)) {
+        match wait(nojs_sealed_response(
+            locator,
+            &event_id,
+            Some(&key),
+            &[],
+            &config,
+        )) {
             Err((status, rocket::Either::Right(page))) if status == Status::NotFound => {
                 assert_eq!(page.0, not_found_html());
                 assert!(!page.0.contains(&key));
@@ -1384,7 +1411,9 @@ fn nojs_open_fetched_opens_the_ciphertext_with_the_secret_and_d_tag() {
     assert!(nojs_open_fetched(&secret, &moved.to_string(), &sealed.locator, &event_id).is_none());
     let mut other_id: serde_json::Value = serde_json::from_str(&event).unwrap();
     other_id["id"] = serde_json::json!("ab".repeat(32));
-    assert!(nojs_open_fetched(&secret, &other_id.to_string(), &sealed.locator, &event_id).is_none());
+    assert!(
+        nojs_open_fetched(&secret, &other_id.to_string(), &sealed.locator, &event_id).is_none()
+    );
 }
 
 #[test]
@@ -1648,10 +1677,9 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
     assert!(query.is_empty(), "{href}");
 
     let client = rocket::local::blocking::Client::tracked(
-        rocket::build().manage(config).mount(
-            "/",
-            routes![super::sealed_view, super::sealed_open],
-        ),
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::sealed_view, super::sealed_open]),
     )
     .unwrap();
 
@@ -1669,7 +1697,9 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
     assert!(opened.1.contains("<h1>Redirect title</h1>"));
     assert!(opened.1.contains("opened note body"));
     assert!(!opened.1.contains("<script"));
-    assert!(opened.1.contains(&format!("href=\"/s/{locator}/{event_id}#{key}\"")));
+    assert!(opened
+        .1
+        .contains(&format!("href=\"/s/{locator}/{event_id}#{key}\"")));
     assert!(!opened.1.contains("does not decrypt"));
 
     let mut bad_key = key.clone();
@@ -1707,9 +1737,7 @@ fn seal_link_parts(href: &str) -> (String, String, String, String) {
     let (before, key) = href.split_once('#').unwrap_or_else(|| panic!("{href}"));
     assert!(!before.contains("?k=") && !before.contains("&k="), "{href}");
     let (path, query) = before.split_once('?').unwrap_or((before, ""));
-    let rest = path
-        .strip_prefix("/s/")
-        .unwrap_or_else(|| panic!("{href}"));
+    let rest = path.strip_prefix("/s/").unwrap_or_else(|| panic!("{href}"));
     let (locator, event_id) = rest.split_once('/').unwrap_or_else(|| panic!("{href}"));
     (
         locator.to_string(),
@@ -1719,11 +1747,7 @@ fn seal_link_parts(href: &str) -> (String, String, String, String) {
     )
 }
 
-fn post_open(
-    client: &rocket::local::blocking::Client,
-    path: &str,
-    body: &str,
-) -> (Status, String) {
+fn post_open(client: &rocket::local::blocking::Client, path: &str, body: &str) -> (Status, String) {
     let response = client
         .post(path)
         .header(ContentType::Form)
@@ -1773,10 +1797,9 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
 
     NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
     let client = rocket::local::blocking::Client::tracked(
-        rocket::build().manage(config).mount(
-            "/",
-            routes![super::sealed_view, super::sealed_open],
-        ),
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::sealed_view, super::sealed_open]),
     )
     .unwrap();
 
@@ -1799,7 +1822,9 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
     assert_eq!(bare.status(), Status::NotFound);
 
     let js = client
-        .get(format!("/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example"))
+        .get(format!(
+            "/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example"
+        ))
         .dispatch();
     assert_eq!(js.status(), Status::Ok);
     let js_body = js.into_string().unwrap();
@@ -2611,7 +2636,11 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!html.contains(".nojs-file-note {"));
     let noscript = html.split("<noscript>").nth(1).unwrap();
     assert!(noscript.contains("/home-noscript.css?v={{asset_version}}"));
-    assert!(!html.split("<noscript>").next().unwrap().contains("home-noscript.css"));
+    assert!(!html
+        .split("<noscript>")
+        .next()
+        .unwrap()
+        .contains("home-noscript.css"));
     let noscript_css = include_str!("../templates/home-noscript.css");
     assert!(noscript_css.contains(".nostr-publish"));
     assert!(noscript_css.contains("display: none !important"));
@@ -2721,7 +2750,6 @@ fn nojs_create_trims_the_title_and_alias_and_keeps_the_body() {
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
 
-
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
@@ -2820,7 +2848,6 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
 
-
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
@@ -2918,7 +2945,6 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
 }
 
-
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
@@ -3011,7 +3037,6 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     );
 }
 
-
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
@@ -3056,10 +3081,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         set_nojs_test_accepted(Some(vec!["wss://relay.primal.net".to_string()]));
         let href = create_location(&form, &config, "");
         assert_eq!(href, "/nojs?error=nostr_publish_failed");
-        assert!(
-            nojs_publish_slot().is_err(),
-            "sealing took a reader slot"
-        );
+        assert!(nojs_publish_slot().is_err(), "sealing took a reader slot");
 
         held.pop();
         let href = create_location(&form, &config, "");
@@ -3070,4 +3092,3 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
     drop(held);
     busy.unwrap();
 }
-

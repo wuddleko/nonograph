@@ -1,9 +1,11 @@
+mod batch;
 mod list;
 mod queue;
 mod relay_url;
 mod schedule;
 mod visit;
 
+pub use batch::run_batch;
 pub use list::{list_urls, list_urls_with};
 pub use queue::Queue;
 pub use relay_url::canonical_public_relay;
@@ -88,3 +90,7 @@ mod queue_tests;
 #[cfg(test)]
 #[path = "../test/visit.rs"]
 mod visit_tests;
+
+#[cfg(test)]
+#[path = "../test/batch.rs"]
+mod batch_tests;

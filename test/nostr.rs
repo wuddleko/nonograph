@@ -66,11 +66,16 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     assert!(parsed["content"].as_str().unwrap().len() <= payload_max);
     let huge = sign_sealed_note(&"h".repeat(payload_max + 1), locator, 1_700_000_000);
     let huge_message = format!(r#"["EVENT","sub",{}]"#, huge.event_json);
-    assert!(sealed_from_relay_message(&huge_message, &huge.id_hex(), locator, payload_max).is_none());
     assert!(
-        sealed_from_relay_message(&message, &note.id_hex(), "ffffffffffffffff0000", payload_max)
-            .is_none()
+        sealed_from_relay_message(&huge_message, &huge.id_hex(), locator, payload_max).is_none()
     );
+    assert!(sealed_from_relay_message(
+        &message,
+        &note.id_hex(),
+        "ffffffffffffffff0000",
+        payload_max
+    )
+    .is_none());
     assert!(sealed_from_relay_message(&message, &"ab".repeat(32), locator, payload_max).is_none());
     let padded = format!(
         r#"{},"pad":"{}"}}"#,
@@ -79,7 +84,9 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     );
     let padded_message = format!(r#"["EVENT","sub",{padded}]"#);
     assert!(padded.len() > sealed_event_max(payload_max));
-    assert!(sealed_from_relay_message(&padded_message, &note.id_hex(), locator, payload_max).is_none());
+    assert!(
+        sealed_from_relay_message(&padded_message, &note.id_hex(), locator, payload_max).is_none()
+    );
     let mut bad_sig = parsed.clone();
     let sig = bad_sig["sig"].as_str().unwrap();
     let flipped = if sig.ends_with('0') {
@@ -89,7 +96,9 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     };
     bad_sig["sig"] = serde_json::Value::String(flipped);
     let bad_message = format!(r#"["EVENT","sub",{}]"#, bad_sig);
-    assert!(sealed_from_relay_message(&bad_message, &note.id_hex(), locator, payload_max).is_none());
+    assert!(
+        sealed_from_relay_message(&bad_message, &note.id_hex(), locator, payload_max).is_none()
+    );
     let clear = signed_event(
         &Keypair::new(SECP256K1, &mut thread_rng()),
         1_700_000_000,
@@ -102,7 +111,9 @@ fn a_sealed_relay_event_is_returned_unchanged() {
         "plaintext",
     );
     let clear_message = format!(r#"["EVENT","sub",{}]"#, clear.event_json);
-    assert!(sealed_from_relay_message(&clear_message, &clear.id_hex(), locator, payload_max).is_none());
+    assert!(
+        sealed_from_relay_message(&clear_message, &clear.id_hex(), locator, payload_max).is_none()
+    );
 }
 
 #[test]
