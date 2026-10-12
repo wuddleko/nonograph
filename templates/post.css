@@ -48,7 +48,7 @@
             }
             .content {
                 width: 100%;
-                max-width: 1100px;
+                max-width: 700px;
                 margin: 0 auto;
                 box-sizing: border-box;
             }
@@ -69,21 +69,17 @@
                 width: 100%;
                 height: 16px;
                 margin: 14px 0 0;
-                background: var(--ink);
-                -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 640 16' preserveAspectRatio='none'%3E%3Cpath d='M0 8 L16 3 L32 13 L48 3 L64 13 L80 3 L96 13 L112 3 L128 13 L144 3 L160 13 L176 3 L192 13 L208 3 L224 13 L240 3 L256 13 L272 3 L288 13 L304 3 L320 13 L336 3 L352 13 L368 3 L384 13 L400 3 L416 13 L432 3 L448 13 L464 3 L480 13 L496 3 L512 13 L528 3 L544 13 L560 3 L576 13 L592 3 L608 13 L624 3 L640 8' fill='none' stroke='%23000' stroke-width='1.5'/%3E%3C/svg%3E");
-                -webkit-mask-repeat: no-repeat;
-                -webkit-mask-size: 100% 16px;
-                -webkit-mask-position: left center;
-                mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 640 16' preserveAspectRatio='none'%3E%3Cpath d='M0 8 L16 3 L32 13 L48 3 L64 13 L80 3 L96 13 L112 3 L128 13 L144 3 L160 13 L176 3 L192 13 L208 3 L224 13 L240 3 L256 13 L272 3 L288 13 L304 3 L320 13 L336 3 L352 13 L368 3 L384 13 L400 3 L416 13 L432 3 L448 13 L464 3 L480 13 L496 3 L512 13 L528 3 L544 13 L560 3 L576 13 L592 3 L608 13 L624 3 L640 8' fill='none' stroke='%23000' stroke-width='1.5'/%3E%3C/svg%3E");
-                mask-repeat: no-repeat;
-                mask-size: 100% 16px;
-                mask-position: left center;
+                background: linear-gradient(var(--ink), var(--ink)) center / 100% 1.5px no-repeat;
             }
             html body:has(#sealed-title) {
-                width: min(1100px, 100%);
+                width: min(700px, 100%);
                 margin: 0 auto;
                 padding: 28px 0 24px;
                 text-align: center;
+            }
+            html body:has(#sealed-title) .container {
+                padding-left: 0;
+                padding-right: 0;
             }
             @media (max-width: 680px) {
                 html body:has(#sealed-title) {
