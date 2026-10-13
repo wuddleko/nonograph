@@ -1299,7 +1299,86 @@ pub(crate) fn schedule_relay_assignments(
     configured: Vec<String>,
     timeout: Duration,
 ) {
+    #[cfg(test)]
+    if let Some(state) = watched_assignment() {
+        let chosen = crate::relay_set::relays_to_assign(&page, &configured);
+        *state.chosen.lock().expect("relay assignment watch") = chosen;
+        let open: OpenRelay = Arc::new(|_: &str, _: Duration| {});
+        state.pass.apply(&PendingAssignment {
+            page,
+            configured,
+            timeout,
+            open,
+            circuits: Arc::new(|| None),
+        });
+        return;
+    }
     schedule_relay_assignments_via(page, configured, timeout, relay_socks());
+}
+
+#[cfg(test)]
+struct AssignmentWatchState {
+    pass: Arc<RelayPass>,
+    chosen: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ASSIGNMENT_WATCH: std::cell::RefCell<Option<Arc<AssignmentWatchState>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn watched_assignment() -> Option<Arc<AssignmentWatchState>> {
+    ASSIGNMENT_WATCH.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) struct RelayAssignmentWatch {
+    state: Arc<AssignmentWatchState>,
+}
+
+#[cfg(test)]
+impl RelayAssignmentWatch {
+    pub(crate) fn begin(seed: &[&str]) -> Self {
+        let pass = Arc::new(RelayPass::new());
+        for relay in seed {
+            pass.mark_requested(relay, Instant::now(), 1);
+        }
+        let state = Arc::new(AssignmentWatchState {
+            pass,
+            chosen: Mutex::new(Vec::new()),
+        });
+        ASSIGNMENT_WATCH.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&state)));
+        Self { state }
+    }
+
+    pub(crate) fn remembers(&self, relay: &str) -> bool {
+        self.state.pass.remembers(relay)
+    }
+
+    pub(crate) fn assigned(&self) -> Vec<String> {
+        self.state
+            .chosen
+            .lock()
+            .expect("relay assignment watch")
+            .clone()
+    }
+}
+
+#[cfg(test)]
+impl Drop for RelayAssignmentWatch {
+    fn drop(&mut self) {
+        ASSIGNMENT_WATCH.with(|slot| {
+            let clear = slot
+                .borrow()
+                .as_ref()
+                .is_some_and(|state| Arc::ptr_eq(state, &self.state));
+            if clear {
+                *slot.borrow_mut() = None;
+            }
+        });
+    }
 }
 
 fn schedule_relay_assignments_via(

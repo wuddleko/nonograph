@@ -47,14 +47,10 @@ pub fn render_about_section(relays: &[String], nojs: bool) -> String {
     html.push_str(&render_list(relays));
     if nojs {
         html.push_str(
-            "<p>Add one more with the form. It is sent with the note and kept with this draft.</p>\n\
-            <p>Operators can also set defaults in <code>Config.toml</code>.</p>\n",
+            "<p>Add one more with the form. It is sent with the note and kept with this draft.</p>\n",
         );
     } else {
         html.push_str(&render_add_relay_controls(false, "", "", false, ""));
-        html.push_str(
-            "<p>Operators can also set defaults in <code>Config.toml</code>. Yours are stored only in this browser.</p>\n",
-        );
     }
     html.push_str("</div>\n");
     html
@@ -198,7 +194,7 @@ fn render_list(relays: &[String]) -> String {
         items.push_str("</li>\n");
     }
     if items.is_empty() {
-        return "<p class=\"relay-empty\">No public relays configured.</p>\n".to_string();
+        return "<p class=\"relay-empty\">No relays.</p>\n".to_string();
     }
     format!("<ul class=\"relay-list\">\n{items}</ul>\n")
 }

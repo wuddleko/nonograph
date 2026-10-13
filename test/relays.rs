@@ -26,7 +26,7 @@ fn sidebar_lists_relay_hosts() {
 #[test]
 fn private_relays_are_omitted() {
     let html = render_sidebar_field(&["wss://127.0.0.1".to_string()], false, "", "", false, "");
-    assert!(html.contains("No public relays"));
+    assert!(html.contains("No relays."));
 }
 
 #[test]
@@ -73,11 +73,13 @@ fn nojs_sidebar_names_the_relay_field() {
     assert!(nojs_about.contains("This host seals the note and sends it to these relays over Tor."));
     assert!(nojs_about.contains("Add one more with the form."));
     assert!(nojs_about.contains("kept with this draft"));
+    assert!(!nojs_about.contains("Config.toml"));
     assert!(!nojs_about.contains("signs in your browser"));
     assert!(!nojs_about.contains("stored only in this browser"));
     assert!(!nojs_about.contains("relay-add-btn"));
     assert!(!nojs_about.contains("relay-url-input"));
-    assert!(about_html.contains("stored only in this browser"));
+    assert!(!about_html.contains("Config.toml"));
+    assert!(!about_html.contains("stored only in this browser"));
 
     let erred = render_sidebar_field(
         &relays,

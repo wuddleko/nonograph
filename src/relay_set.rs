@@ -20,14 +20,8 @@ pub(crate) fn push_public_relay(relays: &mut Vec<String>, relay: &str) {
     relays.push(relay);
 }
 
-pub(crate) fn relays_for_public_publish(
-    requested: &[String],
-    configured: &[String],
-) -> Vec<String> {
+pub(crate) fn relays_for_public_publish(requested: &[String]) -> Vec<String> {
     let mut relays = Vec::new();
-    for relay in configured {
-        push_public_relay(&mut relays, relay);
-    }
     for relay in requested {
         push_public_relay(&mut relays, relay);
     }

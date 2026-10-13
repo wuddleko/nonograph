@@ -324,6 +324,34 @@ function paintRelayList(list) {
     }
 }
 
+function postRelayList(list) {
+    const token = document.querySelector('input[name="csrf_token"]');
+    fetch("/tor-circuits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            relays: list.pinned.concat(list.dealt),
+            csrf_token: token ? token.value : "",
+        }),
+    }).catch(function () {});
+}
+
+function rememberRelayList(current, next) {
+    const same =
+        current.pinned.length === next.pinned.length &&
+        current.dealt.length === next.dealt.length &&
+        current.pinned.every(function (url, index) {
+            return url === next.pinned[index];
+        }) &&
+        current.dealt.every(function (url, index) {
+            return url === next.dealt[index];
+        });
+    if (!same) {
+        postRelayList(next);
+    }
+    return next;
+}
+
 function bindRelayActions(storage) {
     const node = document.getElementById("relay-candidates");
     let candidates = [];
@@ -340,13 +368,16 @@ function bindRelayActions(storage) {
     const reshuffle = document.querySelector(".relay-reshuffle");
     if (reshuffle) {
         reshuffle.addEventListener("click", () => {
-            list = reshuffleRelays(storage, candidates, count ? count.value : undefined);
+            list = rememberRelayList(
+                list,
+                reshuffleRelays(storage, candidates, count ? count.value : undefined),
+            );
             paintRelayList(list);
         });
     }
     if (count) {
         count.addEventListener("change", () => {
-            list = setRelayCount(storage, candidates, count.value);
+            list = rememberRelayList(list, setRelayCount(storage, candidates, count.value));
             paintRelayList(list);
         });
     }
@@ -357,7 +388,7 @@ function bindRelayActions(storage) {
         add.addEventListener("click", () => {
             const typed = input ? input.value : "";
             const result = addRelayResult(storage, typed);
-            list = result.list;
+            list = rememberRelayList(list, result.list);
             if (result.clear) {
                 if (input) {
                     input.value = "";
@@ -384,13 +415,13 @@ function bindRelayActions(storage) {
         if (!row) {
             return;
         }
-        list = removeRelay(storage, row.dataset.relay);
+        list = rememberRelayList(list, removeRelay(storage, row.dataset.relay));
         paintRelayList(list);
     });
     const clear = document.querySelector(".relay-delete-all");
     if (clear) {
         clear.addEventListener("click", () => {
-            list = deleteRelays(storage);
+            list = rememberRelayList(list, deleteRelays(storage));
             paintRelayList(list);
         });
     }

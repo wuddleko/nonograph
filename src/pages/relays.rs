@@ -53,9 +53,17 @@ pub(crate) fn write_relay_cookie(list: &RelayCookie) -> String {
 }
 
 pub(crate) fn relays_page_html(path: &Path) -> String {
+    relays_page_html_with_csrf(path, "")
+}
+
+fn relays_page_html_with_csrf(path: &Path, csrf_token: &str) -> String {
     let urls = candidates(path);
     let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
-    let body = render_dealt_rows(&dealt, &urls);
+    let mut body = render_dealt_rows(&dealt, &urls);
+    body.push_str(&format!(
+        "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\" />\n",
+        nonograph_parser::html_attr_escape(csrf_token)
+    ));
     relays_document(&body, true)
 }
 
@@ -146,8 +154,12 @@ fn form_csrf_token(config: &Config, cookies: &CookieJar<'_>) -> String {
 }
 
 #[get("/relays")]
-pub fn relays_page() -> content::RawHtml<String> {
-    content::RawHtml(relays_page_html(&pool_path(Path::new("content"))))
+pub fn relays_page(cookies: &CookieJar<'_>, config: &State<Config>) -> content::RawHtml<String> {
+    let token = form_csrf_token(config, cookies);
+    content::RawHtml(relays_page_html_with_csrf(
+        &pool_path(Path::new("content")),
+        &token,
+    ))
 }
 
 #[derive(FromForm)]
@@ -275,6 +287,21 @@ impl Drop for RelayContentGuard {
     }
 }
 
+fn save_relay_list(cookies: &CookieJar<'_>, list: &RelayCookie, config: &Config) {
+    cookies.add(relay_list_cookie(&write_relay_cookie(list)));
+    let relays = list
+        .pinned
+        .iter()
+        .cloned()
+        .chain(list.dealt.iter().cloned())
+        .collect();
+    crate::nostr::schedule_relay_assignments(
+        relays,
+        Vec::new(),
+        crate::relay_set::relay_timeout(config),
+    );
+}
+
 fn request_csrf_cookie(cookies: &CookieJar<'_>) -> String {
     cookies
         .get(csrf::COOKIE_NAME)
@@ -318,17 +345,17 @@ pub fn nojs_relays_update(
     } else if !form.remove.is_empty() {
         let next = drop_relay(&list, &form.remove);
         if next != list {
-            cookies.add(relay_list_cookie(&write_relay_cookie(&next)));
+            save_relay_list(cookies, &next, config);
         }
         list = next;
     } else if form.action == "delete" {
         list = RelayCookie::empty();
-        cookies.add(relay_list_cookie(&write_relay_cookie(&list)));
+        save_relay_list(cookies, &list, config);
     } else if form.action == "add" {
         match pin_relay(&list, &form.relay) {
             Ok(next) => {
                 if next != list {
-                    cookies.add(relay_list_cookie(&write_relay_cookie(&next)));
+                    save_relay_list(cookies, &next, config);
                 }
                 list = next;
             }
@@ -337,13 +364,13 @@ pub fn nojs_relays_update(
     } else if form.action == "count" {
         let next = set_relay_count(&pool, &list, &form.count);
         if next != list {
-            cookies.add(relay_list_cookie(&write_relay_cookie(&next)));
+            save_relay_list(cookies, &next, config);
         }
         list = next;
     } else if form.action == "reshuffle" {
         let next = reshuffle_relays(&pool, &list, &form.count);
         if next != list {
-            cookies.add(relay_list_cookie(&write_relay_cookie(&next)));
+            save_relay_list(cookies, &next, config);
         }
         list = next;
     }
@@ -819,6 +846,66 @@ mod tests {
     }
 
     #[test]
+    fn a_form_assigns_the_relays_that_remain_and_drops_the_one_that_left() {
+        let mut config = crate::config::Config::default();
+        config.security.csrf_protection_enabled = false;
+        config.nostr.relays = vec!["wss://config.example".to_string()];
+        let seeded = RelayCookie {
+            pinned: vec!["wss://kept.example".to_string()],
+            dealt: vec![
+                "wss://stay.example".to_string(),
+                "wss://left.example".to_string(),
+            ],
+        };
+        let watch = crate::nostr::RelayAssignmentWatch::begin(&[
+            "wss://kept.example",
+            "wss://stay.example",
+            "wss://left.example",
+        ]);
+        let client =
+            rocket::local::blocking::Client::untracked(rocket::build().manage(config).mount(
+                "/",
+                routes![super::nojs_relays_page, super::nojs_relays_update],
+            ))
+            .unwrap();
+        let updated = client
+            .post("/nojs/relays")
+            .cookie((RELAY_LIST_COOKIE, write_relay_cookie(&seeded)))
+            .header(ContentType::Form)
+            .body("remove=wss%3A%2F%2Fleft.example")
+            .dispatch();
+        assert_eq!(updated.status(), Status::Ok);
+        let saved = updated
+            .cookies()
+            .get(RELAY_LIST_COOKIE)
+            .expect("remove writes the cookie")
+            .value()
+            .to_string();
+        assert_eq!(
+            read_relay_cookie(Some(&saved)),
+            RelayCookie {
+                pinned: vec!["wss://kept.example".to_string()],
+                dealt: vec!["wss://stay.example".to_string()],
+            }
+        );
+        let body = updated.into_string().unwrap();
+        assert!(body.contains("<li data-relay=\"wss://kept.example\">"));
+        assert!(body.contains("<li data-relay=\"wss://stay.example\">"));
+        assert!(!body.contains("<li data-relay=\"wss://left.example\">"));
+        assert_eq!(
+            watch.assigned(),
+            vec![
+                "wss://kept.example".to_string(),
+                "wss://stay.example".to_string(),
+            ]
+        );
+        assert!(watch.remembers("wss://kept.example"));
+        assert!(watch.remembers("wss://stay.example"));
+        assert!(!watch.remembers("wss://left.example"));
+        assert!(!watch.remembers("wss://config.example"));
+    }
+
+    #[test]
     fn a_form_lowers_to_the_pins_and_raises_without_passing_six() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-pool.json");
@@ -1213,6 +1300,168 @@ if (cleared.getItem("nonograph_relays") !== stored) {
                 "{name} is not called with the store"
             );
         }
+    }
+
+    #[test]
+    fn a_script_posts_the_new_list_and_leaves_out_a_relay_that_was_removed() {
+        let program = format!(
+            "{source}\n{checks}\n",
+            source = include_str!("../../templates/relays.js"),
+            checks = r#"
+const nodes = [];
+function hasClass(node, name) {
+    return (" " + (node.className || "") + " ").indexOf(" " + name + " ") !== -1;
+}
+function selectorMatches(node, selector) {
+    if (selector.charAt(0) === ".") {
+        return hasClass(node, selector.slice(1));
+    }
+    if (selector === "[data-relay]") {
+        return typeof node.dataset.relay === "string";
+    }
+    if (selector === "input[name=\"csrf_token\"]") {
+        return node.tag === "input" && node.name === "csrf_token";
+    }
+    return false;
+}
+function el(tag) {
+    const node = {
+        tag: tag,
+        className: "",
+        id: "",
+        name: "",
+        value: "",
+        textContent: "",
+        dataset: {},
+        children: [],
+        parentNode: null,
+        listeners: {},
+        setAttribute() {},
+        append() {
+            for (let index = 0; index < arguments.length; index += 1) {
+                arguments[index].parentNode = node;
+                node.children.push(arguments[index]);
+            }
+        },
+        insertBefore(child, before) {
+            child.parentNode = node;
+            const at = node.children.indexOf(before);
+            if (at === -1) {
+                node.children.push(child);
+            } else {
+                node.children.splice(at, 0, child);
+            }
+        },
+        remove() {
+            if (!node.parentNode) {
+                return;
+            }
+            node.parentNode.children = node.parentNode.children.filter(function (child) {
+                return child !== node;
+            });
+        },
+        replaceChildren() {
+            node.children = [];
+        },
+        closest(selector) {
+            let current = node;
+            while (current) {
+                if (selectorMatches(current, selector)) {
+                    return current;
+                }
+                current = current.parentNode;
+            }
+            return null;
+        },
+        addEventListener(type, fn) {
+            node.listeners[type] = fn;
+        },
+    };
+    nodes.push(node);
+    return node;
+}
+const body = el("body");
+body.className = "relays-page";
+const controls = el("div");
+controls.className = "relay-deal-controls";
+body.append(controls);
+const count = el("input");
+count.className = "relay-count";
+controls.append(count);
+const csrf = el("input");
+csrf.name = "csrf_token";
+csrf.value = "token";
+body.append(csrf);
+const candidates = el("script");
+candidates.id = "relay-candidates";
+candidates.textContent = "[]";
+var document = {
+    createElement(tag) {
+        return el(tag);
+    },
+    getElementById(id) {
+        for (let index = 0; index < nodes.length; index += 1) {
+            if (nodes[index].id === id) {
+                return nodes[index];
+            }
+        }
+        return null;
+    },
+    querySelector(selector) {
+        for (let index = 0; index < nodes.length; index += 1) {
+            if (selectorMatches(nodes[index], selector)) {
+                return nodes[index];
+            }
+        }
+        return null;
+    },
+    addEventListener(type, fn) {
+        body.addEventListener(type, fn);
+    },
+};
+const memory = {
+    values: {},
+    getItem(key) {
+        return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
+    },
+    setItem(key, value) {
+        this.values[key] = String(value);
+    },
+};
+writeRelayList(memory, {
+    pinned: ["wss://kept.example"],
+    dealt: ["wss://stay.example", "wss://left.example"],
+});
+let posted = null;
+globalThis.fetch = async function (url, options) {
+    posted = { url: url, body: JSON.parse(options.body) };
+    return { ok: true };
+};
+bindRelayActions(memory);
+if (posted !== null) {
+    throw new Error("opening the page posted a list");
+}
+const button = nodes.find(function (node) {
+    return (
+        node.className === "relay-remove" &&
+        node.parentNode &&
+        node.parentNode.dataset.relay === "wss://left.example"
+    );
+});
+if (!button) {
+    throw new Error("missing remove button");
+}
+body.listeners.click({ target: button });
+const expected = ["wss://kept.example", "wss://stay.example"];
+if (!posted || posted.url !== "/tor-circuits" || JSON.stringify(posted.body.relays) !== JSON.stringify(expected)) {
+    throw new Error(JSON.stringify(posted));
+}
+if (posted.body.relays.some(function (relay) { return relay.indexOf("left.example") !== -1; })) {
+    throw new Error(JSON.stringify(posted.body.relays));
+}
+"#,
+        );
+        run_javascript("nonograph-relay-paths", &program);
     }
 
     #[test]

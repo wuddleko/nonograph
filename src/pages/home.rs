@@ -43,7 +43,7 @@ fn home_content_field(
 
 fn split_home_error(error: Option<&str>) -> (Option<&str>, &str) {
     match error {
-        Some(code @ ("relay_required" | "relay_invalid" | "relay_configured")) => (None, code),
+        Some(code @ ("relay_required" | "relay_invalid" | "relay_listed")) => (None, code),
         other => (other, ""),
     }
 }
@@ -59,7 +59,7 @@ pub(super) fn home_error_message(error: Option<&str>) -> String {
         "alias_too_long" => "The alias is too long.".to_string(),
         "relay_required" => "Enter a relay URL.".to_string(),
         "relay_invalid" => "Use a public wss:// relay URL.".to_string(),
-        "relay_configured" => "That relay is already configured on this site.".to_string(),
+        "relay_listed" => "That relay is already in the list.".to_string(),
         "nostr_publish_failed" => "Publishing failed. Try again.".to_string(),
         _ => "Something went wrong. Try again.".to_string(),
     }
@@ -146,11 +146,7 @@ fn home_form_context(
         "content_field".to_string(),
         home_content_field(nojs, &max_length, draft.content, &render_options(config)),
     );
-    context.insert(
-        "nostr_relays".to_string(),
-        serde_json::to_string(&relays_for_public_fetch(&[], &config.nostr.relays))
-            .unwrap_or_else(|_| "[]".to_string()),
-    );
+    context.insert("nostr_relays".to_string(), "[]".to_string());
     context.insert(
         "nostr_timeout_ms".to_string(),
         tab_relay_timeout_ms(config.nostr.timeout_secs).to_string(),
@@ -201,11 +197,15 @@ fn home_form_context(
             super::layout::theme_boot(version)
         },
     );
-    let relays = relays_for_public_fetch(&[], &config.nostr.relays);
+    let listed = if nojs {
+        nojs_saved_relays(cookies)
+    } else {
+        Vec::new()
+    };
     context.insert(
         "relays_sidebar".to_string(),
         crate::relays::render_sidebar_field(
-            &relays,
+            &listed,
             nojs,
             draft.saved_relay,
             draft.typed_relay,
@@ -215,7 +215,7 @@ fn home_form_context(
     );
     context.insert(
         "relays_section".to_string(),
-        crate::relays::render_about_section(&relays, nojs),
+        crate::relays::render_about_section(&listed, nojs),
     );
     context.insert(
         "relay_field".to_string(),
@@ -231,6 +231,17 @@ fn home_form_context(
         super::layout::join_public_origin(&origin, "/"),
     );
     context
+}
+
+fn nojs_saved_relays(cookies: Option<&CookieJar<'_>>) -> Vec<String> {
+    let saved = cookies.and_then(|jar| {
+        jar.get(super::relays::RELAY_LIST_COOKIE)
+            .map(|cookie| cookie.value().to_string())
+    });
+    let Some(list) = super::relays::saved_relay_cookie(saved.as_deref()) else {
+        return Vec::new();
+    };
+    list.pinned.into_iter().chain(list.dealt).collect()
 }
 
 fn about_durability(nojs: bool) -> &'static str {
@@ -353,7 +364,7 @@ fn create_location_with_cookie(
     if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
         return format!("{home}?error=relay_invalid");
     }
-    if relays_for_nojs_write(relay_cookie, relay, &config.nostr.relays).is_none() {
+    if relays_for_nojs_write(relay_cookie, relay).is_none() {
         return format!("{home}?error=nostr_publish_failed");
     }
     match publish_nojs_note_with_cookie(form, config, relay_cookie) {
@@ -383,7 +394,7 @@ fn publish_nojs_note_with_cookie(
     config: &Config,
     relay_cookie: Option<&str>,
 ) -> Result<NojsPublished, &'static str> {
-    let relays = relays_for_nojs_write(relay_cookie, nojs_chosen_relay(form), &config.nostr.relays)
+    let relays = relays_for_nojs_write(relay_cookie, nojs_chosen_relay(form))
         .ok_or("nostr_publish_failed")?;
     #[cfg(test)]
     super::nojs_test::note_nojs_publish_relays(&relays);
@@ -450,11 +461,7 @@ pub(super) fn nojs_sealed_location(
     if kept.is_empty() {
         return None;
     }
-    let instance = relays_for_public_fetch(&[], configured);
-    let hints = kept
-        .into_iter()
-        .filter(|relay| !instance.iter().any(|have| have == relay))
-        .collect::<Vec<_>>();
+    let hints = share_link_hints(&published.accepted, configured);
     Some(super::layout::js_seal_href(
         &published.locator,
         &published.event_id,
@@ -475,28 +482,23 @@ pub(super) fn nojs_chosen_relay(form: &NewPost) -> &str {
     ""
 }
 
-fn relays_for_nojs_write(
-    relay_cookie: Option<&str>,
-    relay: &str,
-    configured: &[String],
-) -> Option<Vec<String>> {
-    if let Some(list) = super::relays::saved_relay_cookie(relay_cookie) {
-        let mut relays = Vec::new();
-        for url in list.pinned.iter().chain(list.dealt.iter()) {
-            push_public_relay(&mut relays, url);
-        }
-        if relays.is_empty() {
-            None
-        } else {
-            Some(relays)
-        }
-    } else {
-        nojs_publish_relays(relay, configured)
-    }
+fn relays_for_nojs_write(relay_cookie: Option<&str>, relay: &str) -> Option<Vec<String>> {
+    let saved = super::relays::saved_relay_cookie(relay_cookie)
+        .map(|list| {
+            list.pinned
+                .into_iter()
+                .chain(list.dealt)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    nojs_publish_relays(relay, &saved)
 }
 
-pub(super) fn nojs_publish_relays(relay: &str, configured: &[String]) -> Option<Vec<String>> {
-    let mut relays = relays_for_public_fetch(&[], configured);
+pub(super) fn nojs_publish_relays(relay: &str, saved: &[String]) -> Option<Vec<String>> {
+    let mut relays = Vec::new();
+    for url in saved {
+        push_public_relay(&mut relays, url);
+    }
     if let Some(relay) = crate::nostr::canonical_public_relay(relay) {
         if !relays.iter().any(|have| have == &relay) {
             relays.insert(0, relay);
@@ -518,6 +520,7 @@ fn nojs_relay_add_status(
     csrf_token: &str,
     config: &Config,
     csrf_cookie: &str,
+    saved: &[String],
 ) -> (Option<&'static str>, bool) {
     if let Some(error) = csrf_failure(config, csrf_token, csrf_cookie) {
         return (Some(error), false);
@@ -528,11 +531,11 @@ fn nojs_relay_add_status(
     if crate::nostr::canonical_public_relay(relay).is_none() {
         return (Some("relay_invalid"), false);
     }
-    if relays_for_public_fetch(&[], &config.nostr.relays)
+    if saved
         .iter()
         .any(|have| crate::nostr::same_public_relay(have, relay))
     {
-        return (Some("relay_configured"), false);
+        return (Some("relay_listed"), false);
     }
     (None, true)
 }
@@ -573,13 +576,14 @@ pub(super) fn render_nojs_draft(
     cookies: Option<&CookieJar<'_>>,
     csrf_cookie: &str,
 ) -> content::RawHtml<String> {
+    let saved = nojs_saved_relays(cookies);
     let mut form = form.clone();
     if let Some(error) = csrf_failure(config, &form.csrf_token, csrf_cookie) {
         return render_nojs_form(
             config,
             &form,
             Some(error),
-            nojs_lists_extra_relay(form.relay.trim(), config),
+            nojs_lists_extra_relay(form.relay.trim(), &saved),
             false,
             cookies,
         );
@@ -589,8 +593,13 @@ pub(super) fn render_nojs_draft(
         return render_nojs_form(config, &form, None, false, false, cookies);
     }
     form.relay_box = form.relay_box.trim().to_string();
-    let (error, accept) =
-        nojs_relay_add_status(&form.relay_box, &form.csrf_token, config, csrf_cookie);
+    let (error, accept) = nojs_relay_add_status(
+        &form.relay_box,
+        &form.csrf_token,
+        config,
+        csrf_cookie,
+        &saved,
+    );
     if accept {
         form.relay = crate::nostr::canonical_public_relay(&form.relay_box)
             .unwrap_or_else(|| form.relay_box.clone());
@@ -601,7 +610,7 @@ pub(super) fn render_nojs_draft(
         config,
         &form,
         error,
-        nojs_lists_extra_relay(form.relay.trim(), config),
+        nojs_lists_extra_relay(form.relay.trim(), &saved),
         false,
         cookies,
     )
@@ -616,11 +625,11 @@ pub(super) fn nojs_error_code(location: &str) -> Option<&str> {
     }
 }
 
-fn nojs_lists_extra_relay(relay: &str, config: &Config) -> bool {
+fn nojs_lists_extra_relay(relay: &str, saved: &[String]) -> bool {
     crate::nostr::canonical_public_relay(relay).is_some_and(|relay| {
-        !relays_for_public_fetch(&[], &config.nostr.relays)
+        !saved
             .iter()
-            .any(|have| have == &relay)
+            .any(|have| crate::nostr::same_public_relay(have, &relay))
     })
 }
 
@@ -634,7 +643,7 @@ pub(super) fn nojs_publish_failure_page(
         config,
         form,
         Some(error),
-        nojs_lists_extra_relay(form.relay.trim(), config),
+        nojs_lists_extra_relay(form.relay.trim(), &nojs_saved_relays(cookies)),
         true,
         cookies,
     )
@@ -703,6 +712,22 @@ pub struct NostrPublishBody {
 pub struct NostrPublishResult {
     pub(super) locator: String,
     pub(super) accepted: Vec<String>,
+    pub(super) hints: Vec<String>,
+}
+
+pub(super) fn share_link_hints(accepted: &[String], configured: &[String]) -> Vec<String> {
+    let instance = relays_for_public_fetch(&[], configured);
+    let mut hints = Vec::new();
+    for relay in accepted {
+        let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
+            continue;
+        };
+        if instance.iter().any(|have| have == &relay) {
+            continue;
+        }
+        push_public_relay(&mut hints, &relay);
+    }
+    hints
 }
 
 pub(crate) fn note_and_relays_for_publish(
@@ -719,14 +744,19 @@ pub(crate) fn note_and_relays_for_publish(
         config.limits.alias_max_length,
         config.limits.content_max_length,
     )?;
-    let relays = relays_for_public_publish(&body.relays, &config.nostr.relays);
+    let relays = relays_for_public_publish(&body.relays);
     if relays.is_empty() {
         return None;
     }
     Some((note, relays, locator))
 }
 
-pub(super) fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
+pub(super) fn publish_result(
+    locator: String,
+    accepted: Vec<String>,
+    configured: &[String],
+) -> NostrPublishResult {
+    let hints = share_link_hints(&accepted, configured);
     let locator = if accepted
         .iter()
         .any(|relay| crate::nostr::canonical_public_relay(relay).is_some())
@@ -735,7 +765,11 @@ pub(super) fn publish_result(locator: String, accepted: Vec<String>) -> NostrPub
     } else {
         String::new()
     };
-    NostrPublishResult { locator, accepted }
+    NostrPublishResult {
+        locator,
+        accepted,
+        hints,
+    }
 }
 
 #[get("/tor-circuits")]
@@ -778,7 +812,7 @@ pub fn assign_tor_circuits(
         return Status::BadRequest;
     };
     let timeout = relay_timeout(config);
-    crate::nostr::schedule_relay_assignments(relays, config.nostr.relays.clone(), timeout);
+    crate::nostr::schedule_relay_assignments(relays, Vec::new(), timeout);
     Status::NoContent
 }
 
@@ -798,7 +832,7 @@ pub async fn nostr_publish(
         let (note, relays, locator) = note_and_relays_for_publish(&body, &config, &csrf_cookie)?;
         let timeout = relay_timeout(&config);
         let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
-        Some(publish_result(locator, accepted))
+        Some(publish_result(locator, accepted, &config.nostr.relays))
     })
     .await
     {

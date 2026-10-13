@@ -100,6 +100,7 @@ export async function publishPublicNote({
         }
         const result = await response.json();
         const accepted = Array.isArray(result.accepted) ? result.accepted : [];
+        const hints = Array.isArray(result.hints) ? result.hints : [];
         const locator = typeof result.locator === "string" ? result.locator : "";
         if (!accepted.length || locator !== sealed.locator) {
             throw new Error("Publishing failed");
@@ -107,6 +108,7 @@ export async function publishPublicNote({
         return {
             event,
             accepted,
+            hints,
             locator,
             key: bytesToBase64Url(sealed.secret),
         };

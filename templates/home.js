@@ -1,3 +1,75 @@
+function savedRelayUrls(storage) {
+    try {
+        const raw = storage.getItem("nonograph_relays");
+        if (raw == null || raw === "") {
+            return [];
+        }
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") {
+            return [];
+        }
+        const pinned = Array.isArray(parsed.pinned) ? parsed.pinned : [];
+        const dealt = Array.isArray(parsed.dealt) ? parsed.dealt : [];
+        const urls = [];
+        for (let index = 0; index < pinned.length; index += 1) {
+            if (typeof pinned[index] === "string" && pinned[index]) {
+                urls.push(pinned[index]);
+            }
+        }
+        for (let index = 0; index < dealt.length; index += 1) {
+            if (typeof dealt[index] === "string" && dealt[index]) {
+                urls.push(dealt[index]);
+            }
+        }
+        return urls;
+    } catch (error) {
+        return [];
+    }
+}
+
+function paintSavedRelayLists(doc, storage) {
+    const urls = savedRelayUrls(storage);
+    const roots = [doc.querySelector("#sidebar-relays"), doc.querySelector("#relays")];
+    for (let index = 0; index < roots.length; index += 1) {
+        const root = roots[index];
+        if (!root || urls.length === 0) {
+            continue;
+        }
+        let list = null;
+        const lists = root.querySelectorAll(".relay-list");
+        for (let item = 0; item < lists.length; item += 1) {
+            if (!lists[item].classList.contains("relay-list-user")) {
+                list = lists[item];
+                break;
+            }
+        }
+        const empty = root.querySelector(".relay-empty");
+        if (empty) {
+            empty.remove();
+        }
+        if (!list) {
+            list = doc.createElement("ul");
+            list.className = "relay-list";
+            const anchor = root.querySelector(".relay-add");
+            if (anchor) {
+                root.insertBefore(list, anchor);
+            } else {
+                root.append(list);
+            }
+        }
+        list.replaceChildren();
+        for (let item = 0; item < urls.length; item += 1) {
+            const row = doc.createElement("li");
+            row.dataset.relay = urls[item];
+            const name = doc.createElement("span");
+            name.className = "relay-name";
+            name.textContent = urls[item].replace(/^wss:\/\//, "");
+            row.append(name);
+            list.append(row);
+        }
+    }
+}
+
             const editor = document.querySelector('writemark-editor[name="content"]');
             const charCount = document.getElementById("charCount");
             const mobileCharCount = document.getElementById("mobileCharCount");
@@ -10,8 +82,8 @@
             let nostrLoading;
 
             function extraRelayLimit() {
-                const configured = Math.min(serverRelays().length, maxFetchRelays);
-                return maxFetchRelays - configured;
+                const taken = Math.min(savedRelayUrls(localStorage).length, maxFetchRelays);
+                return maxFetchRelays - taken;
             }
 
             function readExtraRelays() {
@@ -40,18 +112,11 @@
                 localStorage.setItem(EXTRA_RELAYS_KEY, JSON.stringify(relays));
             }
 
-            function serverRelays() {
-                try {
-                    return JSON.parse(form.dataset.relays || "[]");
-                } catch (error) {
-                    return [];
-                }
-            }
-
             function mergePublishRelays() {
+                const saved = savedRelayUrls(localStorage);
+                const seen = new Set(saved.map((relay) => relayKey(relay)));
                 const merged = [];
-                const seen = new Set();
-                for (const relay of [...serverRelays(), ...loadExtraRelays()]) {
+                for (const relay of loadExtraRelays()) {
                     const key = relayKey(relay);
                     if (seen.has(key)) {
                         continue;
@@ -59,7 +124,7 @@
                     seen.add(key);
                     merged.push(relay);
                 }
-                return merged;
+                return merged.concat(saved);
             }
 
             function hasAnyPublishRelay() {
@@ -225,15 +290,12 @@
                 }
                 const extra = loadExtraRelays();
                 const key = relayKey(value);
-                if (extra.some((entry) => relayKey(entry) === key)) {
+                if (
+                    extra.some((entry) => relayKey(entry) === key) ||
+                    savedRelayUrls(localStorage).some((entry) => relayKey(entry) === key)
+                ) {
                     if (errorEl) {
                         errorEl.textContent = "Already in your list.";
-                    }
-                    return;
-                }
-                if (serverRelays().some((entry) => relayKey(entry) === key)) {
-                    if (errorEl) {
-                        errorEl.textContent = "That relay is already configured on this site.";
                     }
                     return;
                 }
@@ -288,6 +350,7 @@
                 void sendRelayList();
             });
 
+            paintSavedRelayLists(document, localStorage);
             renderExtraRelayLists();
             let relayListSending = false;
             let relayListDirty = false;
@@ -408,17 +471,14 @@
                 }
             }
 
-            function acceptedRelayHints(accepted) {
-                const instance = new Set(
-                    relaysForPublicPublish(serverRelays()).map((relay) => relayKey(relay)),
-                );
+            function acceptedRelayHints(relays) {
                 const hints = [];
-                for (const relay of accepted || []) {
+                for (const relay of relays || []) {
                     if (typeof relay !== "string" || !publicRelayUrl(relay)) {
                         continue;
                     }
                     const key = relayKey(relay);
-                    if (instance.has(key) || hints.includes(key)) {
+                    if (hints.includes(key)) {
                         continue;
                     }
                     hints.push(key);
@@ -427,7 +487,7 @@
             }
 
             function openedSealHref(result) {
-                const query = acceptedRelayHints(result.accepted)
+                const query = acceptedRelayHints(result.hints)
                     .map((relay) => "r=" + encodeURIComponent(relay))
                     .join("&");
                 return (

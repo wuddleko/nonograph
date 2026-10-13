@@ -364,7 +364,8 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("method=\"get\""));
     assert!(nojs.contains("method=\"post\""));
     assert_eq!(js.matches("On Nostr").count(), 1); // About copy
-    assert!(js.contains("stored only in this browser"));
+    assert!(!js.contains("Config.toml"));
+    assert!(!js.contains("stored only in this browser"));
     assert!(!js.contains("class=\"nostr-publish\""));
     assert_eq!(js.matches(">Publish</button>").count(), 2);
     assert!(js.contains("type=\"submit\""));
@@ -408,7 +409,11 @@ fn rendered_home_switches_the_content_field() {
         .unwrap();
     let nojs_help = &nojs[nojs_help_at..];
     let nojs_help = &nojs_help[..nojs_help.find("</div>").unwrap()];
-    assert!(nojs_help.contains("relay.primal.net"));
+    assert!(nojs.contains("data-relays=\"[]\""));
+    assert!(nojs_help.contains("No relays."));
+    assert!(!nojs_help.contains("No public relays configured."));
+    assert!(!nojs_help.contains("relay.primal.net"));
+    assert!(!nojs_help.contains("Config.toml"));
     assert!(!nojs_help.contains("relay-add-btn"));
     assert!(!nojs_help.contains("relay-url-input"));
     assert!(!nojs_help.contains("signs in your browser"));
@@ -429,7 +434,10 @@ fn rendered_home_switches_the_content_field() {
     assert!(!js_relay.contains("name="));
     assert!(!js_relay.contains("form="));
     assert!(js.contains("sidebar-relays"));
-    assert!(js.contains("relay.primal.net"));
+    assert!(!js.contains("relay.primal.net"));
+    assert!(js.contains("No relays."));
+    assert!(!js.contains("No public relays configured."));
+    assert!(!js.contains("Config.toml"));
 }
 
 #[test]
@@ -575,25 +583,24 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     assert!(!rejected_sidebar.contains("<li data-relay=\"wss://127.0.0.1\">"));
 
     form.relay_box = "wss://relay.primal.net".to_string();
-    let configured = render_nojs_draft(&config, &form, None, "").0;
-    let configured_sidebar = &configured[configured.find("class=\"sidebar-relays\"").unwrap()..];
-    assert_eq!(
-        relay_field_error(&configured),
-        "That relay is already configured on this site."
-    );
-    assert_eq!(form_error_text(&configured), "");
-    assert!(configured_sidebar.contains("value=\"wss://relay.primal.net\""));
-    assert!(configured_sidebar.contains("<li data-relay=\"wss://nos.lol\">"));
+    let added = render_nojs_draft(&config, &form, None, "").0;
+    let added_sidebar = &added[added.find("class=\"sidebar-relays\"").unwrap()..];
+    assert_eq!(relay_field_error(&added), "");
+    assert_eq!(form_error_text(&added), "");
+    assert!(added_sidebar.contains("<li data-relay=\"wss://relay.primal.net\">"));
+    assert!(!added_sidebar.contains("data-relay=\"wss://nos.lol\""));
+    assert!(publish_form(&added)
+        .contains("<input type=\"hidden\" name=\"relay\" value=\"wss://relay.primal.net\" />"));
 
+    form.relay = "wss://nos.lol".to_string();
     form.relay_box = "wss://Relay.Primal.net/".to_string();
     let spelled = render_nojs_draft(&config, &form, None, "").0;
-    assert_eq!(
-        relay_field_error(&spelled),
-        "That relay is already configured on this site."
-    );
+    assert_eq!(relay_field_error(&spelled), "");
     assert_eq!(form_error_text(&spelled), "");
-    assert!(spelled.contains("value=\"wss://Relay.Primal.net/\""));
-    assert!(spelled.contains("<li data-relay=\"wss://nos.lol\">"));
+    assert!(spelled.contains("<li data-relay=\"wss://relay.primal.net\">"));
+    assert!(publish_form(&spelled)
+        .contains("<input type=\"hidden\" name=\"relay\" value=\"wss://relay.primal.net\" />"));
+    assert!(!relay_url_input_after(&spelled, "sidebar-relays").contains("value="));
 
     form.relay.clear();
     form.relay_box = "wss://Damus.io/".to_string();
@@ -631,6 +638,65 @@ fn nojs_add_relay_lists_it_and_keeps_the_draft() {
     assert!(expired_sidebar.contains("<li data-relay=\"wss://nos.lol\">"));
     assert!(expired_sidebar.contains("value=\"wss://damus.io\""));
     assert!(!expired_sidebar.contains("<li data-relay=\"wss://damus.io\">"));
+}
+
+#[test]
+fn nojs_add_refuses_a_saved_relay_and_accepts_a_configured_name() {
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays = vec!["wss://config.example".to_string()];
+    let saved = super::relays::write_relay_cookie(&super::relays::RelayCookie {
+        pinned: vec!["wss://pin.example".to_string()],
+        dealt: vec!["wss://dealt.example".to_string()],
+    });
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::nojs_add_relay]),
+    )
+    .unwrap();
+    let refused = client
+        .post("/nojs/relay")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved.clone()))
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=&relay_box=wss%3A%2F%2FPin.Example%2F")
+        .dispatch();
+    assert_eq!(refused.status(), Status::Ok);
+    let html = refused.into_string().unwrap();
+    let sidebar = region(&html, "id=\"sidebar-relays\"", "class=\"footer\"");
+    assert!(sidebar.contains("That relay is already in the list."));
+    assert_eq!(
+        sidebar.matches("data-relay=\"wss://pin.example\"").count(),
+        1
+    );
+    assert!(sidebar.contains("value=\"wss://Pin.Example/\""));
+
+    let accepted = client
+        .post("/nojs/relay")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=&relay_box=wss%3A%2F%2Fconfig.example")
+        .dispatch();
+    assert_eq!(accepted.status(), Status::Ok);
+    let html = accepted.into_string().unwrap();
+    let sidebar = region(&html, "id=\"sidebar-relays\"", "class=\"footer\"");
+    let help = region(
+        &html,
+        "<div class=\"help-section\" id=\"relays\">",
+        "</div>",
+    );
+    let pin = sidebar.find("data-relay=\"wss://pin.example\"").unwrap();
+    let dealt = sidebar.find("data-relay=\"wss://dealt.example\"").unwrap();
+    let configured = sidebar.find("data-relay=\"wss://config.example\"").unwrap();
+    assert!(pin < dealt && dealt < configured, "{sidebar}");
+    assert_eq!(
+        sidebar
+            .matches("data-relay=\"wss://config.example\"")
+            .count(),
+        1
+    );
+    assert!(!help.contains("config.example"));
+    assert!(!sidebar.contains("That relay is already in the list."));
 }
 
 fn form_error_text(html: &str) -> &str {
@@ -1623,7 +1689,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
         content: "hi".to_string(),
         alias: "Ada".to_string(),
         csrf_token: String::new(),
-        relay: String::new(),
+        relay: instance.clone(),
         relay_box: String::new(),
         relay_remove: false,
     };
@@ -1699,7 +1765,7 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
         content: "opened note body".to_string(),
         alias: "Ada".to_string(),
         csrf_token: String::new(),
-        relay: String::new(),
+        relay: instance.clone(),
         relay_box: String::new(),
         relay_remove: false,
     };
@@ -2013,7 +2079,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
         content: "b".repeat(64),
         alias: "Ada".to_string(),
         csrf_token: String::new(),
-        relay: String::new(),
+        relay: "wss://nojs-seal.invalid".to_string(),
         relay_box: String::new(),
         relay_remove: false,
     };
@@ -2035,7 +2101,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
         content: "\u{1}".repeat(109_215),
         alias: String::new(),
         csrf_token: String::new(),
-        relay: String::new(),
+        relay: "wss://nojs-seal.invalid".to_string(),
         relay_box: String::new(),
         relay_remove: false,
     };
@@ -2064,12 +2130,20 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
     config.nostr.relays = vec!["wss://relay.damus.io".to_string()];
     let body = NostrPublishBody {
         event,
-        relays: vec!["wss://127.0.0.1".to_string()],
+        relays: vec![
+            "wss://pin.example".to_string(),
+            "wss://127.0.0.1".to_string(),
+            "wss://dealt.example".to_string(),
+        ],
         csrf_token: String::new(),
     };
+    let saved = vec![
+        "wss://pin.example".to_string(),
+        "wss://dealt.example".to_string(),
+    ];
     let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config, "").unwrap();
     assert_eq!(parsed.id, note.id);
-    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(relays, saved);
     assert_eq!(locator, "0123456789abcdef0123");
 
     config.security.csrf_protection_enabled = true;
@@ -2086,7 +2160,7 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
     .is_none());
     let (parsed, relays, locator) = note_and_relays_for_publish(&paired, &config, &token).unwrap();
     assert_eq!(parsed.id, note.id);
-    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(relays, saved);
     assert_eq!(locator, "0123456789abcdef0123");
 }
 
@@ -2125,12 +2199,15 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
     config.nostr.relays = vec!["wss://relay.damus.io".to_string()];
     let body = NostrPublishBody {
         event,
-        relays: vec!["wss://127.0.0.1".to_string()],
+        relays: vec![
+            "wss://pin.example".to_string(),
+            "wss://127.0.0.1".to_string(),
+        ],
         csrf_token: String::new(),
     };
     let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config, "").unwrap();
     assert_eq!(parsed.id, note.id);
-    assert_eq!(relays, vec!["wss://relay.damus.io".to_string()]);
+    assert_eq!(relays, vec!["wss://pin.example".to_string()]);
     assert_eq!(locator, "0123456789abcdef0123");
     assert!(parsed.event_json.contains("\"kind\":30323"));
     assert!(!parsed.event_json.contains("\"title\""));
@@ -2156,7 +2233,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
 #[test]
 fn publish_result_names_the_locator_and_accepted_relays() {
     let accepted = vec!["wss://relay.damus.io".to_string()];
-    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone());
+    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone(), &[]);
     assert_eq!(result.locator, "0123456789abcdef0123");
     assert_eq!(result.accepted, accepted);
     let json = serde_json::to_string(&result).unwrap();
@@ -2168,38 +2245,127 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     assert!(!json.contains("\"key\""));
     assert!(!json.contains("nevent"));
 
-    assert!(publish_result(String::new(), accepted).locator.is_empty());
-    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new());
+    assert!(publish_result(String::new(), accepted, &[]).locator.is_empty());
+    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new(), &[]);
     assert!(failed.locator.is_empty());
     assert!(failed.accepted.is_empty());
     let failed_json = serde_json::to_string(&failed).unwrap();
     assert!(!failed_json.contains("0123456789abcdef0123"));
 
     let extra_only = vec!["wss://relay.primal.net".to_string()];
-    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone());
+    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone(), &[]);
     assert_eq!(extra.locator, "0123456789abcdef0123");
     assert_eq!(extra.accepted, extra_only);
     let both = vec![
         "wss://relay.primal.net".to_string(),
         "wss://relay.damus.io".to_string(),
     ];
-    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone());
+    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone(), &[]);
     assert_eq!(landed.locator, "0123456789abcdef0123");
     assert_eq!(landed.accepted, both);
     let private = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://127.0.0.1".to_string()],
+        &[],
     );
     assert!(private.locator.is_empty());
     let cased = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://Relay.Primal.net/".to_string()],
+        &[],
     );
     assert_eq!(cased.locator, "0123456789abcdef0123");
 }
 
 #[test]
-fn nostr_publish_sends_site_relays_and_the_added_relays_that_fit() {
+fn the_share_link_omits_a_relay_the_host_already_has() {
+    let accepted = vec![
+        "wss://config.example".to_string(),
+        "wss://pin.example".to_string(),
+    ];
+    let configured = vec!["wss://config.example".to_string()];
+    let result = publish_result(
+        "0123456789abcdef0123".to_string(),
+        accepted.clone(),
+        &configured,
+    );
+    assert_eq!(result.locator, "0123456789abcdef0123");
+    assert_eq!(result.accepted, accepted);
+    assert_eq!(result.hints, vec!["wss://pin.example".to_string()]);
+
+    let mut config = crate::config::Config::default();
+    config.nostr.relays = configured;
+    let engine = crate::template::TemplateEngine::new("templates");
+    for nojs in [false, true] {
+        let page = home_context(&config, nojs, None, None);
+        assert_eq!(page.get("nostr_relays").unwrap(), "[]");
+        let html = engine.render("home", &page).unwrap();
+        assert!(html.contains("data-relays=\"[]\""));
+        assert!(!html.contains("config.example"), "{html}");
+    }
+
+    let home = include_str!("../templates/home.js");
+    let key_at = home.find("function relayKey(url)").expect("relay key");
+    let key_end = home[key_at..]
+        .find("\n            function renderExtraRelayLists()")
+        .map(|offset| key_at + offset)
+        .expect("extra lists follow the relay key");
+    let href_at = home
+        .find("function acceptedRelayHints(")
+        .expect("accepted hints");
+    let href_end = home[href_at..]
+        .find("\n            async function publishOnNostr")
+        .map(|offset| href_at + offset)
+        .expect("publish follows the share link");
+    let hints = serde_json::to_string(&result.hints).unwrap();
+    let accepted_json = serde_json::to_string(&result.accepted).unwrap();
+    let mut program = String::from(
+        r#"
+function publicRelayUrl(relay) {
+    return typeof relay === "string" && relay.startsWith("wss://");
+}
+"#,
+    );
+    program.push_str(&home[key_at..key_end]);
+    program.push_str(&home[href_at..href_end]);
+    program.push_str(&format!(
+        r##"
+const href = openedSealHref({{
+    locator: "0123456789abcdef0123",
+    event: {{ id: "ab".repeat(32) }},
+    key: "seal-key",
+    accepted: {accepted_json},
+    hints: {hints},
+}});
+const expected =
+    "/s/0123456789abcdef0123/" +
+    "ab".repeat(32) +
+    "?r=" +
+    encodeURIComponent("wss://pin.example") +
+    "#seal-key";
+if (href !== expected) {{
+    throw new Error(href);
+}}
+"##
+    ));
+    run_javascript("nonograph-share-link", &program);
+
+    let nostr = include_str!("../templates/nostr.js");
+    let returned = nostr
+        .find("const hints = Array.isArray(result.hints)")
+        .expect("publish hints");
+    let block_end = nostr[returned..]
+        .find("key: bytesToBase64Url(sealed.secret)")
+        .map(|offset| returned + offset)
+        .unwrap();
+    let block = &nostr[returned..block_end];
+    assert!(block.contains("hints,"));
+    assert!(block.contains("!accepted.length"));
+    assert!(!block.contains("!hints.length"));
+}
+
+#[test]
+fn nostr_publish_sends_the_saved_relays_and_leaves_out_configured_names() {
     let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
@@ -2209,27 +2375,24 @@ fn nostr_publish_sends_site_relays_and_the_added_relays_that_fit() {
         "wss://relay.snort.social".to_string(),
         "wss://offchain.pub".to_string(),
     ];
-    let mut relays = config.nostr.relays.clone();
-    for n in 1..=4 {
-        relays.push(format!("wss://extra{n}.example"));
-    }
+    let saved = vec![
+        "wss://pin.example".to_string(),
+        "wss://dealt.example".to_string(),
+        "wss://other.example".to_string(),
+    ];
     let body = NostrPublishBody {
         event,
-        relays,
+        relays: saved.clone(),
         csrf_token: String::new(),
     };
     let (_, chosen, _) = note_and_relays_for_publish(&body, &config, "").unwrap();
-    assert_eq!(
-        chosen,
-        vec![
-            "wss://relay.primal.net".to_string(),
-            "wss://relay.snort.social".to_string(),
-            "wss://offchain.pub".to_string(),
-            "wss://extra1.example".to_string(),
-            "wss://extra2.example".to_string(),
-            "wss://extra3.example".to_string(),
-        ]
-    );
+    assert_eq!(chosen, saved);
+    for name in ["relay.primal.net", "relay.snort.social", "offchain.pub"] {
+        assert!(
+            !chosen.iter().any(|relay| relay.contains(name)),
+            "{chosen:?}"
+        );
+    }
 }
 
 #[test]
@@ -2260,6 +2423,51 @@ fn tor_circuit_post_uses_the_publish_csrf_token() {
         relays_for_circuit_pass(&missing, &config, "").as_deref(),
         Some(relays.as_slice())
     );
+}
+
+#[test]
+fn a_circuit_post_assigns_the_body_and_leaves_out_the_configured_name() {
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.relays = vec!["wss://config.example".to_string()];
+    let watch = crate::nostr::RelayAssignmentWatch::begin(&[
+        "wss://kept.example",
+        "wss://stay.example",
+        "wss://config.example",
+    ]);
+    let client = rocket::local::blocking::Client::untracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::assign_tor_circuits]),
+    )
+    .unwrap();
+    let posted = client
+        .post("/tor-circuits")
+        .header(ContentType::JSON)
+        .body(r#"{"relays":["wss://kept.example","wss://stay.example"]}"#)
+        .dispatch();
+    assert_eq!(posted.status(), Status::NoContent);
+    assert_eq!(
+        watch.assigned(),
+        vec![
+            "wss://kept.example".to_string(),
+            "wss://stay.example".to_string(),
+        ]
+    );
+    assert!(watch.remembers("wss://kept.example"));
+    assert!(watch.remembers("wss://stay.example"));
+    assert!(!watch.remembers("wss://config.example"));
+
+    let empty = client
+        .post("/tor-circuits")
+        .header(ContentType::JSON)
+        .body(r#"{"relays":[]}"#)
+        .dispatch();
+    assert_eq!(empty.status(), Status::NoContent);
+    assert!(watch.assigned().is_empty());
+    assert!(!watch.remembers("wss://kept.example"));
+    assert!(!watch.remembers("wss://stay.example"));
+    assert!(!watch.remembers("wss://config.example"));
 }
 
 #[test]
@@ -2692,21 +2900,23 @@ fn homepage_js_can_send_a_public_long_form_note() {
 }
 
 #[test]
-fn homepage_js_gets_the_instance_public_relays() {
+fn the_homepage_omits_the_configured_names() {
     let config = crate::config::Config::default();
     let js = home_context(&config, false, None, None);
     let relays: Vec<String> = serde_json::from_str(js.get("nostr_relays").unwrap()).unwrap();
-    assert_eq!(
-        relays,
-        vec![
-            "wss://relay.primal.net".to_string(),
-            "wss://relay.snort.social".to_string(),
-            "wss://offchain.pub".to_string(),
-        ]
-    );
-    assert!(relays.iter().all(|relay| relay.starts_with("wss://")));
-    assert!(!relays.iter().any(|relay| relay.contains("127.0.0.1")));
-    assert!(!relays.iter().any(|relay| relay.contains("localhost")));
+    assert!(relays.is_empty());
+    let sidebar = js.get("relays_sidebar").unwrap();
+    let help = js.get("relays_section").unwrap();
+    for name in ["relay.primal.net", "relay.snort.social", "offchain.pub"] {
+        assert!(!sidebar.contains(name), "{sidebar}");
+        assert!(!help.contains(name), "{help}");
+    }
+    assert!(!sidebar.contains("Config.toml"), "{sidebar}");
+    assert!(!help.contains("Config.toml"), "{help}");
+    assert!(!sidebar.contains("No public relays configured."), "{sidebar}");
+    assert!(!help.contains("No public relays configured."), "{help}");
+    assert!(sidebar.contains("No relays."));
+    assert!(help.contains("No relays."));
     assert_eq!(js.get("nostr_timeout_ms").unwrap(), "10000");
     assert_eq!(
         js.get("seal_max").unwrap(),
@@ -2736,7 +2946,424 @@ fn homepage_js_gets_the_instance_public_relays() {
 
     let nojs = home_context(&config, true, None, None);
     assert!(nojs.get("scripts").unwrap().is_empty());
-    assert!(nojs.get("nostr_relays").is_some());
+    assert_eq!(nojs.get("nostr_relays").unwrap(), "[]");
+}
+
+#[test]
+fn the_writing_page_script_paints_the_saved_rows() {
+    let home = include_str!("../templates/home.js");
+    let start = home
+        .find("function savedRelayUrls(")
+        .expect("saved relay urls");
+    let end = home.find("            const editor").expect("editor");
+    let mut program = home[start..end].to_string();
+    program.push_str(
+        r##"
+function element(className) {
+    const node = {
+        className: className || "",
+        classList: {
+            contains(token) {
+                return (" " + node.className + " ").indexOf(" " + token + " ") !== -1;
+            },
+        },
+        dataset: {},
+        textContent: "",
+        children: [],
+        parentNode: null,
+        append() {
+            for (let index = 0; index < arguments.length; index += 1) {
+                arguments[index].parentNode = node;
+                node.children.push(arguments[index]);
+            }
+        },
+        replaceChildren() {
+            node.children = [];
+            for (let index = 0; index < arguments.length; index += 1) {
+                node.append(arguments[index]);
+            }
+        },
+        remove() {
+            if (!node.parentNode) {
+                return;
+            }
+            node.parentNode.children = node.parentNode.children.filter((child) => child !== node);
+            node.parentNode = null;
+        },
+        insertBefore(child, before) {
+            child.parentNode = node;
+            const index = node.children.indexOf(before);
+            if (index < 0) {
+                node.children.push(child);
+            } else {
+                node.children.splice(index, 0, child);
+            }
+        },
+        querySelector(selector) {
+            return findNode(node, selector);
+        },
+        querySelectorAll(selector) {
+            const found = [];
+            gatherNodes(node, selector, found);
+            return found;
+        },
+    };
+    return node;
+}
+function matches(node, selector) {
+    if (selector === ".relay-list") {
+        return node.classList.contains("relay-list");
+    }
+    if (selector === ".relay-empty") {
+        return node.classList.contains("relay-empty");
+    }
+    if (selector === ".relay-add") {
+        return node.classList.contains("relay-add");
+    }
+    return false;
+}
+function findNode(node, selector) {
+    for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        if (matches(child, selector)) {
+            return child;
+        }
+        const nested = findNode(child, selector);
+        if (nested) {
+            return nested;
+        }
+    }
+    return null;
+}
+function gatherNodes(node, selector, found) {
+    for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        if (matches(child, selector)) {
+            found.push(child);
+        }
+        gatherNodes(child, selector, found);
+    }
+}
+function section() {
+    const root = element("");
+    const empty = element("relay-empty");
+    const add = element("relay-add");
+    const kept = element("relay-list relay-list-user");
+    add.append(kept);
+    root.append(empty, add);
+    return root;
+}
+const sidebar = section();
+const help = section();
+const document = {
+    createElement() {
+        return element("");
+    },
+    querySelector(selector) {
+        if (selector === "#sidebar-relays") {
+            return sidebar;
+        }
+        if (selector === "#relays") {
+            return help;
+        }
+        return null;
+    },
+};
+const storage = {
+    getItem(key) {
+        if (key !== "nonograph_relays") {
+            return null;
+        }
+        return JSON.stringify({
+            pinned: ["wss://pin.example"],
+            dealt: ["wss://dealt.example", "wss://other.example"],
+        });
+    },
+};
+paintSavedRelayLists(document, storage);
+function painted(root) {
+    const list = root.querySelector(".relay-list");
+    if (!list || list.classList.contains("relay-list-user")) {
+        throw new Error("saved list was not painted");
+    }
+    return list.children.map((row) => row.dataset.relay + " " + row.children[0].textContent);
+}
+const expected = [
+    "wss://pin.example pin.example",
+    "wss://dealt.example dealt.example",
+    "wss://other.example other.example",
+];
+if (JSON.stringify(painted(sidebar)) !== JSON.stringify(expected)) {
+    throw new Error(JSON.stringify(painted(sidebar)));
+}
+if (JSON.stringify(painted(help)) !== JSON.stringify(expected)) {
+    throw new Error(JSON.stringify(painted(help)));
+}
+if (sidebar.querySelector(".relay-empty") || help.querySelector(".relay-empty")) {
+    throw new Error("empty message stayed");
+}
+const user = sidebar.querySelector(".relay-add").querySelector(".relay-list");
+if (!user.classList.contains("relay-list-user") || user.children.length !== 0) {
+    throw new Error("user list changed");
+}
+"##,
+    );
+    run_javascript("nonograph-saved-rows", &program);
+}
+
+#[test]
+fn publish_sends_the_saved_relays() {
+    let home = include_str!("../templates/home.js");
+    let urls_at = home
+        .find("function savedRelayUrls(")
+        .expect("saved relay urls");
+    let urls_end = home[urls_at..]
+        .find("\nfunction paintSavedRelayLists(")
+        .map(|offset| urls_at + offset)
+        .expect("paint saved lists");
+    let publish_at = home
+        .find("globalThis.nonographPublishPublicNote")
+        .expect("publish helper");
+    let publish_end = home[publish_at..]
+        .find("\n            async function loadNostr(")
+        .map(|offset| publish_at + offset)
+        .expect("load nostr");
+    let ready_at = home
+        .find("function hasAnyPublishRelay()")
+        .expect("publish gate");
+    let ready_end = home[ready_at..]
+        .find("\n            globalThis.nonographPublishPublicNote")
+        .map(|offset| ready_at + offset)
+        .expect("publish helper follows the gate");
+    let path_at = home
+        .find("function everyRelayHasPath()")
+        .expect("path gate");
+    let path_end = home[path_at..]
+        .find("\n            function syncNostrButtons()")
+        .map(|offset| path_at + offset)
+        .expect("button sync follows the path gate");
+    let key_at = home.find("function relayKey(url)").expect("relay key");
+    let key_end = home[key_at..]
+        .find("\n            function renderExtraRelayLists()")
+        .map(|offset| key_at + offset)
+        .expect("extra lists follow the relay key");
+    let merge_at = home
+        .find("function extraRelayLimit()")
+        .expect("extra limit");
+    let merge_end = home[merge_at..]
+        .find("\n            function hasAnyPublishRelay()")
+        .map(|offset| merge_at + offset)
+        .expect("publish gate follows the merge");
+    let post_at = home
+        .find("let relayListSending = false;")
+        .expect("relay post");
+    let post_end = home[post_at..]
+        .find("\n            async function refreshRelayCircuits()")
+        .map(|offset| post_at + offset)
+        .expect("circuit refresh follows the relay post");
+    let mut program = home[urls_at..urls_end].to_string();
+    program.push_str(
+        r##"
+const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
+let maxFetchRelays = 6;
+const bags = {
+    saved: JSON.stringify({
+        pinned: ["wss://pin.example"],
+        dealt: ["wss://dealt.example"],
+    }),
+    extra: JSON.stringify(["wss://extra.example"]),
+};
+const localStorage = {
+    getItem(key) {
+        if (key === "nonograph_relays") {
+            return bags.saved;
+        }
+        if (key === "nonograph_extra_relays") {
+            return bags.extra;
+        }
+        return null;
+    },
+    setItem(key, value) {
+        if (key === "nonograph_extra_relays") {
+            bags.extra = value;
+        }
+    },
+};
+const form = {
+    dataset: {
+        timeout: "10000",
+        sealMax: "100",
+        relays: JSON.stringify([
+            "wss://relay.primal.net",
+            "wss://relay.snort.social",
+            "wss://offchain.pub",
+        ]),
+    },
+    csrf_token: { value: "token" },
+};
+let sent = null;
+async function loadNostr() {
+    return {
+        publishPublicNote(fields) {
+            sent = fields.relays;
+            return {};
+        },
+    };
+}
+let relaysForPublicPublish = (relays) => relays.slice();
+const circuitByRelay = new Map();
+let circuitsTracked = false;
+"##,
+    );
+    program.push_str(&home[merge_at..merge_end]);
+    program.push_str(&home[publish_at..publish_end]);
+    program.push_str(&home[ready_at..ready_end]);
+    program.push_str(&home[key_at..key_end]);
+    program.push_str(&home[path_at..path_end]);
+    program.push_str(&home[post_at..post_end]);
+    program.push_str(
+        r##"
+(async () => {
+    const expected = [
+        "wss://extra.example",
+        "wss://pin.example",
+        "wss://dealt.example",
+    ];
+    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    if (JSON.stringify(sent) !== JSON.stringify(expected)) {
+        throw new Error(JSON.stringify(sent));
+    }
+    for (const name of ["relay.primal.net", "relay.snort.social", "offchain.pub"]) {
+        if (sent.some((relay) => relay.includes(name))) {
+            throw new Error(JSON.stringify(sent));
+        }
+    }
+    if (!hasAnyPublishRelay()) {
+        throw new Error("saved list should show publish");
+    }
+    circuitsTracked = true;
+    for (const relay of expected) {
+        circuitByRelay.set(relay, "path-" + relay);
+    }
+    if (!everyRelayHasPath()) {
+        throw new Error("saved relays with paths should allow publish");
+    }
+    circuitByRelay.delete("wss://dealt.example");
+    if (everyRelayHasPath()) {
+        throw new Error("a saved relay without a path should wait");
+    }
+    circuitsTracked = false;
+    if (!everyRelayHasPath()) {
+        throw new Error("untracked circuits should allow publish");
+    }
+    let posted = null;
+    globalThis.fetch = async (_url, options) => {
+        posted = JSON.parse(options.body).relays;
+        return { ok: true };
+    };
+    await sendRelayList();
+    if (JSON.stringify(posted) !== JSON.stringify(expected)) {
+        throw new Error(JSON.stringify(posted));
+    }
+    bags.saved = null;
+    const draft = ["wss://extra.example"];
+    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    if (JSON.stringify(sent) !== JSON.stringify(draft)) {
+        throw new Error(JSON.stringify(sent));
+    }
+    await sendRelayList();
+    if (JSON.stringify(posted) !== JSON.stringify(draft)) {
+        throw new Error(JSON.stringify(posted));
+    }
+    bags.extra = null;
+    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    if (JSON.stringify(sent) !== JSON.stringify([])) {
+        throw new Error(JSON.stringify(sent));
+    }
+    await sendRelayList();
+    if (JSON.stringify(posted) !== JSON.stringify([])) {
+        throw new Error(JSON.stringify(posted));
+    }
+    if (hasAnyPublishRelay()) {
+        throw new Error("configured names should stay off the button");
+    }
+    circuitsTracked = true;
+    if (everyRelayHasPath()) {
+        throw new Error("an empty list should wait");
+    }
+})();
+"##,
+    );
+    run_javascript("nonograph-publish-saved", &program);
+}
+
+fn run_javascript(prefix: &str, program: &str) {
+    let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
+    std::fs::write(&path, program).expect("write script fixture");
+    let output = match std::process::Command::new("node").arg(&path).output() {
+        Ok(output) if output.status.success() => output,
+        _ => std::process::Command::new("osascript")
+            .args(["-l", "JavaScript"])
+            .arg(&path)
+            .output()
+            .expect("node or osascript must run the script"),
+    };
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_nojs_writing_page_lists_the_cookie_and_leaves_out_configured_names() {
+    let mut config = crate::config::Config::default();
+    config.nostr.relays = vec!["wss://config.example".to_string()];
+    let saved = super::relays::write_relay_cookie(&super::relays::RelayCookie {
+        pinned: vec!["wss://pin.example".to_string()],
+        dealt: vec![
+            "wss://dealt.example".to_string(),
+            "wss://other.example".to_string(),
+        ],
+    });
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::nojs_index]),
+    )
+    .unwrap();
+    let page = client
+        .get("/nojs")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .dispatch();
+    assert_eq!(page.status(), Status::Ok);
+    let html = page.into_string().unwrap();
+    let help = region(
+        &html,
+        "<div class=\"help-section\" id=\"relays\">",
+        "</div>",
+    );
+    let sidebar = region(&html, "id=\"sidebar-relays\"", "class=\"footer\"");
+    for section in [help, sidebar] {
+        let pin = section.find("data-relay=\"wss://pin.example\"").unwrap();
+        let dealt = section.find("data-relay=\"wss://dealt.example\"").unwrap();
+        let other = section.find("data-relay=\"wss://other.example\"").unwrap();
+        assert!(pin < dealt && dealt < other, "{section}");
+        assert!(!section.contains("wss://config.example"), "{section}");
+        assert!(!section.contains("config.example"), "{section}");
+    }
+    assert!(!help.contains("Config.toml"));
+    assert!(help.contains("Add one more with the form."));
+}
+
+fn region<'a>(html: &'a str, start: &str, end: &str) -> &'a str {
+    let at = html
+        .find(start)
+        .unwrap_or_else(|| panic!("missing {start}"));
+    let rest = &html[at..];
+    let stop = rest.find(end).unwrap_or_else(|| panic!("missing {end}"));
+    &rest[..stop]
 }
 
 #[test]
@@ -2776,10 +3403,16 @@ fn the_homepage_and_sealed_fetch_stay_on_the_config_relays() {
     for nojs in [false, true] {
         let page = home_context(&config, nojs, None, None);
         let relays: Vec<String> = serde_json::from_str(page.get("nostr_relays").unwrap()).unwrap();
-        assert_eq!(relays, config.nostr.relays);
         let sidebar = page.get("relays_sidebar").unwrap();
-        assert!(sidebar.contains("wss://config.example"));
+        let help = page.get("relays_section").unwrap();
+        assert!(relays.is_empty(), "{nojs}");
+        assert!(!sidebar.contains("wss://config.example"));
+        assert!(!help.contains("wss://config.example"));
+        if nojs {
+            assert!(!help.contains("Config.toml"));
+        }
         assert!(!sidebar.contains("wss://pool.example"));
+        assert!(!help.contains("wss://pool.example"));
     }
     assert_eq!(
         relays_for_public_fetch(&[], &config.nostr.relays),
@@ -2941,49 +3574,51 @@ fn nojs_create_rejects_a_relay_public_relay_url_rejects() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
-    let configured = vec![
-        "wss://relay.primal.net".to_string(),
+    let saved = vec![
+        "wss://pin.example".to_string(),
         "wss://127.0.0.1".to_string(),
+        "wss://dealt.example".to_string(),
     ];
     assert_eq!(
-        nojs_publish_relays("", &configured).as_deref(),
-        Some(relays_for_public_fetch(&[], &configured).as_slice())
+        nojs_publish_relays("", &saved).unwrap(),
+        vec![
+            "wss://pin.example".to_string(),
+            "wss://dealt.example".to_string()
+        ]
     );
-    let base = relays_for_public_fetch(&[], &configured);
-    let hinted = nojs_publish_relays("wss://relay.damus.io", &configured).unwrap();
-    assert_eq!(hinted[0], "wss://relay.damus.io");
-    assert_eq!(hinted.len(), base.len() + 1);
-    for relay in &base {
-        assert!(hinted.contains(relay), "{relay}");
-    }
-    assert!(!hinted.iter().any(|relay| relay.contains("127.0.0.1")));
-    let same = nojs_publish_relays("wss://relay.primal.net", &configured).unwrap();
-    assert_eq!(same, base);
+    let hinted = nojs_publish_relays("wss://relay.damus.io", &saved).unwrap();
     assert_eq!(
-        nojs_publish_relays("wss://Relay.Primal.net/", &configured).unwrap(),
-        base
+        hinted,
+        vec![
+            "wss://relay.damus.io".to_string(),
+            "wss://pin.example".to_string(),
+            "wss://dealt.example".to_string()
+        ]
     );
-    let cased = nojs_publish_relays("wss://Relay.Damus.io:443/", &configured).unwrap();
+    assert_eq!(
+        nojs_publish_relays("wss://Pin.Example/", &saved).unwrap(),
+        vec![
+            "wss://pin.example".to_string(),
+            "wss://dealt.example".to_string()
+        ]
+    );
+    let cased = nojs_publish_relays("wss://Relay.Damus.io:443/", &saved).unwrap();
     assert_eq!(cased[0], "wss://relay.damus.io");
-    assert_eq!(cased.len(), base.len() + 1);
+    assert_eq!(cased.len(), 3);
 
     let mut many = Vec::new();
     for index in 0..crate::nostr::MAX_FETCH_RELAYS {
-        many.push(format!("wss://configured{index}.example"));
+        many.push(format!("wss://saved{index}.example"));
     }
     let extra = "wss://extra.example";
     let published = nojs_publish_relays(extra, &many).unwrap();
-    let kept = relays_for_public_fetch(&[], &many);
     assert_eq!(published[0], extra);
-    assert_eq!(published.len(), kept.len() + 1);
-    for relay in &kept {
+    assert_eq!(published.len(), many.len() + 1);
+    for relay in &many {
         assert!(published.contains(relay), "{relay}");
     }
-    assert_eq!(
-        relays_for_public_fetch(&[extra.to_string()], &many).len(),
-        crate::nostr::MAX_FETCH_RELAYS
-    );
     assert!(nojs_publish_relays("", &["wss://127.0.0.1".to_string()]).is_none());
+    assert!(nojs_publish_relays("", &[]).is_none());
     assert_eq!(
         nojs_publish_relays("wss://relay.damus.io", &["wss://127.0.0.1".to_string()]).unwrap(),
         vec!["wss://relay.damus.io".to_string()]
@@ -3005,6 +3640,13 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
     let href = create_location(&form, &config, "");
     assert_eq!(href, "/nojs?error=nostr_publish_failed");
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
+
+    config.nostr.relays = vec!["wss://relay.primal.net".to_string()];
+    let temp = tempfile::tempdir().unwrap();
+    let href = create_location(&form, &config, "");
+    assert_eq!(href, "/nojs?error=nostr_publish_failed");
+    assert!(std::fs::read_dir(temp.path().join("content")).is_err());
+    config.nostr.relays = vec!["wss://127.0.0.1".to_string()];
 
     form.content = " \n ".to_string();
     let temp = tempfile::tempdir().unwrap();
@@ -3071,12 +3713,186 @@ fn a_publish_relay_list_equals_the_cookie() {
     .unwrap();
     let published = client
         .post("/nojs/create")
-        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved.clone()))
         .header(ContentType::Form)
         .body("title=Hello&content=hi&alias=Ada&csrf_token=")
         .dispatch();
     assert_eq!(published.status(), Status::SeeOther);
     assert_eq!(nojs_publish_relays_seen(), expected);
+
+    let with_extra = client
+        .post("/nojs/create")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=&relay=wss%3A%2F%2Fhand.example")
+        .dispatch();
+    assert_eq!(with_extra.status(), Status::SeeOther);
+    let mut with_hand = vec!["wss://hand.example".to_string()];
+    with_hand.extend(expected);
+    assert_eq!(nojs_publish_relays_seen(), with_hand);
+
+    note_nojs_publish_relays(&[]);
+    let missed = client
+        .post("/nojs/create")
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=")
+        .dispatch();
+    assert_eq!(missed.status(), Status::Ok);
+    let missed_html = missed.into_string().unwrap();
+    assert!(missed_html.contains("Publishing failed. Try again."));
+    let missed_help = region(
+        &missed_html,
+        "<div class=\"help-section\" id=\"relays\">",
+        "</div>",
+    );
+    let missed_sidebar = region(&missed_html, "id=\"sidebar-relays\"", "class=\"footer\"");
+    assert!(missed_help.contains("No relays."));
+    assert!(missed_sidebar.contains("No relays."));
+    assert!(!missed_help.contains("config.example"));
+    assert!(!missed_sidebar.contains("config.example"));
+    assert!(nojs_publish_relays_seen().is_empty());
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn an_empty_saved_list_sends_no_relays() {
+    let home = include_str!("../templates/home.js");
+    let urls_at = home
+        .find("function savedRelayUrls(")
+        .expect("saved relay urls");
+    let urls_end = home[urls_at..]
+        .find("\nfunction paintSavedRelayLists(")
+        .map(|offset| urls_at + offset)
+        .expect("paint saved lists");
+    let publish_at = home
+        .find("globalThis.nonographPublishPublicNote")
+        .expect("publish helper");
+    let publish_end = home[publish_at..]
+        .find("\n            async function loadNostr(")
+        .map(|offset| publish_at + offset)
+        .expect("load nostr");
+    let ready_at = home
+        .find("function hasAnyPublishRelay()")
+        .expect("publish gate");
+    let ready_end = home[ready_at..]
+        .find("\n            globalThis.nonographPublishPublicNote")
+        .map(|offset| ready_at + offset)
+        .expect("publish helper follows the gate");
+    let merge_at = home
+        .find("function extraRelayLimit()")
+        .expect("extra limit");
+    let merge_end = home[merge_at..]
+        .find("\n            function hasAnyPublishRelay()")
+        .map(|offset| merge_at + offset)
+        .expect("publish gate follows the list");
+    let key_at = home.find("function relayKey(url)").expect("relay key");
+    let key_end = home[key_at..]
+        .find("\n            function renderExtraRelayLists()")
+        .map(|offset| key_at + offset)
+        .expect("extra lists follow the relay key");
+    let mut program = home[urls_at..urls_end].to_string();
+    program.push_str(
+        r##"
+const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
+let maxFetchRelays = 6;
+const localStorage = {
+    getItem(key) {
+        if (key === "nonograph_relays") {
+            return JSON.stringify({ pinned: [], dealt: [] });
+        }
+        return null;
+    },
+    setItem() {},
+};
+const form = {
+    dataset: {
+        timeout: "10000",
+        sealMax: "100",
+        relays: JSON.stringify([
+            "wss://relay.primal.net",
+            "wss://relay.snort.social",
+            "wss://offchain.pub",
+        ]),
+    },
+    csrf_token: { value: "token" },
+};
+let sent = null;
+async function loadNostr() {
+    return {
+        publishPublicNote(fields) {
+            sent = fields.relays;
+            return {};
+        },
+    };
+}
+"##,
+    );
+    program.push_str(&home[merge_at..merge_end]);
+    program.push_str(&home[key_at..key_end]);
+    program.push_str(&home[ready_at..ready_end]);
+    program.push_str(&home[publish_at..publish_end]);
+    program.push_str(
+        r##"
+(async () => {
+    if (hasAnyPublishRelay()) {
+        throw new Error("an empty saved list should hide publish");
+    }
+    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    if (JSON.stringify(sent) !== "[]") {
+        throw new Error(JSON.stringify(sent));
+    }
+})();
+"##,
+    );
+    run_javascript("nonograph-empty-saved", &program);
+
+    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.timeout_secs = 1;
+    config.nostr.relays = vec![
+        "wss://relay.primal.net".to_string(),
+        "wss://relay.snort.social".to_string(),
+        "wss://offchain.pub".to_string(),
+    ];
+    let body = NostrPublishBody {
+        event,
+        relays: Vec::new(),
+        csrf_token: String::new(),
+    };
+    assert!(note_and_relays_for_publish(&body, &config, "").is_none());
+
+    struct ClearPublish;
+    impl Drop for ClearPublish {
+        fn drop(&mut self) {
+            set_shared_nojs_accepted(None);
+            note_nojs_publish_relays(&[]);
+        }
+    }
+    let _clear = ClearPublish;
+    set_shared_nojs_accepted(Some(config.nostr.relays.clone()));
+    note_nojs_publish_relays(&[]);
+    let saved = super::relays::write_relay_cookie(&super::relays::RelayCookie {
+        dealt: Vec::new(),
+        pinned: Vec::new(),
+    });
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::nojs_create_post]),
+    )
+    .unwrap();
+    let published = client
+        .post("/nojs/create")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=")
+        .dispatch();
+    assert_eq!(published.status(), Status::Ok);
+    let html = published.into_string().unwrap();
+    assert!(html.contains("Publishing failed. Try again."));
+    assert!(nojs_publish_relays_seen().is_empty());
 }
 
 #[test]
@@ -3188,7 +4004,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
             config.security.csrf_protection_enabled = false;
             config
         };
-        let form = NewPost {
+        let mut form = NewPost {
             title: "Hello World".to_string(),
             content: "hi".to_string(),
             alias: "Ada".to_string(),
@@ -3205,6 +4021,7 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         assert!(nojs_publish_slot().is_err());
 
         config.nostr.relays = vec!["wss://relay.primal.net".to_string()];
+        form.relay = "wss://relay.primal.net".to_string();
         struct ResetAccepted;
         impl Drop for ResetAccepted {
             fn drop(&mut self) {
