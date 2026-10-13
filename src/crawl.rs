@@ -16,6 +16,7 @@ pub(crate) const DOORS: [&str; 3] = [
 pub(crate) const WORKERS: usize = 4;
 
 pub(crate) const CANDIDATE_CAP: usize = 48;
+const POOL_FETCH: usize = 3;
 
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
@@ -164,6 +165,23 @@ pub(crate) fn candidates(path: &Path) -> Vec<String> {
         .take(CANDIDATE_CAP)
         .map(|row| row.url)
         .collect()
+}
+
+pub(crate) fn next_pool_relays(path: &Path, link: &[String]) -> Vec<String> {
+    let mut relays = Vec::new();
+    for row in usable_rows(path) {
+        if relays.len() == POOL_FETCH {
+            break;
+        }
+        if link
+            .iter()
+            .any(|have| crate::nostr::same_public_relay(have, &row.url))
+        {
+            continue;
+        }
+        relays.push(row.url);
+    }
+    relays
 }
 
 fn row_is_usable(row: &Row) -> bool {
@@ -620,5 +638,33 @@ mod tests {
         assert_eq!(urls[0], "wss://relay0.example");
         assert_eq!(urls[47], "wss://relay47.example");
         assert!(!urls.iter().any(|url| url == "wss://relay48.example"));
+    }
+
+    #[test]
+    fn next_pool_relays_return_three_and_skip_the_link_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let rows = std::iter::once(visited("wss://closed.example", false, open.clone(), true))
+            .chain((0..5).map(|index| {
+                visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                )
+            }))
+            .collect();
+        save(&path, &Pool { rows }).unwrap();
+
+        let relays = next_pool_relays(&path, &["wss://Relay0.Example/".to_string()]);
+        assert_eq!(
+            relays,
+            vec![
+                "wss://relay1.example".to_string(),
+                "wss://relay2.example".to_string(),
+                "wss://relay3.example".to_string(),
+            ]
+        );
     }
 }

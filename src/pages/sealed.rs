@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -182,11 +183,11 @@ pub async fn sealed_view(
                 &hints,
                 &query_id,
                 &query,
-                &config.nostr.relays,
                 config.limits.title_max_length,
                 config.limits.alias_max_length,
                 config.limits.content_max_length,
                 timeout,
+                &crate::crawl::pool_path(Path::new("content")),
             )
         }
     })
@@ -407,11 +408,11 @@ pub(crate) async fn nojs_sealed_response(
                 &hints,
                 &query_id,
                 &query,
-                &config.nostr.relays,
                 config.limits.title_max_length,
                 config.limits.alias_max_length,
                 config.limits.content_max_length,
                 timeout,
+                &crate::crawl::pool_path(Path::new("content")),
             )
         }
     })
@@ -526,15 +527,27 @@ pub(crate) fn fetch_sealed_by_id(
     hints: &[String],
     event_id: &str,
     locator: &str,
-    configured: &[String],
     title_max: usize,
     alias_max: usize,
     content_max: usize,
     timeout: Duration,
+    pool: &Path,
 ) -> Option<String> {
-    let relays = relays_for_public_fetch(hints, configured);
-    crate::nostr::fetch_sealed(
+    let relays = relays_for_public_fetch(hints);
+    if let Some(note) = crate::nostr::fetch_sealed(
         &relays,
+        event_id,
+        locator,
+        title_max,
+        alias_max,
+        content_max,
+        timeout,
+    ) {
+        return Some(note);
+    }
+    let rows = crate::crawl::next_pool_relays(pool, hints);
+    crate::nostr::fetch_sealed(
+        &rows,
         event_id,
         locator,
         title_max,

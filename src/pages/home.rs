@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::csrf;
-use crate::relay_set::{
-    push_public_relay, relay_timeout, relays_for_public_fetch, relays_for_public_publish,
-};
+use crate::relay_set::{push_public_relay, relay_timeout, relays_for_public_publish};
 use crate::render_options;
 use crate::template;
 
@@ -716,7 +714,10 @@ pub struct NostrPublishResult {
 }
 
 pub(super) fn share_link_hints(accepted: &[String], configured: &[String]) -> Vec<String> {
-    let instance = relays_for_public_fetch(&[], configured);
+    let mut instance = Vec::new();
+    for relay in configured {
+        push_public_relay(&mut instance, relay);
+    }
     let mut hints = Vec::new();
     for relay in accepted {
         let Some(relay) = crate::nostr::canonical_public_relay(relay) else {

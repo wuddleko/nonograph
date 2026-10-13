@@ -1367,6 +1367,84 @@ impl RelayAssignmentWatch {
 }
 
 #[cfg(test)]
+struct RelayAnswerBook {
+    notes: Mutex<HashMap<String, String>>,
+    asked: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+static RELAY_ANSWERS: Mutex<Option<Arc<RelayAnswerBook>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn scripted_relay_answer(relay: &str) -> Option<Option<String>> {
+    let book = RELAY_ANSWERS
+        .lock()
+        .expect("relay answers")
+        .as_ref()?
+        .clone();
+    book.asked
+        .lock()
+        .expect("relay reads")
+        .push(relay.to_string());
+    let notes = book.notes.lock().expect("relay answer notes");
+    let found = notes
+        .iter()
+        .find(|(have, _)| same_public_relay(have, relay))
+        .map(|(_, note)| note.clone());
+    Some(found)
+}
+
+#[cfg(test)]
+pub(crate) struct RelayAnswer {
+    book: Arc<RelayAnswerBook>,
+}
+
+#[cfg(test)]
+impl RelayAnswer {
+    pub(crate) fn begin() -> Self {
+        let book = Arc::new(RelayAnswerBook {
+            notes: Mutex::new(HashMap::new()),
+            asked: Mutex::new(Vec::new()),
+        });
+        *RELAY_ANSWERS.lock().expect("relay answers") = Some(Arc::clone(&book));
+        Self { book }
+    }
+
+    pub(crate) fn answer(&self, relay: &str, note: &str) {
+        let Some(url) = canonical_public_relay(relay) else {
+            return;
+        };
+        self.book
+            .notes
+            .lock()
+            .expect("relay answer notes")
+            .insert(url, note.to_string());
+    }
+
+    pub(crate) fn asked(&self, relay: &str) -> bool {
+        self.book
+            .asked
+            .lock()
+            .expect("relay reads")
+            .iter()
+            .any(|have| same_public_relay(have, relay))
+    }
+}
+
+#[cfg(test)]
+impl Drop for RelayAnswer {
+    fn drop(&mut self) {
+        let mut slot = RELAY_ANSWERS.lock().expect("relay answers");
+        let clear = slot
+            .as_ref()
+            .is_some_and(|book| Arc::ptr_eq(book, &self.book));
+        if clear {
+            *slot = None;
+        }
+    }
+}
+
+#[cfg(test)]
 impl Drop for RelayAssignmentWatch {
     fn drop(&mut self) {
         ASSIGNMENT_WATCH.with(|slot| {
@@ -1840,6 +1918,10 @@ fn fetch_from_relay(
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> Result<Option<String>, String> {
+    #[cfg(test)]
+    if let Some(answer) = scripted_relay_answer(relay) {
+        return Ok(answer);
+    }
     let mut socket = connect_relay(relay, deadline, Some(cancel), true, relay_socks())?;
     limit_sealed_socket(&mut socket, payload_max);
     let sub_id = random_hex(8);

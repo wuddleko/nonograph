@@ -1525,23 +1525,24 @@ fn sealed_query_reuses_relays_for_public_fetch() {
     ];
     let configured = vec!["wss://relay.primal.net".to_string()];
     assert_eq!(
-        relays_for_public_fetch(&hints, &configured),
-        vec![
-            "wss://relay.damus.io".to_string(),
-            "wss://relay.primal.net".to_string(),
-        ]
+        relays_for_public_fetch(&hints),
+        vec!["wss://relay.damus.io".to_string()]
     );
+    assert!(!relays_for_public_fetch(&hints)
+        .iter()
+        .any(|relay| configured.contains(relay)));
     let started = std::time::Instant::now();
     let event_id = "ab".repeat(32);
+    let pool = std::path::Path::new("missing-relay-pool.json");
     assert!(fetch_sealed_by_id(
         &["wss://127.0.0.1".to_string()],
         &event_id,
         "0123456789abcdef0123",
-        &["ws://10.0.0.1".to_string()],
         128,
         32,
         4,
         std::time::Duration::from_millis(20),
+        pool,
     )
     .is_none());
     assert!(started.elapsed() < std::time::Duration::from_millis(200));
@@ -1549,34 +1550,180 @@ fn sealed_query_reuses_relays_for_public_fetch() {
         &configured,
         &event_id,
         "0123456789ABCDEF0123",
-        &[],
         128,
         32,
         4,
         std::time::Duration::from_millis(20),
+        pool,
     )
     .is_none());
 }
 
 #[test]
-fn public_fetch_asks_hint_relays_then_the_instance() {
+fn a_fetch_list_returns_only_the_link_relay() {
+    let link = vec![
+        "wss://First.Example/".to_string(),
+        "wss://second.example".to_string(),
+        "wss://127.0.0.1".to_string(),
+    ];
+    let configured = "wss://config.example";
+    let relays = relays_for_public_fetch(&link);
+    assert_eq!(
+        relays,
+        vec![
+            "wss://first.example".to_string(),
+            "wss://second.example".to_string(),
+        ]
+    );
+    assert!(!relays.iter().any(|relay| relay.contains(configured)));
+    let mut many = Vec::new();
+    for index in 0..8 {
+        many.push(format!("wss://link{index}.example"));
+    }
+    let capped = relays_for_public_fetch(&many);
+    assert_eq!(capped.len(), crate::nostr::MAX_FETCH_RELAYS);
+    assert_eq!(capped[0], "wss://link0.example");
+    assert_eq!(capped[5], "wss://link5.example");
+    assert!(!capped.iter().any(|relay| relay.contains(configured)));
+}
+
+#[test]
+fn a_fetch_with_dead_link_relays_reads_from_a_usable_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let document: serde_json::Value =
+        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
+    let row = |url: &str, usable: bool| crawler::Row {
+        url: url.to_string(),
+        first_seen: 1_700_000_000,
+        next_try: 1_700_000_100,
+        failures: 0,
+        visit: Some(crawler::Visit {
+            at: 1_700_000_100,
+            socket_answered: usable,
+            nip11: Some(document.clone()),
+            probes: vec![crawler::ProbeResult {
+                name: "30323".to_string(),
+                accepted: usable,
+                detail: "OK".to_string(),
+            }],
+        }),
+    };
+    crawler::save(
+        &path,
+        &crawler::Pool {
+            rows: vec![
+                row("wss://closed.example", false),
+                row("wss://dead.example", true),
+                row("wss://row.example", true),
+            ],
+        },
+    )
+    .unwrap();
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://row.example", &note.event_json);
+    let event_id = note.id_hex();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        fetch_sealed_by_id(
+            &["wss://dead.example".to_string()],
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            std::time::Duration::from_secs(2),
+            &path,
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert_eq!(
+        fetch_sealed_by_id(
+            &[],
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            std::time::Duration::from_secs(2),
+            &path,
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    drop(answers);
+}
+
+#[test]
+fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let document: serde_json::Value =
+        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
+    crawler::save(
+        &path,
+        &crawler::Pool {
+            rows: vec![crawler::Row {
+                url: "wss://row.example".to_string(),
+                first_seen: 1_700_000_000,
+                next_try: 1_700_000_100,
+                failures: 0,
+                visit: Some(crawler::Visit {
+                    at: 1_700_000_100,
+                    socket_answered: true,
+                    nip11: Some(document),
+                    probes: vec![crawler::ProbeResult {
+                        name: "30323".to_string(),
+                        accepted: true,
+                        detail: "OK".to_string(),
+                    }],
+                }),
+            }],
+        },
+    )
+    .unwrap();
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://live.example", &note.event_json);
+    answers.answer("wss://row.example", "pool-note");
+    let event_id = note.id_hex();
+    assert_eq!(
+        fetch_sealed_by_id(
+            &["wss://live.example".to_string()],
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            std::time::Duration::from_secs(2),
+            &path,
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert!(answers.asked("wss://live.example"));
+    assert!(!answers.asked("wss://row.example"));
+}
+
+#[test]
+fn public_fetch_keeps_the_link_relays_in_order() {
     let hints = vec![
         "wss://hint.example".to_string(),
         "wss://relay.damus.io".to_string(),
     ];
-    let fallback = vec![
-        "wss://relay.damus.io".to_string(),
-        "wss://nos.lol".to_string(),
-    ];
     assert_eq!(
-        relays_for_public_fetch(&hints, &fallback),
+        relays_for_public_fetch(&hints),
         vec![
             "wss://hint.example".to_string(),
             "wss://relay.damus.io".to_string(),
-            "wss://nos.lol".to_string(),
         ]
     );
-    assert_eq!(relays_for_public_fetch(&[], &fallback), fallback);
+    assert!(relays_for_public_fetch(&[]).is_empty());
 }
 
 #[test]
@@ -1589,11 +1736,10 @@ fn public_fetch_drops_private_hints_and_caps_relays() {
     for index in 0..10 {
         hints.push(format!("wss://hint{index}.example"));
     }
-    let fallback = vec!["wss://nos.lol".to_string()];
-    let relays = relays_for_public_fetch(&hints, &fallback);
+    let relays = relays_for_public_fetch(&hints);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
-    assert_eq!(relays.last().unwrap(), "wss://nos.lol");
+    assert_eq!(relays.last().unwrap(), "wss://hint5.example");
     assert!(!relays.iter().any(|relay| relay.contains("127.0.0.1")));
     assert!(!relays.iter().any(|relay| relay.contains("localhost")));
 }
@@ -1604,8 +1750,7 @@ fn public_fetch_uses_every_hint_slot_when_the_instance_has_no_public_relay() {
     for index in 0..8 {
         hints.push(format!("wss://hint{index}.example"));
     }
-    let fallback = vec!["wss://127.0.0.1".to_string()];
-    let relays = relays_for_public_fetch(&hints, &fallback);
+    let relays = relays_for_public_fetch(&hints);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
     assert_eq!(relays[5], "wss://hint5.example");
@@ -2245,7 +2390,9 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     assert!(!json.contains("\"key\""));
     assert!(!json.contains("nevent"));
 
-    assert!(publish_result(String::new(), accepted, &[]).locator.is_empty());
+    assert!(publish_result(String::new(), accepted, &[])
+        .locator
+        .is_empty());
     let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new(), &[]);
     assert!(failed.locator.is_empty());
     assert!(failed.accepted.is_empty());
@@ -2913,7 +3060,10 @@ fn the_homepage_omits_the_configured_names() {
     }
     assert!(!sidebar.contains("Config.toml"), "{sidebar}");
     assert!(!help.contains("Config.toml"), "{help}");
-    assert!(!sidebar.contains("No public relays configured."), "{sidebar}");
+    assert!(
+        !sidebar.contains("No public relays configured."),
+        "{sidebar}"
+    );
     assert!(!help.contains("No public relays configured."), "{help}");
     assert!(sidebar.contains("No relays."));
     assert!(help.contains("No relays."));
@@ -3367,7 +3517,7 @@ fn region<'a>(html: &'a str, start: &str, end: &str) -> &'a str {
 }
 
 #[test]
-fn the_homepage_and_sealed_fetch_stay_on_the_config_relays() {
+fn the_homepage_leaves_out_configured_names_and_the_pool() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     let document: serde_json::Value =
@@ -3414,9 +3564,10 @@ fn the_homepage_and_sealed_fetch_stay_on_the_config_relays() {
         assert!(!sidebar.contains("wss://pool.example"));
         assert!(!help.contains("wss://pool.example"));
     }
+    assert!(relays_for_public_fetch(&[]).is_empty());
     assert_eq!(
-        relays_for_public_fetch(&[], &config.nostr.relays),
-        config.nostr.relays
+        relays_for_public_fetch(&["wss://link.example".to_string()]),
+        vec!["wss://link.example".to_string()]
     );
 
     let home = include_str!("../src/pages/home.rs");
@@ -3424,7 +3575,7 @@ fn the_homepage_and_sealed_fetch_stay_on_the_config_relays() {
     assert!(!home.contains("usable_rows"));
     assert!(!sealed.contains("usable_rows"));
     assert!(home.contains("config.nostr.relays"));
-    assert!(sealed.contains("config.nostr.relays"));
+    assert!(!sealed.contains("config.nostr.relays"));
 }
 
 #[test]

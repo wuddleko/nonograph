@@ -213,6 +213,40 @@ fn a_title_tag_is_dropped_on_the_sealed_fetch_path() {
 }
 
 #[test]
+fn a_fetch_of_that_relay_returns_the_note_and_a_dead_relay_returns_nothing() {
+    let locator = "0123456789abcdef0123";
+    let note = sign_sealed_note("kept", locator, 1_700_000_000);
+    let answers = RelayAnswer::begin();
+    answers.answer("wss://live.example", &note.event_json);
+    let event_id = note.id_hex();
+    let started = Instant::now();
+    assert_eq!(
+        fetch_sealed(
+            &["wss://live.example".to_string()],
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            Duration::from_secs(2),
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert!(fetch_sealed(
+        &["wss://dead.example".to_string()],
+        &event_id,
+        locator,
+        128,
+        32,
+        4,
+        Duration::from_secs(2),
+    )
+    .is_none());
+    assert!(started.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
 fn fetch_sealed_skips_when_it_cannot_ask() {
     let event_id = "ab".repeat(32);
     assert!(fetch_sealed(
