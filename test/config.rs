@@ -135,6 +135,14 @@ fn test_post_validation() {
             .unwrap_err(),
         "alias_too_long"
     );
+
+    let characters = "é".repeat(128);
+    assert!(config.validate_post(&characters, "Content", None).is_ok());
+    let over = "é".repeat(129);
+    assert_eq!(
+        config.validate_post(&over, "Content", None).unwrap_err(),
+        "title_too_long"
+    );
 }
 
 #[test]

@@ -293,16 +293,16 @@ impl Config {
             return Err("content_required".to_string());
         }
 
-        if title.len() > self.limits.title_max_length {
+        if title.chars().count() > self.limits.title_max_length {
             return Err("title_too_long".to_string());
         }
 
-        if content.len() > self.limits.content_max_length {
+        if content.chars().count() > self.limits.content_max_length {
             return Err("content_too_long".to_string());
         }
 
         if let Some(alias) = alias {
-            if alias.len() > self.limits.alias_max_length {
+            if alias.chars().count() > self.limits.alias_max_length {
                 return Err("alias_too_long".to_string());
             }
         }

@@ -1,13 +1,19 @@
 ---
 title: API Documentation
-date: 2026-10-10
+date: 2026-10-13
 author: nonograph
-generator: nonograph v0.2.8
+generator: nonograph v0.4.6
 ---
 
 Publishing does not write a file on this host. A note is sealed, then the ciphertext is sent to Nostr relays. The host does not keep a copy of the writing. The link you get carries the key.
 
 There are two ways in.
+
+## Limits
+
+Title, alias, and content lengths come from `[limits]` in `Config.toml`. Each check counts characters. When that file is missing, the limits are 128, 32, and 128,000. This repository's file sets the content limit to 256,000.
+
+Title and alias are trimmed before the check. A blank alias is omitted. Content is not trimmed: a value that is empty after trimming is `content_required`, and any other value is sealed with its spaces kept.
 
 ## No JavaScript
 
@@ -19,20 +25,26 @@ The host seals the note and publishes it. The form on `/nojs` is this request.
 ### Parameters
 | Field | Required | Description |
 |-------|----------|-------------|
-| `title` | Yes | Title. Trimmed. Default limit 128 characters. |
-| `content` | Yes | Markup. Not trimmed. Default limit 128,000 characters. |
-| `alias` | No | Optional name. Trimmed. Default limit 32 characters. |
-| `csrf_token` | When CSRF is on | Token from the form. |
-| `relay` | No | One extra public `wss://` relay. A private or local URL is rejected. |
-| `relay_box` | No | Same check as `relay`. The box wins when both are set. |
+| `title` | Yes | Title. Trimmed. |
+| `content` | Yes | Markup. Not trimmed. |
+| `alias` | No | Optional name. Trimmed. |
+| `csrf_token` | When CSRF is on | Must match the `nonograph_csrf` cookie. |
+| `relay` | No | Saved extra relay. Used only when `relay_box` is empty and this value is a public relay. Any other value is ignored. |
+| `relay_box` | No | Typed extra relay. When this is non-empty after trimming, it is used instead of `relay`. A value that is not a public relay is `relay_invalid`. |
+
+A public relay is `wss://` on port 443, with no username or password, and not a local or private address.
+
+The extra relay is placed first. The instance relays follow. That list can be 7.
 
 ### Success
 **Status:** `303` redirect to `/s/{locator}/{event-id}#key`
 
-The key is the URL fragment. The host does not store it. A relay you added is included as `?r=`.
+The key is the URL fragment. The host does not store it. `?r=` is added only when the extra relay accepted the note and is not already listed in `Config.toml`.
 
 ### Failure
 The form is rendered again with an error. Common codes: `title_required`, `content_required`, `title_too_long`, `content_too_long`, `alias_too_long`, `csrf_token_invalid`, `relay_invalid`, `nostr_publish_failed`.
+
+A busy publish slot is `nostr_publish_failed` on this path.
 
 ## JavaScript
 
@@ -49,7 +61,7 @@ The browser seals the note, then posts the sealed event.
 }
 ```
 
-`event` must already be a sealed note (kind 30323) with a valid signature and stamp. This endpoint does not accept plaintext. `relays` are extra public relays; the instance relays come from `Config.toml`. Private relay URLs are dropped.
+`event` must already be a sealed note (kind 30323) with a valid signature and stamp. This endpoint does not accept plaintext. `relays` are extra public relays. The instance relays come from `Config.toml` and take the slots first. At most 6 public relays are used, so a later extra relay is dropped. Private relay URLs are dropped. When CSRF is on, `csrf_token` must match the `nonograph_csrf` cookie.
 
 ### Success
 **Status:** `200`
@@ -57,15 +69,20 @@ The browser seals the note, then posts the sealed event.
 { "locator": "0123456789abcdef0123", "accepted": ["wss://relay.example"] }
 ```
 
-`locator` is empty when no public relay accepted the note.
+`locator` is empty when no public relay accepted the note. That response is still 200.
 
 ### Failure
 | Status | When |
 |--------|------|
 | `400` | CSRF failed, the event is not a sealed note, or no public relay remains |
+| `422` | The body is not the JSON object above |
 | `503` | The publish slot is busy, or the publish task failed |
 
 ## Reading
-A sealed note opens at `/s/{locator}/{event-id}` with the key in the fragment. `/nojs/s/...` is the same page without scripts. The host fetches the ciphertext from relays and does not keep it.
+`GET /s/{locator}/{event-id}` opens a sealed note with the key in the fragment. The host fetches the ciphertext from relays and does not keep it.
+
+`GET /nojs/s/{locator}/{event-id}` redirects. A valid `?k=` secret returns **303** to `/s/{locator}/{event-id}#key`. Any other `k` returns **303** to `/s/{locator}/{event-id}` with no fragment. A bad locator or event id is **404**.
+
+The no-JS note is `POST /s/{locator}/{event-id}` with the key in the form field `k`. Extra relays are repeated form fields named `r`.
 
 The site pages `/about`, `/legal`, `/api`, and `/markup` are the only pages stored here. Their no-JS addresses are `/nojs/about` and the same for the other three.
