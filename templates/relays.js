@@ -58,14 +58,13 @@ function dealRelays(candidates, open, pinned, removed) {
 }
 
 function loadRelayList(storage, candidates) {
-    const saved = readRelayList(storage);
-    if (saved.dealt.length !== 0 || saved.pinned.length !== 0) {
-        return saved;
+    if (storage.getItem(RELAY_LIST_KEY) == null) {
+        return writeRelayList(storage, {
+            dealt: dealRelays(candidates, 3, [], []),
+            pinned: [],
+        });
     }
-    return writeRelayList(storage, {
-        dealt: dealRelays(candidates, 3, [], []),
-        pinned: [],
-    });
+    return readRelayList(storage);
 }
 
 const RELAY_CAP = 6;
@@ -231,6 +230,25 @@ function addRelay(storage, url) {
     return writeRelayList(storage, { dealt, pinned });
 }
 
+function addRelayResult(storage, url) {
+    const canonical = canonicalRelay(url);
+    const saved = readRelayList(storage);
+    if (!canonical) {
+        return {
+            list: saved,
+            error: url.trim() ? "Use a public wss:// relay URL." : "Enter a relay URL.",
+            clear: false,
+        };
+    }
+    if (saved.pinned.includes(canonical)) {
+        return { list: saved, error: "", clear: true };
+    }
+    if (saved.pinned.length >= RELAY_CAP) {
+        return { list: saved, error: "Six relays are already pinned.", clear: false };
+    }
+    return { list: addRelay(storage, url), error: "", clear: true };
+}
+
 function removeRelay(storage, url) {
     const saved = readRelayList(storage);
     return writeRelayList(storage, {
@@ -338,8 +356,9 @@ function bindRelayActions(storage) {
     if (add) {
         add.addEventListener("click", () => {
             const typed = input ? input.value : "";
-            list = addRelay(storage, typed);
-            if (canonicalRelay(typed)) {
+            const result = addRelayResult(storage, typed);
+            list = result.list;
+            if (result.clear) {
                 if (input) {
                     input.value = "";
                 }
@@ -347,9 +366,7 @@ function bindRelayActions(storage) {
                     error.textContent = "";
                 }
             } else if (error) {
-                error.textContent = typed.trim()
-                    ? "Use a public wss:// relay URL."
-                    : "Enter a relay URL.";
+                error.textContent = result.error;
             }
             paintRelayList(list);
         });

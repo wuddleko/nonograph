@@ -96,11 +96,92 @@ pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> Str
         </div>\n\
         <button type=\"button\" class=\"relay-delete-all\">Delete all</button>\n\
         </div>\n\
-        <script type=\"application/json\" id=\"relay-candidates\">{candidates}</script>\n",
-        candidates = serde_json::to_string(candidates)
-            .unwrap_or_else(|_| "[]".to_string())
-            .replace('<', "\\u003c"),
+        {candidates}",
+        candidates = candidate_script(candidates),
     )
+}
+
+pub(crate) fn render_nojs_relay_form(
+    dealt: &[String],
+    pinned: &[String],
+    candidates: &[String],
+    csrf_token: &str,
+    add_error: &str,
+    typed: &str,
+) -> String {
+    let mut items = String::new();
+    for relay in pinned.iter().chain(dealt.iter()) {
+        if !public_relay_url(relay) {
+            continue;
+        }
+        let label = relay_label(relay);
+        items.push_str("<li data-relay=\"");
+        items.push_str(&html_attr_escape(relay));
+        items.push_str("\"><span class=\"relay-name\">");
+        items.push_str(&html_escape(&label));
+        items.push_str(
+            "</span><form class=\"relay-remove-form\" method=\"post\" action=\"/nojs/relays\">",
+        );
+        items.push_str(&hidden_csrf(csrf_token));
+        items.push_str("<button type=\"submit\" class=\"relay-remove\" name=\"remove\" value=\"");
+        items.push_str(&html_attr_escape(relay));
+        items.push_str("\" aria-label=\"Remove relay\">×</button></form></li>\n");
+    }
+    let list = if items.is_empty() {
+        "<p class=\"relay-empty\">No relays.</p>\n".to_string()
+    } else {
+        format!("<ul class=\"relay-list relay-list-user\">\n{items}</ul>\n")
+    };
+    let total = pinned.len() + dealt.len();
+    let csrf = hidden_csrf(csrf_token);
+    let add_error = html_escape(add_error);
+    let typed_attr = if typed.is_empty() {
+        String::new()
+    } else {
+        format!(" value=\"{}\"", html_attr_escape(typed))
+    };
+    format!(
+        "{list}\
+        <div class=\"relay-deal-controls\">\n\
+        <form method=\"post\" action=\"/nojs/relays\">\n\
+        {csrf}\
+        <div class=\"relay-count-row\">\n\
+        <input class=\"relay-count\" type=\"number\" name=\"count\" value=\"{total}\" min=\"{floor}\" max=\"6\" aria-label=\"How many relays\" />\n\
+        <button type=\"submit\" class=\"relay-count-set\" name=\"action\" value=\"count\">Set</button>\n\
+        <button type=\"submit\" class=\"relay-reshuffle\" name=\"action\" value=\"reshuffle\">Reshuffle</button>\n\
+        </div>\n\
+        </form>\n\
+        <form class=\"relay-add\" data-relay-add method=\"post\" action=\"/nojs/relays\">\n\
+        {csrf}\
+        <div class=\"relay-add-row\">\n\
+        <input class=\"relay-url-input\" type=\"text\" name=\"relay\"{typed_attr} inputmode=\"url\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"wss://…\" maxlength=\"255\" />\n\
+        <button type=\"submit\" class=\"relay-add-btn\" name=\"action\" value=\"add\">Add</button>\n\
+        </div>\n\
+        <p class=\"relay-add-error\">{add_error}</p>\n\
+        </form>\n\
+        <form method=\"post\" action=\"/nojs/relays\">\n\
+        {csrf}\
+        <button type=\"submit\" class=\"relay-delete-all\" name=\"action\" value=\"delete\">Delete all</button>\n\
+        </form>\n\
+        </div>\n\
+        {candidates}",
+        floor = pinned.len(),
+        candidates = candidate_script(candidates),
+    )
+}
+
+fn hidden_csrf(token: &str) -> String {
+    format!(
+        "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\" />\n",
+        html_attr_escape(token)
+    )
+}
+
+fn candidate_script(candidates: &[String]) -> String {
+    let json = serde_json::to_string(candidates)
+        .unwrap_or_else(|_| "[]".to_string())
+        .replace('<', "\\u003c");
+    format!("<script type=\"application/json\" id=\"relay-candidates\">{json}</script>\n")
 }
 
 fn render_list(relays: &[String]) -> String {

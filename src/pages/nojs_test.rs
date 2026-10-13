@@ -6,8 +6,32 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+static NOJS_PUBLISH_ACCEPTED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+static NOJS_PUBLISH_RELAYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 pub(super) fn nojs_test_accepted() -> Option<Vec<String>> {
-    NOJS_TEST_ACCEPTED.with(|slot| slot.borrow().clone())
+    if let Some(accepted) = NOJS_TEST_ACCEPTED.with(|slot| slot.borrow().clone()) {
+        return Some(accepted);
+    }
+    NOJS_PUBLISH_ACCEPTED
+        .lock()
+        .expect("nojs publish accepted")
+        .clone()
+}
+
+pub(super) fn set_shared_nojs_accepted(accepted: Option<Vec<String>>) {
+    *NOJS_PUBLISH_ACCEPTED.lock().expect("nojs publish accepted") = accepted;
+}
+
+pub(super) fn note_nojs_publish_relays(relays: &[String]) {
+    *NOJS_PUBLISH_RELAYS.lock().expect("nojs publish relays") = relays.to_vec();
+}
+
+pub(super) fn nojs_publish_relays_seen() -> Vec<String> {
+    NOJS_PUBLISH_RELAYS
+        .lock()
+        .expect("nojs publish relays")
+        .clone()
 }
 
 pub(super) fn set_nojs_test_accepted(accepted: Option<Vec<String>>) {

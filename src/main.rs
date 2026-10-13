@@ -362,6 +362,8 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::about_page,
                 pages::api_page,
                 pages::relays_page,
+                pages::nojs_relays_page,
+                pages::nojs_relays_update,
                 pages::robots_txt,
                 pages::nojs_index,
                 pages::nojs_static_page,

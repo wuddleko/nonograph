@@ -12,10 +12,10 @@ pub use assets::{
     cache_control_for_path, entity_tag_for_path, home_css, home_js, home_noscript_css,
     if_none_match_matches, nostr_js, notice_css, parser_js, parser_wasm, post_css, post_js,
     post_noscript_css, relays_js, robots_txt, secp256k1_js, theme_js, warm, writemark_css,
-    writemark_js,
-    HOME_CSS_PATH, HOME_JS_PATH, HOME_NOSCRIPT_CSS_PATH, NOSTR_JS_PATH, NOTICE_CSS_PATH,
-    PAGE_JS_PATH, PAGE_WASM_PATH, POST_CSS_PATH, POST_JS_PATH, POST_NOSCRIPT_CSS_PATH,
-    RELAYS_JS_PATH, SECP256K1_JS_PATH, THEME_JS_PATH, WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH,
+    writemark_js, HOME_CSS_PATH, HOME_JS_PATH, HOME_NOSCRIPT_CSS_PATH, NOSTR_JS_PATH,
+    NOTICE_CSS_PATH, PAGE_JS_PATH, PAGE_WASM_PATH, POST_CSS_PATH, POST_JS_PATH,
+    POST_NOSCRIPT_CSS_PATH, RELAYS_JS_PATH, SECP256K1_JS_PATH, THEME_JS_PATH, WRITEMARK_CSS_PATH,
+    WRITEMARK_JS_PATH,
 };
 pub(crate) use assets::{post_scripts, PAGE_JS};
 pub(crate) use fetch_slot::{
@@ -30,7 +30,7 @@ pub(crate) use home::{
     NewPost, TorCircuitsBody,
 };
 pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
-pub use relays::relays_page;
+pub use relays::{nojs_relays_page, nojs_relays_update, relays_page};
 pub(crate) use sealed::{
     fetch_sealed_by_id, nojs_open_fetched, nojs_opened_page, nojs_query_secret,
     nojs_sealed_response, sealed_shell,
@@ -50,7 +50,8 @@ use home::{
 };
 #[cfg(test)]
 use nojs_test::{
-    nojs_fetch_hints_seen, set_nojs_test_accepted, set_nojs_test_fetch, NojsTestFetch,
+    nojs_fetch_hints_seen, nojs_publish_relays_seen, note_nojs_publish_relays,
+    set_nojs_test_accepted, set_nojs_test_fetch, set_shared_nojs_accepted, NojsTestFetch,
     NOJS_FETCH_HINTS, NOJS_RECORD_HINTS,
 };
 

@@ -329,6 +329,15 @@ fn csrf_failure(config: &Config, field: &str, cookie: &str) -> Option<&'static s
 }
 
 pub(crate) fn create_location(form: &NewPost, config: &Config, csrf_cookie: &str) -> String {
+    create_location_with_cookie(form, config, csrf_cookie, None)
+}
+
+fn create_location_with_cookie(
+    form: &NewPost,
+    config: &Config,
+    csrf_cookie: &str,
+    relay_cookie: Option<&str>,
+) -> String {
     let home = "/nojs";
     if let Some(error) = csrf_failure(config, &form.csrf_token, csrf_cookie) {
         return format!("{home}?error={error}");
@@ -344,10 +353,10 @@ pub(crate) fn create_location(form: &NewPost, config: &Config, csrf_cookie: &str
     if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
         return format!("{home}?error=relay_invalid");
     }
-    if nojs_publish_relays(relay, &config.nostr.relays).is_none() {
+    if relays_for_nojs_write(relay_cookie, relay, &config.nostr.relays).is_none() {
         return format!("{home}?error=nostr_publish_failed");
     }
-    match publish_nojs_note(form, config) {
+    match publish_nojs_note_with_cookie(form, config, relay_cookie) {
         Ok(published) => nojs_sealed_location(&published, &config.nostr.relays)
             .unwrap_or_else(|| format!("{home}?error=nostr_publish_failed")),
         Err(error) => format!("{home}?error={error}"),
@@ -366,8 +375,18 @@ pub(super) fn publish_nojs_note(
     form: &NewPost,
     config: &Config,
 ) -> Result<NojsPublished, &'static str> {
-    let relays = nojs_publish_relays(nojs_chosen_relay(form), &config.nostr.relays)
+    publish_nojs_note_with_cookie(form, config, None)
+}
+
+fn publish_nojs_note_with_cookie(
+    form: &NewPost,
+    config: &Config,
+    relay_cookie: Option<&str>,
+) -> Result<NojsPublished, &'static str> {
+    let relays = relays_for_nojs_write(relay_cookie, nojs_chosen_relay(form), &config.nostr.relays)
         .ok_or("nostr_publish_failed")?;
+    #[cfg(test)]
+    super::nojs_test::note_nojs_publish_relays(&relays);
     let sealed = match crate::seal::seal_and_sign(
         form.title.trim(),
         form.alias.trim(),
@@ -454,6 +473,26 @@ pub(super) fn nojs_chosen_relay(form: &NewPost) -> &str {
         return saved;
     }
     ""
+}
+
+fn relays_for_nojs_write(
+    relay_cookie: Option<&str>,
+    relay: &str,
+    configured: &[String],
+) -> Option<Vec<String>> {
+    if let Some(list) = super::relays::saved_relay_cookie(relay_cookie) {
+        let mut relays = Vec::new();
+        for url in list.pinned.iter().chain(list.dealt.iter()) {
+            push_public_relay(&mut relays, url);
+        }
+        if relays.is_empty() {
+            None
+        } else {
+            Some(relays)
+        }
+    } else {
+        nojs_publish_relays(relay, configured)
+    }
 }
 
 pub(super) fn nojs_publish_relays(relay: &str, configured: &[String]) -> Option<Vec<String>> {
@@ -621,8 +660,11 @@ pub async fn nojs_create_post(
     let config_owned = config.inner().clone();
     let moved = form.clone();
     let csrf_cookie = request_csrf_cookie(cookies);
+    let relay_cookie = cookies
+        .get(super::relays::RELAY_LIST_COOKIE)
+        .map(|cookie| cookie.value().to_string());
     let location = match rocket::tokio::task::spawn_blocking(move || {
-        create_location(&moved, &config_owned, &csrf_cookie)
+        create_location_with_cookie(&moved, &config_owned, &csrf_cookie, relay_cookie.as_deref())
     })
     .await
     {

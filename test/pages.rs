@@ -3037,6 +3037,50 @@ fn nojs_create_builds_the_public_relay_list_and_fails_when_it_is_empty() {
 
 #[test]
 #[serial(nojs_sealed_fetch)]
+fn a_publish_relay_list_equals_the_cookie() {
+    struct ClearPublish;
+    impl Drop for ClearPublish {
+        fn drop(&mut self) {
+            set_shared_nojs_accepted(None);
+            note_nojs_publish_relays(&[]);
+        }
+    }
+    let _clear = ClearPublish;
+
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    config.nostr.timeout_secs = 1;
+    config.nostr.relays = vec!["wss://config.example".to_string()];
+    let saved = super::relays::write_relay_cookie(&super::relays::RelayCookie {
+        dealt: vec![
+            "wss://dealt.example".to_string(),
+            "wss://other.example".to_string(),
+        ],
+        pinned: vec!["wss://pin.example".to_string()],
+    });
+    let list = super::relays::saved_relay_cookie(Some(&saved)).expect("relay cookie");
+    let expected: Vec<String> = list.pinned.into_iter().chain(list.dealt).collect();
+    set_shared_nojs_accepted(Some(expected.clone()));
+    note_nojs_publish_relays(&[]);
+
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::nojs_create_post]),
+    )
+    .unwrap();
+    let published = client
+        .post("/nojs/create")
+        .cookie((super::relays::RELAY_LIST_COOKIE, saved))
+        .header(ContentType::Form)
+        .body("title=Hello&content=hi&alias=Ada&csrf_token=")
+        .dispatch();
+    assert_eq!(published.status(), Status::SeeOther);
+    assert_eq!(nojs_publish_relays_seen(), expected);
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
 fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;

@@ -1141,6 +1141,14 @@
                 pointer-events: auto;
             }
 
+            .relays-page form {
+                margin: 0;
+            }
+
+            .relays-page .relay-remove-form {
+                display: contents;
+            }
+
             .relays-page .relay-deal-controls {
                 display: flex;
                 flex-direction: column;
@@ -1174,6 +1182,7 @@
             }
 
             .relays-page .relay-reshuffle,
+            .relays-page .relay-count-set,
             .relays-page .relay-delete-all {
                 margin: 0;
             }
