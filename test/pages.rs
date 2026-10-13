@@ -17,6 +17,7 @@ fn static_assets_are_cacheable_and_html_is_not() {
         WRITEMARK_CSS_PATH,
         NOTICE_CSS_PATH,
         THEME_JS_PATH,
+        RELAYS_JS_PATH,
     ] {
         assert_eq!(
             cache_control_for_path(path),

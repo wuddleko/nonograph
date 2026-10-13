@@ -11,10 +11,11 @@ mod static_pages;
 pub use assets::{
     cache_control_for_path, entity_tag_for_path, home_css, home_js, home_noscript_css,
     if_none_match_matches, nostr_js, notice_css, parser_js, parser_wasm, post_css, post_js,
-    post_noscript_css, robots_txt, secp256k1_js, theme_js, warm, writemark_css, writemark_js,
+    post_noscript_css, relays_js, robots_txt, secp256k1_js, theme_js, warm, writemark_css,
+    writemark_js,
     HOME_CSS_PATH, HOME_JS_PATH, HOME_NOSCRIPT_CSS_PATH, NOSTR_JS_PATH, NOTICE_CSS_PATH,
     PAGE_JS_PATH, PAGE_WASM_PATH, POST_CSS_PATH, POST_JS_PATH, POST_NOSCRIPT_CSS_PATH,
-    SECP256K1_JS_PATH, THEME_JS_PATH, WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH,
+    RELAYS_JS_PATH, SECP256K1_JS_PATH, THEME_JS_PATH, WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH,
 };
 pub(crate) use assets::{post_scripts, PAGE_JS};
 pub(crate) use fetch_slot::{
