@@ -14,16 +14,7 @@ pub fn canonical_public_relay(relay: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    let mut path = url.path().trim_end_matches('/').to_string();
-    if path == "/" {
-        path.clear();
-    }
-    let mut canonical = format!("wss://{host}{path}");
-    if let Some(query) = url.query() {
-        canonical.push('?');
-        canonical.push_str(query);
-    }
-    Some(canonical)
+    Some(format!("wss://{host}"))
 }
 
 fn public_relay_url(relay: &str) -> bool {

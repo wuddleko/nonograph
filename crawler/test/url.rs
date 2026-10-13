@@ -8,7 +8,7 @@ fn canonical_public_relay_accepts_one_public_spelling() {
     );
     assert_eq!(
         canonical_public_relay("wss://nos.lol/path/"),
-        Some("wss://nos.lol/path".to_string())
+        Some("wss://nos.lol".to_string())
     );
     assert_eq!(
         canonical_public_relay("wss://Relay.Damus.io/"),
@@ -16,7 +16,7 @@ fn canonical_public_relay_accepts_one_public_spelling() {
     );
     assert_eq!(
         canonical_public_relay("wss://nos.lol/?x=1"),
-        Some("wss://nos.lol?x=1".to_string())
+        Some("wss://nos.lol".to_string())
     );
     assert_eq!(
         canonical_public_relay("wss://Example.Onion/"),
