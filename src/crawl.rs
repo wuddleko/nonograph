@@ -15,6 +15,8 @@ pub(crate) const DOORS: [&str; 3] = [
 
 pub(crate) const WORKERS: usize = 4;
 
+pub(crate) const CANDIDATE_CAP: usize = 48;
+
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
 }
@@ -153,6 +155,14 @@ pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
         .rows
         .into_iter()
         .filter(|row| row_is_usable(row))
+        .collect()
+}
+
+pub(crate) fn candidates(path: &Path) -> Vec<String> {
+    usable_rows(path)
+        .into_iter()
+        .take(CANDIDATE_CAP)
+        .map(|row| row.url)
         .collect()
 }
 
@@ -566,5 +576,49 @@ mod tests {
         let usable = usable_rows(&path);
         assert_eq!(usable.len(), 1);
         assert_eq!(usable[0].url, "wss://open.example");
+    }
+
+    #[test]
+    fn candidates_return_the_open_relay_and_leave_out_an_unvisited_door() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        save(
+            &path,
+            &Pool {
+                rows: vec![
+                    visited("wss://closed.example", false, open.clone(), true),
+                    row("wss://relay.primal.net", NOW, None),
+                    visited("wss://open.example", true, open, true),
+                ],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(candidates(&path), vec!["wss://open.example".to_string()]);
+    }
+
+    #[test]
+    fn candidates_stop_at_forty_eight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let rows = (0..49)
+            .map(|index| {
+                visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                )
+            })
+            .collect();
+        save(&path, &Pool { rows }).unwrap();
+
+        let urls = candidates(&path);
+        assert_eq!(urls.len(), 48);
+        assert_eq!(urls[0], "wss://relay0.example");
+        assert_eq!(urls[47], "wss://relay47.example");
+        assert!(!urls.iter().any(|url| url == "wss://relay48.example"));
     }
 }
