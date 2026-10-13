@@ -1111,3 +1111,69 @@
                     display: none; /* Hide links on mobile since they're not in header */
                 }
             }
+
+            .relays-page h1 {
+                font-size: 54px;
+                font-weight: 700;
+                letter-spacing: -0.03em;
+                text-transform: uppercase;
+                line-height: 0.95;
+                margin: 6px 0 28px;
+            }
+
+            .relays-page .relay-list,
+            .relays-page .relay-deal-controls,
+            .relays-page .relay-empty {
+                max-width: 420px;
+            }
+
+            .relays-page .relay-list {
+                margin: 0 0 20px;
+            }
+
+            .relays-page .relay-empty {
+                margin: 0 0 20px;
+                font-size: 15px;
+            }
+
+            .relays-page .relay-list-user .relay-remove {
+                opacity: 1;
+                pointer-events: auto;
+            }
+
+            .relays-page .relay-deal-controls {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 16px;
+            }
+
+            .relays-page .relay-count-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .relays-page .relay-count {
+                width: 64px;
+                height: 28px;
+                margin: 0;
+                padding: 0 8px;
+                font-size: 14px;
+                font-family: var(--face);
+                line-height: 28px;
+                border: 1px solid var(--ink);
+                border-radius: 0;
+                background: var(--ground);
+                color: var(--ink);
+                box-sizing: border-box;
+            }
+
+            .relays-page .relay-add-row {
+                max-width: 100%;
+            }
+
+            .relays-page .relay-reshuffle,
+            .relays-page .relay-delete-all {
+                margin: 0;
+            }

@@ -90,6 +90,69 @@ fn nojs_sidebar_names_the_relay_field() {
     assert!(erred.contains("<p class=\"relay-add-error\">Use a public wss:// relay URL.</p>"));
 }
 
+#[test]
+fn dealt_rows_list_three_relays_and_an_empty_slice_is_empty() {
+    let html = render_dealt_rows(
+        &[
+            "wss://a.example".to_string(),
+            "wss://b.example".to_string(),
+            "wss://c.example".to_string(),
+        ],
+        &[],
+    );
+    assert!(html.contains("<li data-relay=\"wss://a.example\">"));
+    assert!(html.contains("<li data-relay=\"wss://b.example\">"));
+    assert!(html.contains("<li data-relay=\"wss://c.example\">"));
+    assert_eq!(html.matches("class=\"relay-remove\"").count(), 3);
+    assert!(!html.contains("relay-empty"));
+    assert!(html.contains(
+        "<input class=\"relay-count\" type=\"number\" value=\"3\" max=\"6\" aria-label=\"How many relays\" />"
+    ));
+    assert!(html.contains("<button type=\"button\" class=\"relay-reshuffle\">Reshuffle</button>"));
+    assert!(html.contains("<div class=\"relay-add\" data-relay-add>"));
+    assert!(html.contains("class=\"relay-url-input\""));
+    assert!(html.contains("<button type=\"button\" class=\"relay-add-btn\">Add</button>"));
+    assert!(html.contains("<p class=\"relay-add-error\"></p>"));
+    assert!(html.contains("<button type=\"button\" class=\"relay-delete-all\">Delete all</button>"));
+
+    let empty = render_dealt_rows(&[], &[]);
+    assert!(empty.contains("<p class=\"relay-empty\">No relays.</p>"));
+    assert!(!empty.contains("relay-remove"));
+    assert!(!empty.contains("<li"));
+}
+
+#[test]
+fn dealt_rows_embed_every_candidate_and_list_the_first_three() {
+    let candidates = vec![
+        "wss://a.example".to_string(),
+        "wss://b.example".to_string(),
+        "wss://c.example".to_string(),
+        "wss://d.example".to_string(),
+        "wss://e.example".to_string(),
+    ];
+    let html = render_dealt_rows(&candidates[..3], &candidates);
+    assert!(html.contains("<li data-relay=\"wss://a.example\">"));
+    assert!(html.contains("<li data-relay=\"wss://b.example\">"));
+    assert!(html.contains("<li data-relay=\"wss://c.example\">"));
+    assert!(!html.contains("<li data-relay=\"wss://d.example\">"));
+    assert!(!html.contains("<li data-relay=\"wss://e.example\">"));
+    let json = serde_json::to_string(&candidates).unwrap();
+    assert!(html.contains(&format!(
+        "<script type=\"application/json\" id=\"relay-candidates\">{json}</script>"
+    )));
+}
+
+#[test]
+fn dealt_rows_escape_a_script_close_in_the_candidate_json() {
+    let candidates = vec!["wss://a.example/</script>".to_string()];
+    let html = render_dealt_rows(&[], &candidates);
+    assert!(html.contains(
+        "<script type=\"application/json\" id=\"relay-candidates\">[\"wss://a.example/\\u003c/script>\"]</script>"
+    ));
+    assert_eq!(html.matches("</script>").count(), 1);
+    assert!(!html.contains("</script><script"));
+}
+
 fn relay_input(html: &str) -> &str {
     let start = html.find("<input class=\"relay-url-input\"").unwrap();
     let rest = &html[start..];

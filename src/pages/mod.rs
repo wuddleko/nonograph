@@ -4,6 +4,7 @@ mod home;
 mod layout;
 #[cfg(test)]
 mod nojs_test;
+mod relays;
 mod sealed;
 mod static_pages;
 
@@ -28,6 +29,7 @@ pub(crate) use home::{
     NewPost, TorCircuitsBody,
 };
 pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
+pub use relays::relays_page;
 pub(crate) use sealed::{
     fetch_sealed_by_id, nojs_open_fetched, nojs_opened_page, nojs_query_secret,
     nojs_sealed_response, sealed_shell,

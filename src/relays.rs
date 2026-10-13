@@ -60,6 +60,49 @@ pub fn render_about_section(relays: &[String], nojs: bool) -> String {
     html
 }
 
+pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> String {
+    let mut items = String::new();
+    for relay in relays {
+        if !public_relay_url(relay) {
+            continue;
+        }
+        let label = relay_label(relay);
+        items.push_str("<li data-relay=\"");
+        items.push_str(&html_attr_escape(relay));
+        items.push_str("\"><span class=\"relay-name\">");
+        items.push_str(&html_escape(&label));
+        items.push_str(
+            "</span><button type=\"button\" class=\"relay-remove\" aria-label=\"Remove relay\">×</button></li>\n",
+        );
+    }
+    let list = if items.is_empty() {
+        "<p class=\"relay-empty\">No relays.</p>\n".to_string()
+    } else {
+        format!("<ul class=\"relay-list relay-list-user\">\n{items}</ul>\n")
+    };
+    format!(
+        "{list}\
+        <div class=\"relay-deal-controls\">\n\
+        <div class=\"relay-count-row\">\n\
+        <input class=\"relay-count\" type=\"number\" value=\"3\" max=\"6\" aria-label=\"How many relays\" />\n\
+        <button type=\"button\" class=\"relay-reshuffle\">Reshuffle</button>\n\
+        </div>\n\
+        <div class=\"relay-add\" data-relay-add>\n\
+        <div class=\"relay-add-row\">\n\
+        <input class=\"relay-url-input\" type=\"text\" inputmode=\"url\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"wss://…\" maxlength=\"255\" />\n\
+        <button type=\"button\" class=\"relay-add-btn\">Add</button>\n\
+        </div>\n\
+        <p class=\"relay-add-error\"></p>\n\
+        </div>\n\
+        <button type=\"button\" class=\"relay-delete-all\">Delete all</button>\n\
+        </div>\n\
+        <script type=\"application/json\" id=\"relay-candidates\">{candidates}</script>\n",
+        candidates = serde_json::to_string(candidates)
+            .unwrap_or_else(|_| "[]".to_string())
+            .replace('<', "\\u003c"),
+    )
+}
+
 fn render_list(relays: &[String]) -> String {
     let mut items = String::new();
     for relay in relays {
