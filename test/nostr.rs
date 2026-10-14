@@ -34,12 +34,7 @@ fn test_signed_note_verifies_and_ids_differ() {
 #[test]
 fn seal_query_asks_for_the_event_id() {
     let event_id = "ab".repeat(32);
-    let payload = req_payload(
-        "sub",
-        &event_id,
-        "0123456789abcdef0123",
-        crate::seal::sealed_payload_max(128, 32, 256),
-    );
+    let payload = req_payload("sub", &event_id);
     let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(value[0], "REQ");
     assert_eq!(value[1], "sub");

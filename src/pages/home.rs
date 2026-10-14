@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rocket::http::{CookieJar, SameSite, Status};
+use rocket::http::{CookieJar, Status};
 use rocket::response::content;
 use rocket::serde::json::Json;
 use rocket::State;
@@ -162,7 +162,7 @@ fn home_form_context(
     } else {
         home_error_message(Some(relay_error))
     };
-    let csrf_token = form_csrf_token(config, cookies);
+    let csrf_token = csrf::form_csrf_token(config, cookies);
     context.insert("csrf_token".to_string(), csrf_token.clone());
     context.insert(
         "form_action".to_string(),
@@ -325,40 +325,6 @@ pub(crate) struct NewPost {
     pub(super) content: String,
     pub(super) alias: String,
     pub(super) csrf_token: String,
-}
-
-fn csrf_cookie(token: &str) -> rocket::http::Cookie<'static> {
-    rocket::http::Cookie::build((csrf::COOKIE_NAME, token.to_owned()))
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .secure(false)
-        .max_age(rocket::time::Duration::seconds(csrf::TOKEN_TTL_SECS as i64))
-        .into()
-}
-
-fn form_csrf_token(config: &Config, cookies: Option<&CookieJar<'_>>) -> String {
-    if !config.security.csrf_protection_enabled {
-        return String::new();
-    }
-    let existing = cookies.and_then(|jar| {
-        jar.get(csrf::COOKIE_NAME)
-            .map(|cookie| cookie.value().to_string())
-    });
-    let (token, set_cookie) = csrf::token_for_form(existing.as_deref());
-    if set_cookie {
-        if let Some(jar) = cookies {
-            jar.add(csrf_cookie(&token));
-        }
-    }
-    token
-}
-
-fn request_csrf_cookie(cookies: &CookieJar<'_>) -> String {
-    cookies
-        .get(csrf::COOKIE_NAME)
-        .map(|cookie| cookie.value().to_string())
-        .unwrap_or_default()
 }
 
 fn csrf_failure(config: &Config, field: &str, cookie: &str) -> Option<&'static str> {
@@ -567,7 +533,7 @@ pub async fn nojs_create_post(
     let form = form.into_inner();
     let config_owned = config.inner().clone();
     let moved = form.clone();
-    let csrf_cookie = request_csrf_cookie(cookies);
+    let csrf_cookie = csrf::request_csrf_cookie(cookies);
     let relay_cookie = cookies
         .get(super::relays::RELAY_LIST_COOKIE)
         .map(|cookie| cookie.value().to_string());
@@ -709,7 +675,7 @@ pub fn assign_tor_circuits(
     cookies: &CookieJar<'_>,
 ) -> Status {
     let config = config.inner();
-    let csrf_cookie = request_csrf_cookie(cookies);
+    let csrf_cookie = csrf::request_csrf_cookie(cookies);
     let Some(relays) = relays_for_circuit_pass(&body, config, &csrf_cookie) else {
         return Status::BadRequest;
     };
@@ -758,7 +724,7 @@ pub async fn nostr_publish(
 ) -> Result<Json<NostrPublishResult>, Status> {
     let config = config.inner().clone();
     let body = body.into_inner();
-    let csrf_cookie = request_csrf_cookie(cookies);
+    let csrf_cookie = csrf::request_csrf_cookie(cookies);
     let Some(_slot) = PublicFetchSlot::acquire() else {
         return Err(Status::ServiceUnavailable);
     };

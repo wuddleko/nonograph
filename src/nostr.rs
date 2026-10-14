@@ -805,7 +805,6 @@ fn connect_relay(
 const NIP11_BODY_MAX: usize = 64 * 1024;
 const NIP11_HEAD_MAX: usize = 8 * 1024;
 
-#[allow(dead_code)]
 pub(crate) fn fetch_nip11(relay: &str, deadline: Instant, socks: RelaySocks) -> Option<String> {
     let request = nip11_request(relay).ok()?;
     with_relay_tls(relay, deadline, None, true, socks, |mut tls| {
@@ -1837,7 +1836,6 @@ fn probe_from_ok(message: &str, event_id_hex: &str) -> Option<crawler::ProbeResu
     Some(probe_result(sent))
 }
 
-#[allow(dead_code)]
 pub(crate) fn probe_kind(
     relay: &str,
     document: Option<&serde_json::Value>,
@@ -1944,7 +1942,6 @@ fn take_first_note(rx: mpsc::Receiver<Option<String>>, deadline: Instant) -> Opt
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct RelayList {
     pub socket_answered: bool,
     pub urls: Vec<String>,
@@ -2012,7 +2009,6 @@ fn event_for_sub(frame: &str, sub_id: &str) -> Option<String> {
     Some(event.get().to_string())
 }
 
-#[allow(dead_code)]
 pub(crate) fn read_relay_list(relay: &str, deadline: Instant, socks: RelaySocks) -> RelayList {
     let mut socket = match connect_relay(relay, deadline, None, true, socks) {
         Ok(socket) => socket,
@@ -2044,8 +2040,7 @@ pub(crate) fn read_relay_list(relay: &str, deadline: Instant, socks: RelaySocks)
     }
 }
 
-fn req_payload(sub_id: &str, event_id_hex: &str, locator: &str, payload_max: usize) -> String {
-    let _ = (locator, payload_max);
+fn req_payload(sub_id: &str, event_id_hex: &str) -> String {
     serde_json::json!([
         "REQ",
         sub_id,
@@ -2071,7 +2066,7 @@ fn fetch_from_relay(
     let mut socket = connect_relay(relay, deadline, Some(cancel), true, relay_socks())?;
     limit_sealed_socket(&mut socket, payload_max);
     let sub_id = random_hex(8);
-    let payload = req_payload(&sub_id, event_id_hex, locator, payload_max);
+    let payload = req_payload(&sub_id, event_id_hex);
     arm_stream(
         socket.get_ref().get_ref(),
         wait_budget(deadline, Some(cancel))?,

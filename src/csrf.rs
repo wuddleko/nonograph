@@ -92,6 +92,43 @@ fn random_token() -> String {
     hex_encode(&bytes)
 }
 
+pub(crate) fn form_csrf_token(
+    config: &crate::config::Config,
+    cookies: Option<&rocket::http::CookieJar<'_>>,
+) -> String {
+    if !config.security.csrf_protection_enabled {
+        return String::new();
+    }
+    let existing = cookies.and_then(|jar| {
+        jar.get(COOKIE_NAME)
+            .map(|cookie| cookie.value().to_string())
+    });
+    let (token, set_cookie) = token_for_form(existing.as_deref());
+    if set_cookie {
+        if let Some(jar) = cookies {
+            jar.add(csrf_cookie(&token));
+        }
+    }
+    token
+}
+
+pub(crate) fn request_csrf_cookie(cookies: &rocket::http::CookieJar<'_>) -> String {
+    cookies
+        .get(COOKIE_NAME)
+        .map(|cookie| cookie.value().to_string())
+        .unwrap_or_default()
+}
+
+fn csrf_cookie(token: &str) -> rocket::http::Cookie<'static> {
+    rocket::http::Cookie::build((COOKIE_NAME, token.to_owned()))
+        .http_only(true)
+        .same_site(rocket::http::SameSite::Lax)
+        .path("/")
+        .secure(false)
+        .max_age(rocket::time::Duration::seconds(TOKEN_TTL_SECS as i64))
+        .into()
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
