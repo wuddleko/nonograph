@@ -88,7 +88,6 @@ pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> Str
 pub(crate) fn render_nojs_relay_form(
     dealt: &[String],
     pinned: &[String],
-    candidates: &[String],
     csrf_token: &str,
     add_error: &str,
     typed: &str,
@@ -136,10 +135,8 @@ pub(crate) fn render_nojs_relay_form(
         </div>\n\
         <p class=\"relay-add-error\">{add_error}</p>\n\
         </form>\n\
-        </div>\n\
-        {candidates}",
+        </div>\n",
         count_row = nojs_count_row(total, pinned.len(), &csrf),
-        candidates = candidate_script(candidates),
     )
 }
 

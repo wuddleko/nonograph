@@ -372,7 +372,8 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs.contains("<script src"));
     assert!(!nojs.contains("/home.js"));
     assert!(!nojs.contains("/relays.js"));
-    assert!(nojs.contains("id=\"relay-candidates\""));
+    assert!(!nojs.contains("id=\"relay-candidates\""));
+    assert!(!nojs.contains("<script"));
     assert!(nojs.contains("action=\"/nojs/create\""));
     assert!(nojs.contains("Write something before publishing."));
     assert!(nojs.contains("class=\"nojs\""));
