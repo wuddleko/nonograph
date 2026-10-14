@@ -61,12 +61,12 @@ fn nojs_sidebar_names_the_relay_field() {
 
     let about_html = render_about_section(&relays, false);
     assert!(about_html.contains("<h3>Relays</h3>"));
+    assert!(about_html.contains("relay.primal.net"));
     assert!(!about_html.contains("Nostr relays"));
     assert!(!about_html.contains("relay-add-label"));
-    let about = relay_input(&about_html);
-    assert!(!about.contains("name="));
-    assert!(!about.contains("form="));
-    assert!(about_html.contains("type=\"button\" class=\"relay-add-btn\""));
+    assert!(!about_html.contains("relay-add-btn"));
+    assert!(!about_html.contains("relay-url-input"));
+    assert!(!about_html.contains("relay-reshuffle"));
 
     let nojs_about = render_about_section(&relays, true);
     assert!(nojs_about.contains("relay.primal.net"));
@@ -107,15 +107,16 @@ fn dealt_rows_list_three_relays_and_an_empty_slice_is_empty() {
     assert!(html.contains("<li data-relay=\"wss://c.example\">"));
     assert_eq!(html.matches("class=\"relay-remove\"").count(), 3);
     assert!(!html.contains("relay-empty"));
-    assert!(html.contains(
-        "<input class=\"relay-count\" type=\"number\" value=\"3\" max=\"6\" aria-label=\"How many relays\" />"
-    ));
-    assert!(html.contains("<button type=\"button\" class=\"relay-reshuffle\">Reshuffle</button>"));
+    assert!(html.contains("<span class=\"relay-count\">3/6</span>"));
+    assert!(html.contains("class=\"relay-reshuffle\" aria-label=\"Reshuffle\""));
+    assert!(html.contains("class=\"relay-count-up\" aria-label=\"More relays\""));
+    assert!(html.contains("class=\"relay-count-down\" aria-label=\"Fewer relays\""));
+    assert!(!html.contains("type=\"number\""));
     assert!(html.contains("<div class=\"relay-add\" data-relay-add>"));
     assert!(html.contains("class=\"relay-url-input\""));
     assert!(html.contains("<button type=\"button\" class=\"relay-add-btn\">Add</button>"));
     assert!(html.contains("<p class=\"relay-add-error\"></p>"));
-    assert!(html.contains("<button type=\"button\" class=\"relay-delete-all\">Delete all</button>"));
+    assert!(!html.contains("relay-delete-all"));
 
     let empty = render_dealt_rows(&[], &[]);
     assert!(empty.contains("<p class=\"relay-empty\">No relays.</p>"));

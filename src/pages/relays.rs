@@ -56,6 +56,19 @@ pub(crate) fn relays_page_html(path: &Path) -> String {
     relays_page_html_with_csrf(path, "")
 }
 
+pub(super) fn landing_relay_blocks() -> (String, String) {
+    let urls = candidates(&relay_pool());
+    let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
+    let sidebar = format!(
+        "<div class=\"sidebar-relays\" id=\"sidebar-relays\">\n\
+        <p class=\"sidebar-relays-title\">Relays</p>\n\
+        {}\
+        </div>\n",
+        crate::relays::render_dealt_rows(&dealt, &urls)
+    );
+    (sidebar, crate::relays::render_about_section(&dealt, false))
+}
+
 fn relays_page_html_with_csrf(path: &Path, csrf_token: &str) -> String {
     let urls = candidates(path);
     let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
@@ -73,7 +86,13 @@ struct NojsRelaysPage {
     write_cookie: bool,
 }
 
-fn nojs_relays_view(path: &Path, saved: Option<&str>, csrf_token: &str) -> NojsRelaysPage {
+pub(super) struct NojsRelayState {
+    pub(super) cookie: RelayCookie,
+    pub(super) write_cookie: bool,
+    pub(super) urls: Vec<String>,
+}
+
+pub(super) fn nojs_relay_state(path: &Path, saved: Option<&str>) -> NojsRelayState {
     let urls = candidates(path);
     let (cookie, write_cookie) = match parsed_relay_cookie(saved) {
         Some(list) => (list, false),
@@ -85,12 +104,32 @@ fn nojs_relays_view(path: &Path, saved: Option<&str>, csrf_token: &str) -> NojsR
             true,
         ),
     };
-    let body = render_nojs_relay_form(&cookie.dealt, &cookie.pinned, &urls, csrf_token, "", "");
-    NojsRelaysPage {
-        html: relays_document(&body, false),
+    NojsRelayState {
         cookie,
         write_cookie,
+        urls,
     }
+}
+
+fn nojs_relays_view(path: &Path, saved: Option<&str>, csrf_token: &str) -> NojsRelaysPage {
+    let state = nojs_relay_state(path, saved);
+    let body = render_nojs_relay_form(
+        &state.cookie.dealt,
+        &state.cookie.pinned,
+        &state.urls,
+        csrf_token,
+        "",
+        "",
+    );
+    NojsRelaysPage {
+        html: relays_document(&body, false),
+        cookie: state.cookie,
+        write_cookie: state.write_cookie,
+    }
+}
+
+pub(super) fn set_relay_list_cookie(cookies: &CookieJar<'_>, list: &RelayCookie) {
+    cookies.add(relay_list_cookie(&write_relay_cookie(list)));
 }
 
 fn relays_document(body: &str, relay_script: bool) -> String {
@@ -251,7 +290,7 @@ fn reshuffle_relays(path: &Path, list: &RelayCookie, count: &str) -> RelayCookie
     }
 }
 
-fn relay_pool() -> PathBuf {
+pub(super) fn relay_pool() -> PathBuf {
     #[cfg(test)]
     if let Some(dir) = test_content_dir() {
         return pool_path(&dir);
@@ -270,11 +309,11 @@ thread_local! {
 }
 
 #[cfg(test)]
-struct RelayContentGuard;
+pub(super) struct RelayContentGuard;
 
 #[cfg(test)]
 impl RelayContentGuard {
-    fn set(path: &Path) -> Self {
+    pub(super) fn set(path: &Path) -> Self {
         TEST_CONTENT_DIR.with(|slot| *slot.borrow_mut() = Some(path.to_path_buf()));
         Self
     }
@@ -320,9 +359,25 @@ pub fn nojs_relays_page(
         .map(|cookie| cookie.value().to_string());
     let page = nojs_relays_view(&relay_pool(), saved.as_deref(), &token);
     if page.write_cookie {
-        cookies.add(relay_list_cookie(&write_relay_cookie(&page.cookie)));
+        set_relay_list_cookie(cookies, &page.cookie);
     }
     content::RawHtml(page.html)
+}
+
+fn nojs_form_location(add_error: &str, typed: &str) -> String {
+    let code = match add_error {
+        "" => return "/nojs".to_string(),
+        "Enter a relay URL." => "relay_required",
+        "Use a public wss:// relay URL." => "relay_invalid",
+        "Six relays are already pinned." => "relay_full",
+        "The publish form expired. Try again." => "csrf_token_invalid",
+        _ => return "/nojs".to_string(),
+    };
+    if typed.is_empty() {
+        return format!("/nojs?error={code}");
+    }
+    let typed = url::form_urlencoded::byte_serialize(typed.as_bytes()).collect::<String>();
+    format!("/nojs?error={code}&typed={typed}")
 }
 
 #[post("/nojs/relays", data = "<form>")]
@@ -330,12 +385,12 @@ pub fn nojs_relays_update(
     form: Form<RelayForm>,
     cookies: &CookieJar<'_>,
     config: &State<Config>,
-) -> content::RawHtml<String> {
+) -> rocket::response::Redirect {
     let pool = relay_pool();
     let saved = cookies
         .get(RELAY_LIST_COOKIE)
         .map(|cookie| cookie.value().to_string());
-    let mut list = read_relay_cookie(saved.as_deref());
+    let list = read_relay_cookie(saved.as_deref());
     let mut add_error = "";
     let csrf_cookie = request_csrf_cookie(cookies);
     if config.security.csrf_protection_enabled
@@ -347,35 +402,35 @@ pub fn nojs_relays_update(
         if next != list {
             save_relay_list(cookies, &next, config);
         }
-        list = next;
     } else if form.action == "delete" {
-        list = RelayCookie::empty();
-        save_relay_list(cookies, &list, config);
+        save_relay_list(cookies, &RelayCookie::empty(), config);
     } else if form.action == "add" {
         match pin_relay(&list, &form.relay) {
             Ok(next) => {
                 if next != list {
                     save_relay_list(cookies, &next, config);
                 }
-                list = next;
             }
             Err(error) => add_error = error,
         }
-    } else if form.action == "count" {
-        let next = set_relay_count(&pool, &list, &form.count);
+    } else if form.action == "count" || form.action == "up" || form.action == "down" {
+        let count = if form.action == "up" {
+            (list.pinned.len() + list.dealt.len()).saturating_add(1).to_string()
+        } else if form.action == "down" {
+            (list.pinned.len() + list.dealt.len()).saturating_sub(1).to_string()
+        } else {
+            form.count.clone()
+        };
+        let next = set_relay_count(&pool, &list, &count);
         if next != list {
             save_relay_list(cookies, &next, config);
         }
-        list = next;
     } else if form.action == "reshuffle" {
         let next = reshuffle_relays(&pool, &list, &form.count);
         if next != list {
             save_relay_list(cookies, &next, config);
         }
-        list = next;
     }
-    let token = form_csrf_token(config, cookies);
-    let urls = candidates(&pool);
     let typed = if matches!(
         add_error,
         "Use a public wss:// relay URL." | "Six relays are already pinned."
@@ -384,8 +439,7 @@ pub fn nojs_relays_update(
     } else {
         ""
     };
-    let body = render_nojs_relay_form(&list.dealt, &list.pinned, &urls, &token, add_error, typed);
-    content::RawHtml(relays_document(&body, false))
+    rocket::response::Redirect::to(nojs_form_location(add_error, typed))
 }
 
 #[cfg(test)]
@@ -423,6 +477,7 @@ mod tests {
             first_seen: 1,
             next_try: 1,
             failures: 0,
+            publish_refused: false,
             visit: Some(Visit {
                 at: 1,
                 socket_answered: true,
@@ -511,9 +566,8 @@ mod tests {
         assert!(first
             .html
             .contains("type=\"submit\" class=\"relay-add-btn\""));
-        assert!(first
-            .html
-            .contains("type=\"submit\" class=\"relay-delete-all\""));
+        assert!(first.html.contains("class=\"relay-count\">3/6</span>"));
+        assert!(!first.html.contains("relay-delete-all"));
         assert!(first
             .html
             .contains("type=\"submit\" class=\"relay-remove\""));
@@ -591,6 +645,26 @@ mod tests {
         assert!(bad.cookie.pinned.is_empty());
     }
 
+    fn posted_home(
+        response: rocket::local::blocking::LocalResponse<'_>,
+    ) -> (String, Option<String>) {
+        assert_eq!(response.status(), Status::SeeOther);
+        let location = response
+            .headers()
+            .get_one("Location")
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            location == "/nojs" || location.starts_with("/nojs?"),
+            "{location}"
+        );
+        let cookie = response
+            .cookies()
+            .get(RELAY_LIST_COOKIE)
+            .map(|cookie| cookie.value().to_string());
+        (location, cookie)
+    }
+
     #[test]
     fn a_form_adds_one_public_url() {
         let client = rocket::local::blocking::Client::tracked(
@@ -621,17 +695,13 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2FHand.Example%2F&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(added.status(), Status::Ok);
-        let saved = added
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("add writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(added);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("add writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert_eq!(list.dealt, dealt);
         assert_eq!(list.pinned, vec!["wss://hand.example".to_string()]);
-        let body = added.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(body.contains("<li data-relay=\"wss://hand.example\">"));
         assert!(body.contains("name=\"relay\" inputmode=\"url\""));
         assert!(!body.contains("/relays.js"));
@@ -643,12 +713,9 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2F127.0.0.1&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(refused.status(), Status::Ok);
-        let refused_body = refused.into_string().unwrap();
-        assert!(refused_body.contains("Use a public wss:// relay URL."));
-        assert!(refused_body.contains("value=\"wss://127.0.0.1\""));
-        assert!(!refused_body.contains("<li data-relay=\"wss://127.0.0.1\">"));
-        assert!(refused_body.contains("<li data-relay=\"wss://hand.example\">"));
+        let (location, _) = posted_home(refused);
+        assert!(location.contains("error=relay_invalid"));
+        assert!(location.contains("typed=wss%3A%2F%2F127.0.0.1"));
 
         let kept = client.get("/nojs/relays").dispatch();
         assert_eq!(kept.status(), Status::Ok);
@@ -687,8 +754,9 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2FHand.Example%2F&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(added.status(), Status::Ok);
-        let added_body = added.into_string().unwrap();
+        let (location, _) = posted_home(added);
+        assert_eq!(location, "/nojs");
+        let added_body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(added_body.contains("<li data-relay=\"wss://hand.example\">"));
 
         let removed = client
@@ -698,17 +766,13 @@ mod tests {
                 "remove=wss%3A%2F%2Fhand.example&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(removed.status(), Status::Ok);
-        let saved = removed
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("remove writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(removed);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("remove writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert_eq!(list.dealt, dealt);
         assert!(list.pinned.is_empty());
-        let body = removed.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(!body.contains("<li data-relay=\"wss://hand.example\">"));
         assert!(!body.contains("/relays.js"));
 
@@ -735,17 +799,18 @@ mod tests {
                 "remove=wss%3A%2F%2Fdealt.example&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(dropped.status(), Status::Ok);
-        let saved = dropped
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("remove writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(dropped);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("remove writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert!(list.dealt.is_empty());
         assert_eq!(list.pinned, vec!["wss://hand.example".to_string()]);
-        let body = dropped.into_string().unwrap();
+        let body = bare
+            .get("/nojs/relays")
+            .cookie((RELAY_LIST_COOKIE, saved))
+            .dispatch()
+            .into_string()
+            .unwrap();
         assert!(!body.contains("<li data-relay=\"wss://dealt.example\">"));
         assert!(body.contains("<li data-relay=\"wss://hand.example\">"));
     }
@@ -772,23 +837,19 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2FHand.Example%2F&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(added.status(), Status::Ok);
-        added.into_string().unwrap();
+        let (location, _) = posted_home(added);
+        assert_eq!(location, "/nojs");
 
         let deleted = client
             .post("/nojs/relays")
             .header(ContentType::Form)
             .body(format!("action=delete&csrf_token={token}"))
             .dispatch();
-        assert_eq!(deleted.status(), Status::Ok);
-        let saved = deleted
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("delete writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(deleted);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("delete writes the cookie");
         assert_eq!(read_relay_cookie(Some(&saved)), RelayCookie::empty());
-        let body = deleted.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(body.contains("<p class=\"relay-empty\">No relays.</p>"));
         assert!(!body.contains("<li data-relay="));
         assert!(!body.contains("/relays.js"));
@@ -814,15 +875,16 @@ mod tests {
             .header(ContentType::Form)
             .body(format!("action=delete&csrf_token={token}"))
             .dispatch();
-        assert_eq!(cleared.status(), Status::Ok);
-        let saved = cleared
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("delete writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(cleared);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("delete writes the cookie");
         assert_eq!(read_relay_cookie(Some(&saved)), RelayCookie::empty());
-        let body = cleared.into_string().unwrap();
+        let body = bare
+            .get("/nojs/relays")
+            .cookie((RELAY_LIST_COOKIE, saved.clone()))
+            .dispatch()
+            .into_string()
+            .unwrap();
         assert!(!body.contains("<li data-relay=\"wss://dealt.example\">"));
         assert!(!body.contains("<li data-relay=\"wss://hand.example\">"));
         assert!(body.contains("<p class=\"relay-empty\">No relays.</p>"));
@@ -874,13 +936,9 @@ mod tests {
             .header(ContentType::Form)
             .body("remove=wss%3A%2F%2Fleft.example")
             .dispatch();
-        assert_eq!(updated.status(), Status::Ok);
-        let saved = updated
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("remove writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(updated);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("remove writes the cookie");
         assert_eq!(
             read_relay_cookie(Some(&saved)),
             RelayCookie {
@@ -888,7 +946,12 @@ mod tests {
                 dealt: vec!["wss://stay.example".to_string()],
             }
         );
-        let body = updated.into_string().unwrap();
+        let body = client
+            .get("/nojs/relays")
+            .cookie((RELAY_LIST_COOKIE, saved))
+            .dispatch()
+            .into_string()
+            .unwrap();
         assert!(body.contains("<li data-relay=\"wss://kept.example\">"));
         assert!(body.contains("<li data-relay=\"wss://stay.example\">"));
         assert!(!body.contains("<li data-relay=\"wss://left.example\">"));
@@ -936,25 +999,21 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2Frelay0.example&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(added.status(), Status::Ok);
-        added.into_string().unwrap();
+        let (location, _) = posted_home(added);
+        assert_eq!(location, "/nojs");
 
         let lowered = client
             .post("/nojs/relays")
             .header(ContentType::Form)
             .body(format!("action=count&count=1&csrf_token={token}"))
             .dispatch();
-        assert_eq!(lowered.status(), Status::Ok);
-        let saved = lowered
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("count writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(lowered);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("count writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert_eq!(list.pinned, vec!["wss://relay0.example".to_string()]);
         assert!(list.dealt.is_empty());
-        let body = lowered.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(body.contains("<li data-relay=\"wss://relay0.example\">"));
         assert!(!body.contains("<li data-relay=\"wss://relay1.example\">"));
         assert!(body.contains("value=\"1\""));
@@ -964,13 +1023,9 @@ mod tests {
             .header(ContentType::Form)
             .body(format!("action=count&count=9&csrf_token={token}"))
             .dispatch();
-        assert_eq!(raised.status(), Status::Ok);
-        let saved = raised
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("count writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(raised);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("count writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert_eq!(list.pinned, vec!["wss://relay0.example".to_string()]);
         assert_eq!(
@@ -984,7 +1039,7 @@ mod tests {
             ]
         );
         assert_eq!(list.dealt.len() + list.pinned.len(), 6);
-        let body = raised.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(body.contains("<li data-relay=\"wss://relay0.example\">"));
         assert!(body.contains("<li data-relay=\"wss://relay5.example\">"));
         assert!(!body.contains("<li data-relay=\"wss://relay6.example\">"));
@@ -1024,8 +1079,8 @@ mod tests {
                     relay.replace("://", "%3A%2F%2F")
                 ))
                 .dispatch();
-            assert_eq!(added.status(), Status::Ok);
-            added.into_string().unwrap();
+            let (location, _) = posted_home(added);
+            assert_eq!(location, "/nojs");
         }
 
         let shuffled = client
@@ -1033,13 +1088,9 @@ mod tests {
             .header(ContentType::Form)
             .body(format!("action=reshuffle&count=4&csrf_token={token}"))
             .dispatch();
-        assert_eq!(shuffled.status(), Status::Ok);
-        let saved = shuffled
-            .cookies()
-            .get(RELAY_LIST_COOKIE)
-            .expect("reshuffle writes the cookie")
-            .value()
-            .to_string();
+        let (location, saved) = posted_home(shuffled);
+        assert_eq!(location, "/nojs");
+        let saved = saved.expect("reshuffle writes the cookie");
         let list = read_relay_cookie(Some(&saved));
         assert_eq!(
             list.pinned,
@@ -1055,7 +1106,7 @@ mod tests {
                 "wss://relay4.example".to_string(),
             ]
         );
-        let body = shuffled.into_string().unwrap();
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(body.contains("<li data-relay=\"wss://relay0.example\">"));
         assert!(body.contains("<li data-relay=\"wss://hand.example\">"));
         assert!(body.contains("<li data-relay=\"wss://relay3.example\">"));
@@ -1092,8 +1143,8 @@ mod tests {
                     url.replace("://", "%3A%2F%2F")
                 ))
                 .dispatch();
-            assert_eq!(added.status(), Status::Ok);
-            added.into_string().unwrap();
+            let (location, _) = posted_home(added);
+            assert_eq!(location, "/nojs");
         }
         let full = client
             .cookies()
@@ -1110,10 +1161,10 @@ mod tests {
                 "action=add&relay=wss%3A%2F%2Fextra.example&csrf_token={token}"
             ))
             .dispatch();
-        assert_eq!(added.status(), Status::Ok);
-        let body = added.into_string().unwrap();
-        assert!(body.contains("Six relays are already pinned."));
-        assert!(body.contains("value=\"wss://extra.example\""));
+        let (location, _) = posted_home(added);
+        assert!(location.contains("error=relay_full"));
+        assert!(location.contains("typed=wss%3A%2F%2Fextra.example"));
+        let body = client.get("/nojs/relays").dispatch().into_string().unwrap();
         assert!(!body.contains("<li data-relay=\"wss://extra.example\">"));
         for url in &pinned {
             assert!(body.contains(&format!("<li data-relay=\"{url}\">")));

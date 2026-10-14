@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crawler::{due, load, run_batch, Queue, Row, Visit, VisitHook};
+use crawler::{due, edit_pool, load, read_pool, run_batch, Queue, Row, Visit, VisitHook};
 use serde_json::Value;
 
 use crate::nostr::{fetch_nip11, probe_kind, read_relay_list, RelayList, RelaySocks};
@@ -22,8 +22,8 @@ pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
 }
 
-pub(crate) fn batch_queue(path: &Path, now: i64) -> Queue {
-    let pool = load(path);
+pub(crate) fn batch_queue(path: &Path, now: i64) -> io::Result<Queue> {
+    let pool = read_pool(path)?;
     let due_urls = due(&pool.rows, now);
     let mut queue = Queue::new(pool);
     for door in DOORS {
@@ -32,7 +32,7 @@ pub(crate) fn batch_queue(path: &Path, now: i64) -> Queue {
     for url in due_urls {
         queue.push(&url, now);
     }
-    queue
+    Ok(queue)
 }
 
 pub(crate) fn run_crawl<H, F>(path: &Path, now: i64, make_hook: F) -> io::Result<()>
@@ -40,7 +40,7 @@ where
     H: VisitHook,
     F: Fn() -> H + Sync,
 {
-    let mut queue = batch_queue(path, now);
+    let mut queue = batch_queue(path, now)?;
     run_batch(&mut queue, WORKERS, now, make_hook, path)
 }
 
@@ -74,11 +74,18 @@ where
 {
     loop {
         let now = crate::nostr::now_secs();
-        if let Err(error) = crawl(now) {
+        let crawled = crawl(now);
+        if let Err(error) = &crawled {
             eprintln!("Nonograph: relay pool was not saved: {error}");
         }
         let now = crate::nostr::now_secs();
-        if !sleep(pool_wait(&load(path).rows, now)) {
+        let wait = match &crawled {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                Duration::from_secs(15 * 60)
+            }
+            _ => pool_wait(&load(path).rows, now),
+        };
+        if !sleep(wait) {
             return;
         }
     }
@@ -167,6 +174,28 @@ pub(crate) fn candidates(path: &Path) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn mark_publish(path: &Path, refused: &[String], accepted: &[String]) -> io::Result<()> {
+    edit_pool(path, |pool| {
+        let mut changed = false;
+        for row in &mut pool.rows {
+            if pool_url_listed(&row.url, refused) && !row.publish_refused {
+                row.publish_refused = true;
+                changed = true;
+            }
+            if pool_url_listed(&row.url, accepted) && row.publish_refused {
+                row.publish_refused = false;
+                changed = true;
+            }
+        }
+        changed
+    })
+}
+
+fn pool_url_listed(url: &str, urls: &[String]) -> bool {
+    urls.iter()
+        .any(|raw| crate::nostr::same_public_relay(raw, url))
+}
+
 pub(crate) fn next_pool_relays(path: &Path, link: &[String]) -> Vec<String> {
     let mut relays = Vec::new();
     for row in usable_rows(path) {
@@ -185,6 +214,9 @@ pub(crate) fn next_pool_relays(path: &Path, link: &[String]) -> Vec<String> {
 }
 
 fn row_is_usable(row: &Row) -> bool {
+    if row.publish_refused {
+        return false;
+    }
     let Some(visit) = row.visit.as_ref() else {
         return false;
     };
@@ -243,6 +275,7 @@ mod tests {
             first_seen: 1_700_000_000,
             next_try,
             failures: 0,
+            publish_refused: false,
             visit,
         }
     }
@@ -349,6 +382,41 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_pool_file_waits_fifteen_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        std::fs::write(&path, "not a pool").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            {
+                let path = path.clone();
+                let seen = Arc::clone(&seen);
+                move |now| {
+                    run_crawl(&path, now, {
+                        let seen = Arc::clone(&seen);
+                        move || Script {
+                            seen: Arc::clone(&seen),
+                        }
+                    })
+                }
+            },
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        assert!(seen.lock().expect("seen").is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a pool");
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.as_slice(), &[Duration::from_secs(15 * 60)]);
+    }
+
+    #[test]
     fn the_pool_file_lives_beside_the_pages() {
         assert_eq!(
             pool_path(Path::new("content")),
@@ -374,7 +442,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut queue = batch_queue(&path, NOW);
+        let mut queue = batch_queue(&path, NOW).unwrap();
 
         assert_eq!(queue.pop().as_deref(), Some("wss://relay.primal.net"));
         assert_eq!(queue.pop().as_deref(), Some("wss://nos.lol"));
@@ -436,6 +504,32 @@ mod tests {
             .iter()
             .filter(|row| row.url != "wss://later.example")
             .all(|row| row.visit.as_ref().is_some_and(|visit| visit.at == NOW)));
+    }
+
+    #[test]
+    fn a_missing_pool_file_crawls_the_doors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        run_crawl(&path, NOW, {
+            let seen = Arc::clone(&seen);
+            move || Script {
+                seen: Arc::clone(&seen),
+            }
+        })
+        .unwrap();
+
+        let mut seen = seen.lock().expect("seen").clone();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                "wss://nos.lol".to_owned(),
+                "wss://relay.damus.io".to_owned(),
+                "wss://relay.primal.net".to_owned(),
+            ]
+        );
     }
 
     struct Saved {
@@ -597,6 +691,139 @@ mod tests {
     }
 
     #[test]
+    fn mark_publish_sets_a_refused_row_and_clears_an_accepted_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut marked = visited("wss://marked.example", true, open.clone(), true);
+        marked.publish_refused = true;
+        save(
+            &path,
+            &Pool {
+                rows: vec![
+                    visited("wss://open.example", true, open.clone(), true),
+                    marked,
+                    visited("wss://kept.example", true, open, true),
+                ],
+            },
+        )
+        .unwrap();
+
+        mark_publish(
+            &path,
+            &[
+                "wss://Open.Example/".to_string(),
+                "wss://missing.example".to_string(),
+            ],
+            &["wss://marked.example".to_string()],
+        )
+        .unwrap();
+
+        let pool = load(&path);
+        assert_eq!(pool.rows.len(), 3);
+        let open_row = pool
+            .rows
+            .iter()
+            .find(|row| row.url == "wss://open.example")
+            .unwrap();
+        assert!(open_row.publish_refused);
+        assert!(open_row.visit.is_some());
+        let marked_row = pool
+            .rows
+            .iter()
+            .find(|row| row.url == "wss://marked.example")
+            .unwrap();
+        assert!(!marked_row.publish_refused);
+        assert!(
+            !pool
+                .rows
+                .iter()
+                .find(|row| row.url == "wss://kept.example")
+                .unwrap()
+                .publish_refused
+        );
+        assert!(!pool
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://missing.example"));
+    }
+
+    #[test]
+    fn a_refused_path_or_query_marks_only_that_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        save(
+            &path,
+            &Pool {
+                rows: vec![
+                    visited("wss://nos.lol", true, open.clone(), true),
+                    visited("wss://nos.lol/path", true, open, true),
+                ],
+            },
+        )
+        .unwrap();
+
+        mark_publish(
+            &path,
+            &[
+                "wss://Nos.lol/path/".to_string(),
+                "wss://nos.lol?x=1".to_string(),
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let pool = load(&path);
+        assert_eq!(pool.rows.len(), 2);
+        let host = pool
+            .rows
+            .iter()
+            .find(|row| row.url == "wss://nos.lol")
+            .unwrap();
+        assert!(!host.publish_refused);
+        assert!(host.visit.is_some());
+        let listed = pool
+            .rows
+            .iter()
+            .find(|row| row.url == "wss://nos.lol/path")
+            .unwrap();
+        assert!(listed.publish_refused);
+        assert!(listed.visit.is_some());
+        assert!(!pool.rows.iter().any(|row| row.url.contains('?')));
+
+        mark_publish(&path, &["wss://nos.lol".to_string()], &[]).unwrap();
+
+        let pool = load(&path);
+        assert_eq!(pool.rows.len(), 2);
+        assert!(
+            pool.rows
+                .iter()
+                .find(|row| row.url == "wss://nos.lol")
+                .unwrap()
+                .publish_refused
+        );
+        assert!(
+            pool.rows
+                .iter()
+                .find(|row| row.url == "wss://nos.lol/path")
+                .unwrap()
+                .publish_refused
+        );
+    }
+
+    #[test]
+    fn mark_publish_leaves_a_bad_pool_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        std::fs::write(&path, "not a pool").unwrap();
+
+        let err = mark_publish(&path, &["wss://open.example".to_string()], &[]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a pool");
+    }
+
+    #[test]
     fn candidates_return_the_open_relay_and_leave_out_an_unvisited_door() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-pool.json");
@@ -638,6 +865,50 @@ mod tests {
         assert_eq!(urls[0], "wss://relay0.example");
         assert_eq!(urls[47], "wss://relay47.example");
         assert!(!urls.iter().any(|url| url == "wss://relay48.example"));
+    }
+
+    #[test]
+    fn a_marked_row_is_left_out_of_the_next_deal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut marked = visited("wss://marked.example", true, open.clone(), true);
+        marked.publish_refused = true;
+        save(
+            &path,
+            &Pool {
+                rows: vec![marked, visited("wss://open.example", true, open, true)],
+            },
+        )
+        .unwrap();
+
+        let usable = usable_rows(&path);
+        assert_eq!(usable.len(), 1);
+        assert_eq!(usable[0].url, "wss://open.example");
+        let urls = candidates(&path);
+        assert_eq!(urls, vec!["wss://open.example".to_string()]);
+        assert_eq!(crawler::deal(&urls, 3, &[], &[]), urls);
+        assert_eq!(next_pool_relays(&path, &[]), urls);
+    }
+
+    #[test]
+    fn a_marked_host_deals_the_open_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut marked = visited("wss://nos.lol", true, open.clone(), true);
+        marked.publish_refused = true;
+        save(
+            &path,
+            &Pool {
+                rows: vec![marked, visited("wss://nos.lol/path", true, open, true)],
+            },
+        )
+        .unwrap();
+
+        let urls = candidates(&path);
+        assert_eq!(urls, vec!["wss://nos.lol/path".to_string()]);
+        assert_eq!(crawler::deal(&urls, 3, &[], &[]), urls);
     }
 
     #[test]

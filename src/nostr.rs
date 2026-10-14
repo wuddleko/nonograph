@@ -134,8 +134,30 @@ fn stamp_locator(tags: &[Vec<String>]) -> Option<String> {
     })
 }
 
-pub fn publish_to_relays(relays: &[String], note: &SignedNote, timeout: Duration) -> Vec<String> {
+pub struct PublishedRelays {
+    pub accepted: Vec<String>,
+    pub refused: Vec<String>,
+}
+
+pub fn publish_to_relays(
+    relays: &[String],
+    note: &SignedNote,
+    timeout: Duration,
+) -> PublishedRelays {
     publish_to_relays_inner(relays, note, timeout, true)
+}
+
+enum SendFailure {
+    Refused(String),
+    Unanswered(String),
+}
+
+impl SendFailure {
+    fn detail(self) -> String {
+        match self {
+            SendFailure::Refused(reason) | SendFailure::Unanswered(reason) => reason,
+        }
+    }
 }
 
 fn publish_to_relays_inner(
@@ -143,7 +165,7 @@ fn publish_to_relays_inner(
     note: &SignedNote,
     timeout: Duration,
     public_only: bool,
-) -> Vec<String> {
+) -> PublishedRelays {
     let relays: Vec<String> = relays
         .iter()
         .filter(|relay| {
@@ -156,7 +178,10 @@ fn publish_to_relays_inner(
         .cloned()
         .collect();
     if relays.is_empty() {
-        return Vec::new();
+        return PublishedRelays {
+            accepted: Vec::new(),
+            refused: Vec::new(),
+        };
     }
 
     let deadline = Instant::now() + timeout;
@@ -169,18 +194,32 @@ fn publish_to_relays_inner(
             let event_id = event_id.clone();
             handles.push(scope.spawn(move || {
                 match send_event(&relay, &event_json, &event_id, deadline, public_only) {
-                    Ok(()) => Some(relay),
-                    Err(error) => {
+                    Ok(()) => Some(Ok(relay)),
+                    Err(SendFailure::Refused(error)) => {
+                        eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
+                        if durable_refusal(&error) {
+                            Some(Err(relay))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(SendFailure::Unanswered(error)) => {
                         eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
                         None
                     }
                 }
             }));
         }
-        handles
-            .into_iter()
-            .filter_map(|handle| handle.join().ok().flatten())
-            .collect()
+        let mut accepted = Vec::new();
+        let mut refused = Vec::new();
+        for handle in handles {
+            match handle.join() {
+                Ok(Some(Ok(relay))) => accepted.push(relay),
+                Ok(Some(Err(relay))) => refused.push(relay),
+                _ => {}
+            }
+        }
+        PublishedRelays { accepted, refused }
     })
 }
 
@@ -199,6 +238,10 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
         let reason = items.get(3).and_then(|item| item.as_str()).unwrap_or("");
         Some(Err(reason.to_string()))
     }
+}
+
+fn durable_refusal(reason: &str) -> bool {
+    reason.starts_with("blocked:") || reason.starts_with("restricted:")
 }
 
 type RelaySocket = tungstenite::WebSocket<native_tls::TlsStream<TcpStream>>;
@@ -1400,6 +1443,98 @@ pub(crate) struct RelayAnswer {
 }
 
 #[cfg(test)]
+#[cfg(test)]
+struct PublishScriptBook {
+    refused: Mutex<Vec<(String, String)>>,
+    accepted: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+static PUBLISH_SCRIPTS: Mutex<Option<Arc<PublishScriptBook>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn scripted_send(relay: &str) -> Option<Result<(), SendFailure>> {
+    let book = PUBLISH_SCRIPTS
+        .lock()
+        .expect("publish scripts")
+        .as_ref()?
+        .clone();
+    let refused = book.refused.lock().expect("publish refusals");
+    if let Some((_, reason)) = refused
+        .iter()
+        .find(|(have, _)| same_public_relay(have, relay))
+    {
+        return Some(Err(SendFailure::Refused(reason.clone())));
+    }
+    drop(refused);
+    let accepted = book.accepted.lock().expect("publish accepts");
+    if accepted.iter().any(|have| same_public_relay(have, relay)) {
+        return Some(Ok(()));
+    }
+    None
+}
+
+#[cfg(test)]
+pub(crate) struct PublishScript {
+    book: Arc<PublishScriptBook>,
+}
+
+#[cfg(test)]
+impl PublishScript {
+    pub(crate) fn begin() -> Self {
+        let book = Arc::new(PublishScriptBook {
+            refused: Mutex::new(Vec::new()),
+            accepted: Mutex::new(Vec::new()),
+        });
+        *PUBLISH_SCRIPTS.lock().expect("publish scripts") = Some(Arc::clone(&book));
+        Self { book }
+    }
+
+    pub(crate) fn refuse(&self, relay: &str) {
+        self.push_refusal(relay, "blocked: relay rejected the note");
+    }
+
+    pub(crate) fn limit(&self, relay: &str) {
+        self.push_refusal(relay, "rate-limited: slow down");
+    }
+
+    fn push_refusal(&self, relay: &str, reason: &str) {
+        let Some(url) = canonical_public_relay(relay) else {
+            return;
+        };
+        self.book
+            .refused
+            .lock()
+            .expect("publish refusals")
+            .push((url, reason.to_string()));
+    }
+
+    pub(crate) fn accept(&self, relay: &str) {
+        let Some(url) = canonical_public_relay(relay) else {
+            return;
+        };
+        self.book
+            .accepted
+            .lock()
+            .expect("publish accepts")
+            .push(url);
+    }
+}
+
+#[cfg(test)]
+impl Drop for PublishScript {
+    fn drop(&mut self) {
+        let mut slot = PUBLISH_SCRIPTS.lock().expect("publish scripts");
+        let clear = slot
+            .as_ref()
+            .is_some_and(|book| Arc::ptr_eq(book, &self.book));
+        if clear {
+            *slot = None;
+        }
+    }
+}
+
+#[cfg(test)]
 impl RelayAnswer {
     pub(crate) fn begin() -> Self {
         let book = Arc::new(RelayAnswerBook {
@@ -1630,25 +1765,39 @@ fn send_event(
     event_id_hex: &str,
     deadline: Instant,
     public_only: bool,
-) -> Result<(), String> {
-    let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())?;
+) -> Result<(), SendFailure> {
+    #[cfg(test)]
+    if let Some(result) = scripted_send(relay) {
+        return result;
+    }
+    let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())
+        .map_err(SendFailure::Unanswered)?;
     let payload = format!("[\"EVENT\",{event_json}]");
-    arm_stream(socket.get_ref().get_ref(), wait_budget(deadline, None)?)?;
+    arm_stream(
+        socket.get_ref().get_ref(),
+        wait_budget(deadline, None).map_err(SendFailure::Unanswered)?,
+    )
+    .map_err(SendFailure::Unanswered)?;
     socket
         .send(tungstenite::Message::Text(payload.into()))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| SendFailure::Unanswered(error.to_string()))?;
 
     loop {
-        match read_incoming(&mut socket, deadline, None)? {
-            Incoming::Closed => return Err("relay closed the connection".to_string()),
+        match read_incoming(&mut socket, deadline, None).map_err(SendFailure::Unanswered)? {
+            Incoming::Closed => {
+                return Err(SendFailure::Unanswered(
+                    "relay closed the connection".to_string(),
+                ))
+            }
             Incoming::Text(text) => {
                 if let Some(result) = parse_ok(&text, event_id_hex) {
                     return result.map_err(|reason| {
-                        if reason.is_empty() {
+                        let reason = if reason.is_empty() {
                             "relay rejected the note".to_string()
                         } else {
                             reason
-                        }
+                        };
+                        SendFailure::Refused(reason)
                     });
                 }
             }
@@ -1698,13 +1847,10 @@ pub(crate) fn probe_kind(
         return Vec::new();
     }
     let note = minimal_probe_note(now_secs());
-    vec![probe_result(send_event(
-        relay,
-        &note.event_json,
-        &note.id_hex(),
-        deadline,
-        true,
-    ))]
+    vec![probe_result(
+        send_event(relay, &note.event_json, &note.id_hex(), deadline, true)
+            .map_err(|failure| failure.detail()),
+    )]
 }
 
 pub fn fetch_sealed(

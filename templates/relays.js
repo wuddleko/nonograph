@@ -276,16 +276,46 @@ function reshuffleRelays(storage, candidates, count) {
     return writeRelayList(storage, { dealt, pinned: saved.pinned });
 }
 
-function paintRelayList(list) {
-    const controls = document.querySelector(".relay-deal-controls");
+function pinExtraRelays(storage) {
+    const raw = storage.getItem("nonograph_extra_relays");
+    if (raw == null) {
+        return readRelayList(storage);
+    }
+    let extras = [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            extras = parsed.filter(function (entry) {
+                return typeof entry === "string";
+            });
+        }
+    } catch (error) {
+        extras = [];
+    }
+    let list = readRelayList(storage);
+    for (let index = 0; index < extras.length; index += 1) {
+        list = addRelay(storage, extras[index]);
+    }
+    if (typeof storage.removeItem === "function") {
+        storage.removeItem("nonograph_extra_relays");
+    }
+    return list;
+}
+
+function paintRelayList(list, root) {
+    const scope = root && root.querySelector ? root : document;
+    const controls = scope.querySelector(".relay-deal-controls");
+    if (!controls) {
+        return;
+    }
     const urls = list.pinned.concat(list.dealt);
-    let rows = document.querySelector(".relay-list");
-    const empty = document.querySelector(".relay-empty");
+    let rows = scope.querySelector(".relay-list");
+    const empty = scope.querySelector(".relay-empty");
     if (urls.length === 0) {
         if (rows) {
             rows.remove();
         }
-        if (!document.querySelector(".relay-empty")) {
+        if (!scope.querySelector(".relay-empty")) {
             const message = document.createElement("p");
             message.className = "relay-empty";
             message.textContent = "No relays.";
@@ -316,11 +346,18 @@ function paintRelayList(list) {
             rows.append(row);
         }
     }
-    const count = document.querySelector(".relay-count");
+    const total = list.pinned.length + list.dealt.length;
+    const count = scope.querySelector(".relay-count");
     if (count) {
-        count.min = String(list.pinned.length);
-        count.max = String(RELAY_CAP);
-        count.value = String(list.pinned.length + list.dealt.length);
+        count.textContent = total + "/" + RELAY_CAP;
+    }
+    const up = scope.querySelector(".relay-count-up");
+    const down = scope.querySelector(".relay-count-down");
+    if (up) {
+        up.disabled = total >= RELAY_CAP;
+    }
+    if (down) {
+        down.disabled = total <= list.pinned.length;
     }
 }
 
@@ -336,8 +373,8 @@ function postRelayList(list) {
     }).catch(function () {});
 }
 
-function rememberRelayList(current, next) {
-    const same =
+function sameRelayList(current, next) {
+    return (
         current.pinned.length === next.pinned.length &&
         current.dealt.length === next.dealt.length &&
         current.pinned.every(function (url, index) {
@@ -345,50 +382,92 @@ function rememberRelayList(current, next) {
         }) &&
         current.dealt.every(function (url, index) {
             return url === next.dealt[index];
-        });
-    if (!same) {
+        })
+    );
+}
+
+function rememberRelayList(current, next) {
+    if (!sameRelayList(current, next)) {
         postRelayList(next);
     }
     return next;
 }
 
-function bindRelayActions(storage) {
-    const node = document.getElementById("relay-candidates");
+function bindRelayActions(storage, root) {
+    const scope = root && root.querySelector ? root : document;
+    let node = null;
+    if (typeof scope.getElementById === "function") {
+        node = scope.getElementById("relay-candidates");
+    }
+    if (!node && typeof scope.querySelector === "function") {
+        node = scope.querySelector("#relay-candidates");
+    }
     let candidates = [];
     if (node) {
         try {
-            candidates = JSON.parse(node.textContent);
+            const parsed = JSON.parse(node.textContent);
+            candidates = Array.isArray(parsed) ? parsed : [];
         } catch (error) {
             candidates = [];
         }
     }
     let list = loadRelayList(storage, candidates);
-    paintRelayList(list);
-    const count = document.querySelector(".relay-count");
-    const reshuffle = document.querySelector(".relay-reshuffle");
+    function show(next) {
+        const previous = list;
+        list = rememberRelayList(previous, next);
+        paintRelayList(list, scope);
+        if (typeof globalThis.paintSavedRelayLists === "function") {
+            globalThis.paintSavedRelayLists(document, storage);
+        }
+        if (
+            !sameRelayList(previous, list) &&
+            typeof globalThis.refreshRelayCircuits === "function"
+        ) {
+            void globalThis.refreshRelayCircuits();
+        }
+    }
+    show(pinExtraRelays(storage));
+    const reshuffle = scope.querySelector(".relay-reshuffle");
     if (reshuffle) {
         reshuffle.addEventListener("click", () => {
-            list = rememberRelayList(
-                list,
-                reshuffleRelays(storage, candidates, count ? count.value : undefined),
+            const saved = readRelayList(storage);
+            show(reshuffleRelays(storage, candidates, saved.pinned.length + saved.dealt.length));
+        });
+    }
+    const up = scope.querySelector(".relay-count-up");
+    const down = scope.querySelector(".relay-count-down");
+    if (up) {
+        up.addEventListener("click", () => {
+            const saved = readRelayList(storage);
+            show(
+                setRelayCount(
+                    storage,
+                    candidates,
+                    saved.pinned.length + saved.dealt.length + 1,
+                ),
             );
-            paintRelayList(list);
         });
     }
-    if (count) {
-        count.addEventListener("change", () => {
-            list = rememberRelayList(list, setRelayCount(storage, candidates, count.value));
-            paintRelayList(list);
+    if (down) {
+        down.addEventListener("click", () => {
+            const saved = readRelayList(storage);
+            show(
+                setRelayCount(
+                    storage,
+                    candidates,
+                    saved.pinned.length + saved.dealt.length - 1,
+                ),
+            );
         });
     }
-    const add = document.querySelector(".relay-add-btn");
-    const input = document.querySelector(".relay-url-input");
-    const error = document.querySelector(".relay-add-error");
+    const add = scope.querySelector(".relay-add-btn");
+    const input = scope.querySelector(".relay-url-input");
+    const error = scope.querySelector(".relay-add-error");
     if (add) {
         add.addEventListener("click", () => {
             const typed = input ? input.value : "";
             const result = addRelayResult(storage, typed);
-            list = rememberRelayList(list, result.list);
+            show(result.list);
             if (result.clear) {
                 if (input) {
                     input.value = "";
@@ -399,10 +478,9 @@ function bindRelayActions(storage) {
             } else if (error) {
                 error.textContent = result.error;
             }
-            paintRelayList(list);
         });
     }
-    document.addEventListener("click", (event) => {
+    scope.addEventListener("click", (event) => {
         const target = event.target;
         if (!target || !target.closest) {
             return;
@@ -415,16 +493,8 @@ function bindRelayActions(storage) {
         if (!row) {
             return;
         }
-        list = rememberRelayList(list, removeRelay(storage, row.dataset.relay));
-        paintRelayList(list);
+        show(removeRelay(storage, row.dataset.relay));
     });
-    const clear = document.querySelector(".relay-delete-all");
-    if (clear) {
-        clear.addEventListener("click", () => {
-            list = rememberRelayList(list, deleteRelays(storage));
-            paintRelayList(list);
-        });
-    }
 }
 
 if (typeof document !== "undefined" && document.querySelector(".relays-page")) {

@@ -193,7 +193,7 @@ pub(super) fn version() -> &'static str {
 
 pub(super) fn home_scripts(version: &str) -> String {
     format!(
-        "<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
+        "<script src=\"/relays.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
     )
 }
 

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-use crate::{save, Pool, Queue, Visit, VisitHook};
+use crate::{save_crawl, Pool, Queue, Visit, VisitHook};
 
 struct Shared {
     queue: Mutex<Queue>,
@@ -51,7 +51,7 @@ where
         .unwrap_or_else(|poison| poison.into_inner());
 
     match run {
-        Ok(()) => save(path, queue.pool()),
+        Ok(()) => save_crawl(path, queue.pool_mut()),
         Err(panic) => resume_unwind(panic),
     }
 }

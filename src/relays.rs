@@ -25,13 +25,6 @@ pub(crate) fn render_sidebar_field(
     html
 }
 
-pub(crate) fn render_saved_relay_input(saved: &str) -> String {
-    format!(
-        "<input type=\"hidden\" name=\"relay\" value=\"{}\" />",
-        html_attr_escape(saved)
-    )
-}
-
 pub fn render_about_section(relays: &[String], nojs: bool) -> String {
     let mut html = String::from(
         "<div class=\"help-section\" id=\"relays\">\n\
@@ -49,8 +42,6 @@ pub fn render_about_section(relays: &[String], nojs: bool) -> String {
         html.push_str(
             "<p>Add one more with the form. It is sent with the note and kept with this draft.</p>\n",
         );
-    } else {
-        html.push_str(&render_add_relay_controls(false, "", "", false, ""));
     }
     html.push_str("</div>\n");
     html
@@ -79,10 +70,7 @@ pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> Str
     format!(
         "{list}\
         <div class=\"relay-deal-controls\">\n\
-        <div class=\"relay-count-row\">\n\
-        <input class=\"relay-count\" type=\"number\" value=\"3\" max=\"6\" aria-label=\"How many relays\" />\n\
-        <button type=\"button\" class=\"relay-reshuffle\">Reshuffle</button>\n\
-        </div>\n\
+        {count_row}\
         <div class=\"relay-add\" data-relay-add>\n\
         <div class=\"relay-add-row\">\n\
         <input class=\"relay-url-input\" type=\"text\" inputmode=\"url\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"wss://…\" maxlength=\"255\" />\n\
@@ -90,9 +78,9 @@ pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> Str
         </div>\n\
         <p class=\"relay-add-error\"></p>\n\
         </div>\n\
-        <button type=\"button\" class=\"relay-delete-all\">Delete all</button>\n\
         </div>\n\
         {candidates}",
+        count_row = relay_count_row(3),
         candidates = candidate_script(candidates),
     )
 }
@@ -139,14 +127,7 @@ pub(crate) fn render_nojs_relay_form(
     format!(
         "{list}\
         <div class=\"relay-deal-controls\">\n\
-        <form method=\"post\" action=\"/nojs/relays\">\n\
-        {csrf}\
-        <div class=\"relay-count-row\">\n\
-        <input class=\"relay-count\" type=\"number\" name=\"count\" value=\"{total}\" min=\"{floor}\" max=\"6\" aria-label=\"How many relays\" />\n\
-        <button type=\"submit\" class=\"relay-count-set\" name=\"action\" value=\"count\">Set</button>\n\
-        <button type=\"submit\" class=\"relay-reshuffle\" name=\"action\" value=\"reshuffle\">Reshuffle</button>\n\
-        </div>\n\
-        </form>\n\
+        {count_row}\
         <form class=\"relay-add\" data-relay-add method=\"post\" action=\"/nojs/relays\">\n\
         {csrf}\
         <div class=\"relay-add-row\">\n\
@@ -155,14 +136,54 @@ pub(crate) fn render_nojs_relay_form(
         </div>\n\
         <p class=\"relay-add-error\">{add_error}</p>\n\
         </form>\n\
-        <form method=\"post\" action=\"/nojs/relays\">\n\
-        {csrf}\
-        <button type=\"submit\" class=\"relay-delete-all\" name=\"action\" value=\"delete\">Delete all</button>\n\
-        </form>\n\
         </div>\n\
         {candidates}",
-        floor = pinned.len(),
+        count_row = nojs_count_row(total, pinned.len(), &csrf),
         candidates = candidate_script(candidates),
+    )
+}
+
+fn reshuffle_icon() -> &'static str {
+    r#"<svg class="relay-wheel" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M20 12a8 8 0 1 1-2.2-5.6"/><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M20 4v5h-5"/></svg>"#
+}
+
+fn count_mark(up: bool) -> &'static str {
+    if up { "+" } else { "−" }
+}
+
+fn relay_count_row(total: usize) -> String {
+    format!(
+        "<div class=\"relay-count-row\">\n\
+        <button type=\"button\" class=\"relay-reshuffle\" aria-label=\"Reshuffle\">{icon}</button>\n\
+        <span class=\"relay-count-step\">\n\
+        <button type=\"button\" class=\"relay-count-down\" aria-label=\"Fewer relays\">{down}</button>\n\
+        <span class=\"relay-count\">{total}/6</span>\n\
+        <button type=\"button\" class=\"relay-count-up\" aria-label=\"More relays\">{up}</button>\n\
+        </span>\n\
+        </div>\n",
+        icon = reshuffle_icon(),
+        up = count_mark(true),
+        down = count_mark(false),
+    )
+}
+
+fn nojs_count_row(total: usize, floor: usize, csrf: &str) -> String {
+    let up_disabled = if total >= 6 { " disabled" } else { "" };
+    let down_disabled = if total <= floor { " disabled" } else { "" };
+    format!(
+        "<form class=\"relay-count-row\" method=\"post\" action=\"/nojs/relays\">\n\
+        {csrf}\
+        <input type=\"hidden\" name=\"count\" value=\"{total}\" />\n\
+        <button type=\"submit\" class=\"relay-reshuffle\" name=\"action\" value=\"reshuffle\" aria-label=\"Reshuffle\">{icon}</button>\n\
+        <span class=\"relay-count-step\">\n\
+        <button type=\"submit\" class=\"relay-count-down\" name=\"action\" value=\"down\" aria-label=\"Fewer relays\"{down_disabled}>{down}</button>\n\
+        <span class=\"relay-count\">{total}/6</span>\n\
+        <button type=\"submit\" class=\"relay-count-up\" name=\"action\" value=\"up\" aria-label=\"More relays\"{up_disabled}>{up}</button>\n\
+        </span>\n\
+        </form>\n",
+        icon = reshuffle_icon(),
+        up = count_mark(true),
+        down = count_mark(false),
     )
 }
 

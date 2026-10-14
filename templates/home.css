@@ -356,6 +356,9 @@
             }
 
             .sidebar-relays {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
                 margin-top: 0;
                 max-width: 180px;
                 width: 100%;
@@ -367,17 +370,21 @@
             }
 
             .sidebar-relays-title {
+                flex: none;
+                order: 0;
                 font-size: 15px;
                 font-weight: 700;
                 letter-spacing: 0.04em;
                 text-transform: uppercase;
                 color: var(--ink);
-                margin: 0 0 6px;
+                margin: 0;
             }
 
             .sidebar-relays .relay-list {
+                order: 2;
+                flex-basis: 100%;
                 list-style: none;
-                margin: 0;
+                margin: 10px 0 0;
                 padding: 0;
             }
 
@@ -435,7 +442,9 @@
             }
 
             .sidebar-relays .relay-empty {
-                margin: 0;
+                order: 2;
+                flex-basis: 100%;
+                margin: 10px 0 0;
                 font-size: 12px;
             }
 
@@ -1112,18 +1121,29 @@
                 }
             }
 
+            .relays-page {
+                display: grid;
+                grid-template-columns: auto auto;
+                justify-content: start;
+                align-items: end;
+                column-gap: 6px;
+            }
+
             .relays-page h1 {
+                grid-column: 1;
+                grid-row: 1;
                 font-size: 54px;
                 font-weight: 700;
                 letter-spacing: -0.03em;
                 text-transform: uppercase;
                 line-height: 0.95;
-                margin: 6px 0 28px;
+                margin: 6px 0 20px;
             }
 
             .relays-page .relay-list,
-            .relays-page .relay-deal-controls,
+            .relays-page .relay-add,
             .relays-page .relay-empty {
+                grid-column: 1 / -1;
                 max-width: 420px;
             }
 
@@ -1136,11 +1156,6 @@
                 font-size: 15px;
             }
 
-            .relays-page .relay-list-user .relay-remove {
-                opacity: 1;
-                pointer-events: auto;
-            }
-
             .relays-page form {
                 margin: 0;
             }
@@ -1149,40 +1164,124 @@
                 display: contents;
             }
 
-            .relays-page .relay-deal-controls {
+            .relays-page .relay-deal-controls,
+            .sidebar-relays .relay-deal-controls {
+                display: contents;
+            }
+
+            .sidebar-relays .relay-add {
+                order: 3;
+                flex-basis: 100%;
+            }
+
+            .relay-count-row {
                 display: flex;
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 16px;
+                align-items: center;
+                gap: 6px;
+                margin: 0;
+            }
+
+            .sidebar-relays .relay-count-row {
+                order: 1;
+                flex-grow: 1;
+                gap: 0;
+            }
+
+            .sidebar-relays .relay-count-step {
+                margin-left: auto;
+                margin-right: auto;
             }
 
             .relays-page .relay-count-row {
-                display: flex;
-                align-items: center;
-                gap: 8px;
+                grid-column: 2;
+                grid-row: 1;
+                margin-bottom: 20px;
             }
 
-            .relays-page .relay-count {
-                width: 64px;
-                height: 28px;
+            .relay-count {
                 margin: 0;
-                padding: 0 8px;
-                font-size: 14px;
-                font-family: var(--face);
-                line-height: 28px;
-                border: 1px solid var(--ink);
-                border-radius: 0;
-                background: var(--ground);
+                padding: 0;
+                border: none;
+                background: transparent;
                 color: var(--ink);
-                box-sizing: border-box;
+                font-family: var(--face);
+                font-size: 15px;
+                font-weight: 700;
+                font-variant-numeric: tabular-nums;
+                letter-spacing: 0.04em;
+                line-height: 1;
+                width: auto;
+                height: auto;
+            }
+
+            .relay-count-step {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .sidebar .relay-count-row button,
+            .relays-page .relay-count-row button {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 14px;
+                margin: 0;
+                padding: 0;
+                min-height: 0;
+                border: none;
+                border-radius: 0;
+                background: transparent;
+                color: var(--ink);
+                box-shadow: none;
+                font-size: 0;
+                letter-spacing: 0;
+                text-transform: none;
+                line-height: 0;
+                cursor: pointer;
+            }
+
+            .sidebar .relay-count-row .relay-reshuffle,
+            .relays-page .relay-count-row .relay-reshuffle {
+                width: 16px;
+                height: 16px;
+            }
+
+            .sidebar-relays .relay-count-row .relay-reshuffle {
+                margin-left: 6px;
+                margin-right: 2px;
+            }
+
+            .sidebar .relay-count-row .relay-count-up,
+            .sidebar .relay-count-row .relay-count-down,
+            .relays-page .relay-count-row .relay-count-up,
+            .relays-page .relay-count-row .relay-count-down {
+                width: 16px;
+                height: 16px;
+                font-family: var(--face);
+                font-size: 14px;
+                font-weight: 500;
+                line-height: 1;
+            }
+
+            .relay-count-row svg {
+                display: block;
+            }
+
+            .sidebar .relay-count-row button:hover,
+            .sidebar .relay-count-row button:active,
+            .relays-page .relay-count-row button:hover,
+            .relays-page .relay-count-row button:active {
+                background: transparent;
+                color: var(--ink);
+            }
+
+            .relay-count-row button:disabled {
+                opacity: 0.35;
+                cursor: default;
             }
 
             .relays-page .relay-add-row {
                 max-width: 100%;
-            }
-
-            .relays-page .relay-reshuffle,
-            .relays-page .relay-count-set,
-            .relays-page .relay-delete-all {
-                margin: 0;
             }

@@ -23,6 +23,10 @@ impl Queue {
         &self.pool
     }
 
+    pub(crate) fn pool_mut(&mut self) -> &mut Pool {
+        &mut self.pool
+    }
+
     pub fn push(&mut self, url: &str, now: i64) -> bool {
         let Some(url) = self.consider(url, now) else {
             return false;
@@ -90,6 +94,7 @@ impl Queue {
                 first_seen: now,
                 next_try: now,
                 failures: 0,
+                publish_refused: false,
                 visit: None,
             });
         }

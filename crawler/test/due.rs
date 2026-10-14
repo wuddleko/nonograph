@@ -7,6 +7,7 @@ fn visited(url: &str, next_try: i64) -> Row {
         first_seen: 1_700_000_000,
         next_try,
         failures: 0,
+        publish_refused: false,
         visit: Some(Visit {
             at: 1_700_000_000,
             socket_answered: true,
@@ -22,6 +23,7 @@ fn unvisited(url: &str, next_try: i64) -> Row {
         first_seen: 1_700_000_000,
         next_try,
         failures: 0,
+        publish_refused: false,
         visit: None,
     }
 }

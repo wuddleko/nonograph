@@ -41,7 +41,9 @@ fn home_content_field(
 
 fn split_home_error(error: Option<&str>) -> (Option<&str>, &str) {
     match error {
-        Some(code @ ("relay_required" | "relay_invalid" | "relay_listed")) => (None, code),
+        Some(code @ ("relay_required" | "relay_invalid" | "relay_listed" | "relay_full")) => {
+            (None, code)
+        }
         other => (other, ""),
     }
 }
@@ -58,6 +60,7 @@ pub(super) fn home_error_message(error: Option<&str>) -> String {
         "relay_required" => "Enter a relay URL.".to_string(),
         "relay_invalid" => "Use a public wss:// relay URL.".to_string(),
         "relay_listed" => "That relay is already in the list.".to_string(),
+        "relay_full" => "Six relays are already pinned.".to_string(),
         "nostr_publish_failed" => "Publishing failed. Try again.".to_string(),
         _ => "Something went wrong. Try again.".to_string(),
     }
@@ -88,8 +91,10 @@ struct HomeDraft<'a> {
     title: &'a str,
     alias: &'a str,
     content: &'a str,
+    #[allow(dead_code)]
     saved_relay: &'a str,
     typed_relay: &'a str,
+    #[allow(dead_code)]
     list_relay: bool,
     surface_relay_error: bool,
 }
@@ -168,7 +173,8 @@ fn home_form_context(
     } else {
         home_error_message(Some(relay_error))
     };
-    context.insert("csrf_token".to_string(), form_csrf_token(config, cookies));
+    let csrf_token = form_csrf_token(config, cookies);
+    context.insert("csrf_token".to_string(), csrf_token.clone());
     context.insert(
         "form_action".to_string(),
         if nojs { "/nojs/create" } else { "/nojs" }.to_string(),
@@ -195,40 +201,60 @@ fn home_form_context(
             super::layout::theme_boot(version)
         },
     );
-    let listed = if nojs {
-        nojs_saved_relays(cookies)
+    let (relays_sidebar, relays_section) = if nojs {
+        nojs_landing_relays(cookies, &csrf_token, &relay_message, draft.typed_relay)
     } else {
-        Vec::new()
+        super::relays::landing_relay_blocks()
     };
-    context.insert(
-        "relays_sidebar".to_string(),
-        crate::relays::render_sidebar_field(
-            &listed,
-            nojs,
-            draft.saved_relay,
-            draft.typed_relay,
-            draft.list_relay,
-            &relay_message,
-        ),
-    );
-    context.insert(
-        "relays_section".to_string(),
-        crate::relays::render_about_section(&listed, nojs),
-    );
-    context.insert(
-        "relay_field".to_string(),
-        if nojs {
-            crate::relays::render_saved_relay_input(draft.saved_relay)
-        } else {
-            String::new()
-        },
-    );
+    context.insert("relays_sidebar".to_string(), relays_sidebar);
+    context.insert("relays_section".to_string(), relays_section);
+    context.insert("relay_field".to_string(), String::new());
     let origin = config.normalized_public_origin().unwrap_or_default();
     context.insert(
         "public_url".to_string(),
         super::layout::join_public_origin(&origin, "/"),
     );
     context
+}
+
+fn nojs_landing_relays(
+    cookies: Option<&CookieJar<'_>>,
+    csrf_token: &str,
+    add_error: &str,
+    typed: &str,
+) -> (String, String) {
+    let saved = cookies.and_then(|jar| {
+        jar.get(super::relays::RELAY_LIST_COOKIE)
+            .map(|cookie| cookie.value().to_string())
+    });
+    let state = super::relays::nojs_relay_state(&super::relays::relay_pool(), saved.as_deref());
+    if state.write_cookie {
+        if let Some(jar) = cookies {
+            super::relays::set_relay_list_cookie(jar, &state.cookie);
+        }
+    }
+    let form = crate::relays::render_nojs_relay_form(
+        &state.cookie.dealt,
+        &state.cookie.pinned,
+        &state.urls,
+        csrf_token,
+        add_error,
+        typed,
+    );
+    let sidebar = format!(
+        "<div class=\"sidebar-relays\" id=\"sidebar-relays\">\n\
+        <p class=\"sidebar-relays-title\">Relays</p>\n\
+        {form}\
+        </div>\n"
+    );
+    let listed: Vec<String> = state
+        .cookie
+        .pinned
+        .iter()
+        .cloned()
+        .chain(state.cookie.dealt.iter().cloned())
+        .collect();
+    (sidebar, crate::relays::render_about_section(&listed, true))
 }
 
 fn nojs_saved_relays(cookies: Option<&CookieJar<'_>>) -> Vec<String> {
@@ -255,8 +281,23 @@ fn render_home(
     nojs: bool,
     error: Option<&str>,
     cookies: &CookieJar<'_>,
+    typed: &str,
 ) -> content::RawHtml<String> {
-    let context = home_context(config, nojs, error, Some(cookies));
+    let context = home_form_context(
+        config,
+        nojs,
+        error,
+        HomeDraft {
+            title: "",
+            alias: "",
+            content: "",
+            saved_relay: "",
+            typed_relay: typed,
+            list_relay: false,
+            surface_relay_error: false,
+        },
+        Some(cookies),
+    );
     match template::shared().render("home", &context) {
         Ok(html) => content::RawHtml(html),
         Err(error) => content::RawHtml(format!("Template error: {error}")),
@@ -269,16 +310,21 @@ pub fn index(
     config: &State<Config>,
     cookies: &CookieJar<'_>,
 ) -> content::RawHtml<String> {
-    render_home(config, false, error, cookies)
+    render_home(config, false, error, cookies, "")
 }
 
-#[get("/nojs?<error>")]
+#[get("/nojs?<error>&<typed>")]
 pub fn nojs_index(
     error: Option<&str>,
+    typed: Option<&str>,
     config: &State<Config>,
     cookies: &CookieJar<'_>,
 ) -> content::RawHtml<String> {
-    render_home(config, true, error, cookies)
+    let typed = match error {
+        Some("relay_invalid" | "relay_full") => typed.unwrap_or(""),
+        _ => "",
+    };
+    render_home(config, true, error, cookies, typed)
 }
 
 #[derive(Clone, FromForm)]
@@ -387,7 +433,7 @@ pub(super) fn publish_nojs_note(
     publish_nojs_note_with_cookie(form, config, None)
 }
 
-fn publish_nojs_note_with_cookie(
+pub(super) fn publish_nojs_note_with_cookie(
     form: &NewPost,
     config: &Config,
     relay_cookie: Option<&str>,
@@ -418,12 +464,12 @@ fn publish_nojs_note_with_cookie(
             if let Some(accepted) = super::nojs_test::nojs_test_accepted() {
                 accepted
             } else {
-                crate::nostr::publish_to_relays(&relays, &sealed.note, timeout)
+                publish_and_record(&relays, &sealed.note, timeout).accepted
             }
         }
         #[cfg(not(test))]
         {
-            crate::nostr::publish_to_relays(&relays, &sealed.note, timeout)
+            publish_and_record(&relays, &sealed.note, timeout).accepted
         }
     };
     let event: serde_json::Value =
@@ -817,6 +863,38 @@ pub fn assign_tor_circuits(
     Status::NoContent
 }
 
+fn publish_and_record(
+    relays: &[String],
+    note: &crate::nostr::SignedNote,
+    timeout: std::time::Duration,
+) -> crate::nostr::PublishedRelays {
+    let published = crate::nostr::publish_to_relays(relays, note, timeout);
+    record_published(&published.refused, &published.accepted);
+    published
+}
+
+fn record_published(refused: &[String], accepted: &[String]) {
+    let path = super::relays::relay_pool();
+    if let Err(error) = crate::crawl::mark_publish(&path, refused, accepted) {
+        eprintln!("Nonograph: relay pool was not saved: {error}");
+    }
+}
+
+pub(super) fn publish_sealed_note(
+    body: &NostrPublishBody,
+    config: &Config,
+    csrf_cookie: &str,
+) -> Option<NostrPublishResult> {
+    let (note, relays, locator) = note_and_relays_for_publish(body, config, csrf_cookie)?;
+    let timeout = relay_timeout(config);
+    let published = publish_and_record(&relays, &note, timeout);
+    Some(publish_result(
+        locator,
+        published.accepted,
+        &config.nostr.relays,
+    ))
+}
+
 #[post("/nostr/publish", data = "<body>")]
 pub async fn nostr_publish(
     body: Json<NostrPublishBody>,
@@ -830,10 +908,7 @@ pub async fn nostr_publish(
         return Err(Status::ServiceUnavailable);
     };
     match rocket::tokio::task::spawn_blocking(move || {
-        let (note, relays, locator) = note_and_relays_for_publish(&body, &config, &csrf_cookie)?;
-        let timeout = relay_timeout(&config);
-        let accepted = crate::nostr::publish_to_relays(&relays, &note, timeout);
-        Some(publish_result(locator, accepted, &config.nostr.relays))
+        publish_sealed_note(&body, &config, &csrf_cookie)
     })
     .await
     {

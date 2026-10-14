@@ -41,6 +41,7 @@ fn push_canonicalizes_a_new_url_and_inserts_its_row() {
     assert_eq!(queue.pool().rows[0].first_seen, NOW);
     assert_eq!(queue.pool().rows[0].next_try, NOW);
     assert_eq!(queue.pool().rows[0].failures, 0);
+    assert!(!queue.pool().rows[0].publish_refused);
     assert!(queue.pool().rows[0].visit.is_none());
     assert_eq!(queue.pop().as_deref(), Some("wss://a.example"));
 }
@@ -54,6 +55,7 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 first_seen: 1_700_000_000,
                 next_try: NOW + 24 * 60 * 60,
                 failures: 0,
+                publish_refused: false,
                 visit: None,
             },
             Row {
@@ -61,6 +63,7 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 first_seen: 1_700_000_000,
                 next_try: NOW,
                 failures: 4,
+                publish_refused: false,
                 visit: Some(missed()),
             },
             Row {
@@ -68,6 +71,7 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 first_seen: 1_700_000_000,
                 next_try: NOW + 15 * 60,
                 failures: 1,
+                publish_refused: false,
                 visit: Some(missed()),
             },
         ],
@@ -119,6 +123,7 @@ fn finish_writes_the_visit_and_an_answer_waits_one_day() {
             first_seen: 1_700_000_000,
             next_try: NOW,
             failures: 4,
+            publish_refused: false,
             visit: Some(missed()),
         }],
     });
@@ -138,6 +143,30 @@ fn finish_writes_the_visit_and_an_answer_waits_one_day() {
     assert_eq!(row.next_try, NOW + 24 * 60 * 60);
     assert_eq!(row.first_seen, 1_700_000_000);
     assert!(!queue.push("wss://a.example", NOW));
+}
+
+#[test]
+fn finish_replaces_the_visit_and_leaves_publish_refused() {
+    let mut queue = Queue::new(Pool {
+        rows: vec![Row {
+            url: "wss://a.example".to_owned(),
+            first_seen: 1_700_000_000,
+            next_try: NOW,
+            failures: 0,
+            publish_refused: true,
+            visit: Some(missed()),
+        }],
+    });
+    queue.push("wss://a.example", NOW);
+    let url = queue.pop().unwrap();
+
+    queue.finish(&url, answered(), Vec::<&str>::new(), NOW);
+
+    let row = &queue.pool().rows[0];
+    assert!(row.publish_refused);
+    let visit = row.visit.as_ref().unwrap();
+    assert!(visit.socket_answered);
+    assert_eq!(visit.probes[0].name, "30323");
 }
 
 #[test]
@@ -207,6 +236,7 @@ fn a_discovered_url_already_waiting_or_in_flight_is_left_alone() {
             first_seen: 1_700_000_000,
             next_try: NOW + 60 * 60,
             failures: 2,
+            publish_refused: false,
             visit: Some(missed()),
         }],
     });
@@ -271,6 +301,7 @@ fn a_cooling_row_left_unpushed_leaves_the_queue_idle() {
             first_seen: 1_700_000_000,
             next_try: NOW + 15 * 60,
             failures: 1,
+            publish_refused: false,
             visit: Some(missed()),
         }],
     });

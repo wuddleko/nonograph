@@ -1,5 +1,6 @@
 use super::*;
 use secp256k1::{Secp256k1, XOnlyPublicKey};
+use serial_test::serial;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 
@@ -210,6 +211,46 @@ fn a_title_tag_is_dropped_on_the_sealed_fetch_path() {
         crate::seal::sealed_payload_max(128, 32, 256),
     )
     .is_none());
+}
+
+#[test]
+#[serial(publish_script)]
+fn a_publish_records_the_refused_relay_and_leaves_out_a_relay_that_did_not_answer() {
+    let note = sign_sealed_note("kept", "0123456789abcdef0123", 1_700_000_000);
+    let script = PublishScript::begin();
+    script.refuse("wss://refused.example");
+    script.limit("wss://slow.example");
+    let started = Instant::now();
+    let published = publish_to_relays(
+        &[
+            "wss://refused.example".to_string(),
+            "wss://slow.example".to_string(),
+            "wss://silent.example".to_string(),
+        ],
+        &note,
+        Duration::from_secs(2),
+    );
+    assert_eq!(published.refused, vec!["wss://refused.example".to_string()]);
+    assert!(published.accepted.is_empty());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    drop(script);
+}
+
+#[test]
+fn a_policy_reason_is_a_durable_refusal() {
+    assert!(durable_refusal("blocked: kind"));
+    assert!(durable_refusal("restricted: we require auth"));
+    for reason in [
+        "rate-limited: slow down",
+        "error: missing",
+        "duplicate: already have this event",
+        "pow: difficulty 20",
+        "invalid: id",
+        "",
+        "relay rejected the note",
+    ] {
+        assert!(!durable_refusal(reason), "{reason}");
+    }
 }
 
 #[test]
@@ -1282,7 +1323,7 @@ fn publish_does_not_dial_a_private_relay() {
         &note,
         Duration::from_secs(2),
     );
-    assert!(accepted.is_empty());
+    assert!(accepted.accepted.is_empty());
     assert!(
         started.elapsed() < Duration::from_millis(200),
         "private relay was dialed: {:?}",
@@ -1423,7 +1464,8 @@ fn publish_waits_for_every_relay_it_will_name() {
         false,
     );
     let elapsed = started.elapsed();
-    assert!(accepted.is_empty());
+    assert!(accepted.accepted.is_empty());
+    assert!(accepted.refused.is_empty());
     assert!(
         elapsed >= Duration::from_millis(150),
         "returned when the first relay failed: {elapsed:?}"

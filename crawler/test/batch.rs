@@ -411,3 +411,99 @@ fn the_same_url_is_visited_once() {
     assert!(queue.idle());
     assert_eq!(load(&path), *queue.pool());
 }
+
+#[test]
+fn a_crawl_save_keeps_a_refusal_and_a_cleared_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let mut open = stored("wss://open.example", false);
+    let mut marked = stored("wss://marked.example", true);
+    let found = stored("wss://found.example", false);
+    let mut queue = Queue::new(Pool {
+        rows: vec![open.clone(), marked.clone(), found],
+    });
+    assert!(queue.push("wss://open.example", NOW));
+    assert!(queue.push("wss://marked.example", NOW));
+    assert!(queue.push("wss://found.example", NOW));
+
+    open.url = "wss://Open.Example/".to_owned();
+    open.publish_refused = true;
+    open.next_try = 1;
+    open.visit.as_mut().unwrap().at = NOW - 40;
+    marked.publish_refused = false;
+    marked.next_try = 1;
+    marked.visit.as_mut().unwrap().at = NOW - 40;
+    save(
+        &path,
+        &Pool {
+            rows: vec![open, marked],
+        },
+    )
+    .unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    run_batch(
+        &mut queue,
+        2,
+        NOW,
+        {
+            let seen = Arc::clone(&seen);
+            move || Script {
+                seen: Arc::clone(&seen),
+                overlap: None,
+                discover: false,
+                boom: false,
+            }
+        },
+        &path,
+    )
+    .unwrap();
+
+    assert_eq!(load(&path), *queue.pool());
+    let pool = load(&path);
+    let open = pool
+        .rows
+        .iter()
+        .find(|row| row.url == "wss://open.example")
+        .unwrap();
+    assert!(open.publish_refused);
+    assert!(open.visit.as_ref().unwrap().socket_answered);
+    assert_eq!(open.visit.as_ref().unwrap().at, NOW);
+    assert_eq!(open.next_try, NOW + 24 * 60 * 60);
+    let marked = pool
+        .rows
+        .iter()
+        .find(|row| row.url == "wss://marked.example")
+        .unwrap();
+    assert!(!marked.publish_refused);
+    assert_eq!(marked.visit.as_ref().unwrap().at, NOW);
+    assert_eq!(marked.next_try, NOW + 24 * 60 * 60);
+    let found = pool
+        .rows
+        .iter()
+        .find(|row| row.url == "wss://found.example")
+        .unwrap();
+    assert!(!found.publish_refused);
+    assert_eq!(found.visit.as_ref().unwrap().at, NOW);
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["relay-pool.json".to_owned()]);
+}
+
+fn stored(url: &str, refused: bool) -> Row {
+    Row {
+        url: url.to_owned(),
+        first_seen: 1_700_000_000,
+        next_try: NOW,
+        failures: 0,
+        publish_refused: refused,
+        visit: Some(Visit {
+            at: NOW - 5,
+            socket_answered: false,
+            nip11: None,
+            probes: Vec::new(),
+        }),
+    }
+}

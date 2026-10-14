@@ -32,7 +32,7 @@ function paintSavedRelayLists(doc, storage) {
     const roots = [doc.querySelector("#sidebar-relays"), doc.querySelector("#relays")];
     for (let index = 0; index < roots.length; index += 1) {
         const root = roots[index];
-        if (!root || urls.length === 0) {
+        if (!root || root.querySelector(".relay-deal-controls")) {
             continue;
         }
         let list = null;
@@ -42,6 +42,18 @@ function paintSavedRelayLists(doc, storage) {
                 list = lists[item];
                 break;
             }
+        }
+        if (urls.length === 0) {
+            if (list) {
+                list.remove();
+            }
+            if (!root.querySelector(".relay-empty")) {
+                const message = doc.createElement("p");
+                message.className = "relay-empty";
+                message.textContent = "No relays.";
+                root.append(message);
+            }
+            continue;
         }
         const empty = root.querySelector(".relay-empty");
         if (empty) {
@@ -75,60 +87,13 @@ function paintSavedRelayLists(doc, storage) {
             const mobileCharCount = document.getElementById("mobileCharCount");
             const form = document.getElementById("publishForm");
 
-            const EXTRA_RELAYS_KEY = "nonograph_extra_relays";
             let maxFetchRelays = 6;
             let relaysForPublicPublish = () => [];
             let publicRelayUrl = () => false;
             let nostrLoading;
 
-            function extraRelayLimit() {
-                const taken = Math.min(savedRelayUrls(localStorage).length, maxFetchRelays);
-                return maxFetchRelays - taken;
-            }
-
-            function readExtraRelays() {
-                try {
-                    const raw = localStorage.getItem(EXTRA_RELAYS_KEY);
-                    const parsed = JSON.parse(raw || "[]");
-                    if (!Array.isArray(parsed)) {
-                        return [];
-                    }
-                    return parsed.filter((entry) => typeof entry === "string");
-                } catch (error) {
-                    return [];
-                }
-            }
-
-            function loadExtraRelays() {
-                const stored = readExtraRelays();
-                const kept = stored.slice(0, extraRelayLimit());
-                if (kept.length !== stored.length) {
-                    saveExtraRelays(kept);
-                }
-                return kept;
-            }
-
-            function saveExtraRelays(relays) {
-                localStorage.setItem(EXTRA_RELAYS_KEY, JSON.stringify(relays));
-            }
-
-            function mergePublishRelays() {
-                const saved = savedRelayUrls(localStorage);
-                const seen = new Set(saved.map((relay) => relayKey(relay)));
-                const merged = [];
-                for (const relay of loadExtraRelays()) {
-                    const key = relayKey(relay);
-                    if (seen.has(key)) {
-                        continue;
-                    }
-                    seen.add(key);
-                    merged.push(relay);
-                }
-                return merged.concat(saved);
-            }
-
             function hasAnyPublishRelay() {
-                return mergePublishRelays().length > 0;
+                return savedRelayUrls(localStorage).length > 0;
             }
 
             globalThis.nonographPublishPublicNote = async function (fields) {
@@ -139,7 +104,7 @@ function paintSavedRelayLists(doc, storage) {
                     author: fields.author,
                     content: fields.content,
                     contentMax: Number(form.dataset.sealMax),
-                    relays: mergePublishRelays(),
+                    relays: savedRelayUrls(localStorage),
                     timeoutMs,
                     csrfToken: form.csrf_token ? form.csrf_token.value : "",
                 });
@@ -198,7 +163,7 @@ function paintSavedRelayLists(doc, storage) {
                 if (!circuitsTracked) {
                     return true;
                 }
-                const relays = relaysForPublicPublish(mergePublishRelays());
+                const relays = relaysForPublicPublish(savedRelayUrls(localStorage));
                 return (
                     relays.length > 0 &&
                     relays.every((relay) => {
@@ -216,12 +181,6 @@ function paintSavedRelayLists(doc, storage) {
                     button.classList.toggle("circuits-pending", waiting);
                     button.setAttribute("aria-disabled", waiting ? "true" : "false");
                 });
-            }
-
-            function relayHost(url) {
-                const rest = url.replace(/^wss:\/\//i, "").replace(/\/$/, "");
-                const end = rest.search(/[/?#]/);
-                return end === -1 ? rest : rest.slice(0, end);
             }
 
             function relayKey(url) {
@@ -243,115 +202,13 @@ function paintSavedRelayLists(doc, storage) {
                 return "wss://" + host + tail;
             }
 
-            function renderExtraRelayLists() {
-                const relays = loadExtraRelays();
-                document.querySelectorAll(".relay-list-user").forEach((list) => {
-                    list.replaceChildren();
-                    for (const relay of relays) {
-                        const row = document.createElement("li");
-                        const label = document.createElement("span");
-                        label.className = "relay-name";
-                        label.textContent = relayHost(relay);
-                        label.title = relay;
-                        row.dataset.relay = relay;
-                        const remove = document.createElement("button");
-                        remove.type = "button";
-                        remove.className = "relay-remove";
-                        remove.setAttribute("aria-label", "Remove relay");
-                        remove.textContent = "×";
-                        remove.dataset.relay = relay;
-                        row.append(label, remove);
-                        list.append(row);
-                    }
-                    list.hidden = relays.length === 0;
-                });
-                paintRelayCircuits();
+            globalThis.paintSavedRelayLists = paintSavedRelayLists;
+            const relaySidebar = document.querySelector("#sidebar-relays");
+            if (relaySidebar && typeof globalThis.bindRelayActions === "function") {
+                globalThis.bindRelayActions(localStorage, relaySidebar);
+            } else {
+                paintSavedRelayLists(document, localStorage);
             }
-
-            async function addRelayFromBlock(block) {
-                const input = block.querySelector(".relay-url-input");
-                const errorEl = block.querySelector(".relay-add-error");
-                if (!input) {
-                    return;
-                }
-                const value = input.value.trim();
-                if (!value) {
-                    if (errorEl) {
-                        errorEl.textContent = "Enter a relay URL.";
-                    }
-                    return;
-                }
-                await loadNostr();
-                if (!publicRelayUrl(value)) {
-                    if (errorEl) {
-                        errorEl.textContent = "Use a public wss:// relay URL.";
-                    }
-                    return;
-                }
-                const extra = loadExtraRelays();
-                const key = relayKey(value);
-                if (
-                    extra.some((entry) => relayKey(entry) === key) ||
-                    savedRelayUrls(localStorage).some((entry) => relayKey(entry) === key)
-                ) {
-                    if (errorEl) {
-                        errorEl.textContent = "Already in your list.";
-                    }
-                    return;
-                }
-                const limit = extraRelayLimit();
-                if (extra.length >= limit) {
-                    if (errorEl) {
-                        errorEl.textContent =
-                            limit === 0
-                                ? "This site already uses every relay slot."
-                                : "Remove one first (max " + limit + ").";
-                    }
-                    return;
-                }
-                extra.push(key);
-                saveExtraRelays(extra);
-                input.value = "";
-                if (errorEl) {
-                    errorEl.textContent = "";
-                }
-                renderExtraRelayLists();
-                void sendRelayList();
-            }
-
-            document.querySelectorAll("[data-relay-add]").forEach((block) => {
-                const input = block.querySelector(".relay-url-input");
-                block.querySelector(".relay-add-btn")?.addEventListener(
-                    "click",
-                    () => addRelayFromBlock(block),
-                );
-                input?.addEventListener("keydown", (event) => {
-                    if (event.key === "Enter") {
-                        event.preventDefault();
-                        addRelayFromBlock(block);
-                    }
-                });
-            });
-
-            document.addEventListener("click", (event) => {
-                const target = event.target;
-                if (!(target instanceof HTMLElement)) {
-                    return;
-                }
-                const remove = target.closest(".relay-remove");
-                if (!remove || !remove.dataset.relay) {
-                    return;
-                }
-                const relay = remove.dataset.relay;
-                saveExtraRelays(
-                    loadExtraRelays().filter((entry) => entry !== relay),
-                );
-                renderExtraRelayLists();
-                void sendRelayList();
-            });
-
-            paintSavedRelayLists(document, localStorage);
-            renderExtraRelayLists();
             let relayListSending = false;
             let relayListDirty = false;
             async function sendRelayList() {
@@ -368,7 +225,7 @@ function paintSavedRelayLists(doc, storage) {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
-                                    relays: mergePublishRelays(),
+                                    relays: savedRelayUrls(localStorage),
                                     csrf_token: form.csrf_token
                                         ? form.csrf_token.value
                                         : "",
@@ -448,6 +305,7 @@ function paintSavedRelayLists(doc, storage) {
                 });
                 syncNostrButtons();
             }
+            globalThis.refreshRelayCircuits = refreshRelayCircuits;
             refreshRelayCircuits();
             setInterval(refreshRelayCircuits, 2000);
 

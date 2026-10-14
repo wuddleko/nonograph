@@ -46,7 +46,8 @@ use rocket::http::{ContentType, Status};
 use home::{
     home_context, home_error_message, nojs_chosen_relay, nojs_error_code,
     nojs_publish_failure_page, nojs_publish_relays, nojs_publish_slot, nojs_sealed_location,
-    publish_nojs_note, publish_result, render_nojs_draft,
+    publish_nojs_note, publish_nojs_note_with_cookie, publish_result, publish_sealed_note,
+    render_nojs_draft,
 };
 #[cfg(test)]
 use nojs_test::{
