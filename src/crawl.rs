@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crawler::{due, edit_pool, load, read_pool, run_batch, Queue, Row, Visit, VisitHook};
+use crawler::{due, edit_pool, read_pool, run_batch, Queue, Row, Visit, VisitHook};
 use serde_json::Value;
 
 use crate::nostr::{fetch_nip11, probe_kind, read_relay_list, RelayList, RelaySocks};
@@ -17,6 +17,8 @@ pub(crate) const WORKERS: usize = 4;
 
 pub(crate) const CANDIDATE_CAP: usize = 48;
 const POOL_FETCH: usize = 3;
+const SAVE_RETRY: Duration = Duration::from_secs(60);
+const BAD_FILE_WAIT: Duration = Duration::from_secs(15 * 60);
 
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
@@ -80,10 +82,9 @@ where
         }
         let now = crate::nostr::now_secs();
         let wait = match &crawled {
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                Duration::from_secs(15 * 60)
-            }
-            _ => pool_wait(&load(path).rows, now),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => BAD_FILE_WAIT,
+            Err(_) => pool_file_wait(path, now).max(SAVE_RETRY),
+            Ok(()) => pool_file_wait(path, now),
         };
         if !sleep(wait) {
             return;
@@ -91,10 +92,22 @@ where
     }
 }
 
+fn pool_file_wait(path: &Path, now: i64) -> Duration {
+    match read_pool(path) {
+        Ok(pool) => pool_wait(&pool.rows, now),
+        Err(_) => Duration::ZERO,
+    }
+}
+
 fn pool_wait(rows: &[Row], now: i64) -> Duration {
-    match rows.iter().map(|row| row.next_try).min() {
-        Some(next) => Duration::from_secs(next.saturating_sub(now) as u64),
-        None => Duration::ZERO,
+    let Some(next) = rows.iter().map(|row| row.next_try).min() else {
+        return Duration::ZERO;
+    };
+    let delay = next.saturating_sub(now);
+    if delay <= 0 {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(delay as u64)
     }
 }
 
@@ -159,19 +172,57 @@ fn nip11_document(body: Option<String>) -> Option<Value> {
 }
 
 pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
-    load(path)
-        .rows
-        .into_iter()
-        .filter(|row| row_is_usable(row))
-        .collect()
+    let rows = match read_pool(path) {
+        Ok(pool) => pool.rows,
+        Err(error) => {
+            eprintln!(
+                "Nonograph: relay pool {} was not read: {error}",
+                path.display()
+            );
+            Vec::new()
+        }
+    };
+    rows.into_iter().filter(row_is_usable).collect()
 }
 
-pub(crate) fn candidates(path: &Path) -> Vec<String> {
-    usable_rows(path)
-        .into_iter()
-        .take(CANDIDATE_CAP)
-        .map(|row| row.url)
-        .collect()
+pub(crate) fn candidates(path: &Path, configured: &[String]) -> Vec<String> {
+    match read_pool(path) {
+        Ok(pool) => pool
+            .rows
+            .into_iter()
+            .filter(row_is_usable)
+            .take(CANDIDATE_CAP)
+            .map(|row| row.url)
+            .collect(),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            eprintln!(
+                "Nonograph: relay pool {} was not read: {error}",
+                path.display()
+            );
+            configured_relays(configured)
+        }
+        Err(error) => {
+            eprintln!(
+                "Nonograph: relay pool {} was not read: {error}",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn configured_relays(configured: &[String]) -> Vec<String> {
+    let mut urls = Vec::new();
+    for relay in configured {
+        let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
+            continue;
+        };
+        if urls.iter().any(|have| have == &relay) || urls.len() == CANDIDATE_CAP {
+            continue;
+        }
+        urls.push(relay);
+    }
+    urls
 }
 
 pub(crate) fn mark_publish(path: &Path, refused: &[String], accepted: &[String]) -> io::Result<()> {
@@ -240,7 +291,7 @@ fn row_is_usable(row: &Row) -> bool {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crawler::{save, schedule, Pool, ProbeResult, Row, Visit, VisitHook};
+    use crawler::{load, save, schedule, Pool, ProbeResult, Row, Visit, VisitHook};
     use serde_json::json;
 
     use super::*;
@@ -379,6 +430,37 @@ mod tests {
         assert_eq!(waits.len(), 2);
         assert!(waits[0].as_secs() <= 15 * 60);
         assert!(waits[0].as_secs() >= 15 * 60 - 5);
+    }
+
+    #[test]
+    fn a_due_pool_waits_a_minute_when_the_save_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        save(
+            &path,
+            &Pool {
+                rows: vec![row("wss://relay.example", 0, None)],
+            },
+        )
+        .unwrap();
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            |_| Err(std::io::Error::new(std::io::ErrorKind::Other, "disk")),
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0], Duration::from_secs(60));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("wss://relay.example"));
     }
 
     #[test]
@@ -840,7 +922,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(candidates(&path), vec!["wss://open.example".to_string()]);
+        assert_eq!(
+            candidates(&path, &[]),
+            vec!["wss://open.example".to_string()]
+        );
     }
 
     #[test]
@@ -860,7 +945,7 @@ mod tests {
             .collect();
         save(&path, &Pool { rows }).unwrap();
 
-        let urls = candidates(&path);
+        let urls = candidates(&path, &[]);
         assert_eq!(urls.len(), 48);
         assert_eq!(urls[0], "wss://relay0.example");
         assert_eq!(urls[47], "wss://relay47.example");
@@ -885,7 +970,7 @@ mod tests {
         let usable = usable_rows(&path);
         assert_eq!(usable.len(), 1);
         assert_eq!(usable[0].url, "wss://open.example");
-        let urls = candidates(&path);
+        let urls = candidates(&path, &[]);
         assert_eq!(urls, vec!["wss://open.example".to_string()]);
         assert_eq!(crawler::deal(&urls, 3, &[], &[]), urls);
         assert_eq!(next_pool_relays(&path, &[]), urls);
@@ -906,9 +991,28 @@ mod tests {
         )
         .unwrap();
 
-        let urls = candidates(&path);
+        let urls = candidates(&path, &[]);
         assert_eq!(urls, vec!["wss://nos.lol/path".to_string()]);
         assert_eq!(crawler::deal(&urls, 3, &[], &[]), urls);
+    }
+
+    #[test]
+    fn a_bad_pool_file_shows_the_configured_relays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        std::fs::write(&path, "not a pool").unwrap();
+        let configured = [
+            "wss://Config.Example/".to_string(),
+            "wss://10.0.0.1".to_string(),
+            "wss://config.example".to_string(),
+        ];
+
+        assert_eq!(
+            candidates(&path, &configured),
+            vec!["wss://config.example".to_string()]
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a pool");
+        assert!(candidates(&dir.path().join("missing.json"), &configured).is_empty());
     }
 
     #[test]

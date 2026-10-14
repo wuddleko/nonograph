@@ -52,12 +52,12 @@ pub(crate) fn write_relay_cookie(list: &RelayCookie) -> String {
         .unwrap_or_else(|_| serde_json::to_string(&RelayCookie::empty()).expect("empty relay list"))
 }
 
-pub(crate) fn relays_page_html(path: &Path) -> String {
-    relays_page_html_with_csrf(path, "")
+pub(crate) fn relays_page_html(path: &Path, configured: &[String]) -> String {
+    relays_page_html_with_csrf(path, "", configured)
 }
 
-pub(super) fn landing_relay_blocks() -> (String, String) {
-    let urls = candidates(&relay_pool());
+pub(super) fn landing_relay_blocks(configured: &[String]) -> (String, String) {
+    let urls = candidates(&relay_pool(), configured);
     let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
     let sidebar = format!(
         "<div class=\"sidebar-relays\" id=\"sidebar-relays\">\n\
@@ -69,8 +69,8 @@ pub(super) fn landing_relay_blocks() -> (String, String) {
     (sidebar, crate::relays::render_about_section(&dealt, false))
 }
 
-fn relays_page_html_with_csrf(path: &Path, csrf_token: &str) -> String {
-    let urls = candidates(path);
+fn relays_page_html_with_csrf(path: &Path, csrf_token: &str, configured: &[String]) -> String {
+    let urls = candidates(path, configured);
     let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
     let mut body = render_dealt_rows(&dealt, &urls);
     body.push_str(&format!(
@@ -91,8 +91,12 @@ pub(super) struct NojsRelayState {
     pub(super) write_cookie: bool,
 }
 
-pub(super) fn nojs_relay_state(path: &Path, saved: Option<&str>) -> NojsRelayState {
-    let urls = candidates(path);
+pub(super) fn nojs_relay_state(
+    path: &Path,
+    saved: Option<&str>,
+    configured: &[String],
+) -> NojsRelayState {
+    let urls = candidates(path, configured);
     let (cookie, write_cookie) = match parsed_relay_cookie(saved) {
         Some(list) => (list, false),
         None => (
@@ -109,8 +113,13 @@ pub(super) fn nojs_relay_state(path: &Path, saved: Option<&str>) -> NojsRelaySta
     }
 }
 
-fn nojs_relays_view(path: &Path, saved: Option<&str>, csrf_token: &str) -> NojsRelaysPage {
-    let state = nojs_relay_state(path, saved);
+fn nojs_relays_view(
+    path: &Path,
+    saved: Option<&str>,
+    csrf_token: &str,
+    configured: &[String],
+) -> NojsRelaysPage {
+    let state = nojs_relay_state(path, saved, configured);
     let body = render_nojs_relay_form(
         &state.cookie.dealt,
         &state.cookie.pinned,
@@ -195,6 +204,7 @@ pub fn relays_page(cookies: &CookieJar<'_>, config: &State<Config>) -> content::
     content::RawHtml(relays_page_html_with_csrf(
         &pool_path(Path::new("content")),
         &token,
+        &config.nostr.relays,
     ))
 }
 
@@ -263,14 +273,24 @@ fn bounded_count(pinned: usize, count: &str) -> usize {
     requested.clamp(pinned, RELAY_CAP)
 }
 
-fn set_relay_count(path: &Path, list: &RelayCookie, count: &str) -> RelayCookie {
+fn set_relay_count(
+    path: &Path,
+    list: &RelayCookie,
+    count: &str,
+    configured: &[String],
+) -> RelayCookie {
     let total = bounded_count(list.pinned.len(), count);
     let open = total - list.pinned.len();
     let mut dealt: Vec<String> = list.dealt.iter().take(open).cloned().collect();
     if dealt.len() < open {
         let mut skip = list.pinned.clone();
         skip.extend(dealt.iter().cloned());
-        dealt.extend(deal(&candidates(path), open - dealt.len(), &skip, &[]));
+        dealt.extend(deal(
+            &candidates(path, configured),
+            open - dealt.len(),
+            &skip,
+            &[],
+        ));
     }
     RelayCookie {
         dealt,
@@ -278,11 +298,21 @@ fn set_relay_count(path: &Path, list: &RelayCookie, count: &str) -> RelayCookie 
     }
 }
 
-fn reshuffle_relays(path: &Path, list: &RelayCookie, count: &str) -> RelayCookie {
+fn reshuffle_relays(
+    path: &Path,
+    list: &RelayCookie,
+    count: &str,
+    configured: &[String],
+) -> RelayCookie {
     let total = bounded_count(list.pinned.len(), count);
     let open = total - list.pinned.len();
     RelayCookie {
-        dealt: deal(&candidates(path), open, &list.pinned, &list.dealt),
+        dealt: deal(
+            &candidates(path, configured),
+            open,
+            &list.pinned,
+            &list.dealt,
+        ),
         pinned: list.pinned.clone(),
     }
 }
@@ -354,7 +384,12 @@ pub fn nojs_relays_page(
     let saved = cookies
         .get(RELAY_LIST_COOKIE)
         .map(|cookie| cookie.value().to_string());
-    let page = nojs_relays_view(&relay_pool(), saved.as_deref(), &token);
+    let page = nojs_relays_view(
+        &relay_pool(),
+        saved.as_deref(),
+        &token,
+        &config.nostr.relays,
+    );
     if page.write_cookie {
         set_relay_list_cookie(cookies, &page.cookie);
     }
@@ -422,12 +457,12 @@ pub fn nojs_relays_update(
         } else {
             form.count.clone()
         };
-        let next = set_relay_count(&pool, &list, &count);
+        let next = set_relay_count(&pool, &list, &count, &config.nostr.relays);
         if next != list {
             save_relay_list(cookies, &next, config);
         }
     } else if form.action == "reshuffle" {
-        let next = reshuffle_relays(&pool, &list, &form.count);
+        let next = reshuffle_relays(&pool, &list, &form.count, &config.nostr.relays);
         if next != list {
             save_relay_list(cookies, &next, config);
         }
@@ -506,7 +541,7 @@ mod tests {
             .collect();
         save(&path, &Pool { rows }).unwrap();
 
-        let html = relays_page_html(&path);
+        let html = relays_page_html(&path, &[]);
         assert!(html.contains("<body class=\"relays-page\">"));
         assert!(html.contains("/home.css?v="));
         assert!(html.contains("/theme.js?v="));
@@ -530,7 +565,7 @@ mod tests {
         let path = dir.path().join("relay-pool.json");
         std::fs::write(&path, "").unwrap();
 
-        let html = relays_page_html(&path);
+        let html = relays_page_html(&path, &[]);
         assert!(html.contains("<body class=\"relays-page\">"));
         assert!(html.contains("/home.css?v="));
         assert!(html.contains("/relays.js?v="));
@@ -557,7 +592,7 @@ mod tests {
             .collect();
         save(&path, &Pool { rows }).unwrap();
 
-        let first = nojs_relays_view(&path, None, "token");
+        let first = nojs_relays_view(&path, None, "token", &[]);
         assert!(first.write_cookie);
         assert!(first.html.contains("<body class=\"relays-page\">"));
         assert!(first.html.contains("action=\"/nojs/relays\""));
@@ -599,7 +634,7 @@ mod tests {
 
         let saved = write_relay_cookie(&first.cookie);
         assert_eq!(read_relay_cookie(Some(&saved)), first.cookie);
-        let second = nojs_relays_view(&path, Some(&saved), "token");
+        let second = nojs_relays_view(&path, Some(&saved), "token", &[]);
         assert!(!second.write_cookie);
         assert_eq!(second.cookie, first.cookie);
         assert!(second
@@ -619,7 +654,7 @@ mod tests {
             dealt: vec!["wss://relay4.example".to_string()],
             pinned: vec!["wss://pin.example".to_string()],
         };
-        let kept_page = nojs_relays_view(&path, Some(&write_relay_cookie(&kept)), "token");
+        let kept_page = nojs_relays_view(&path, Some(&write_relay_cookie(&kept)), "token", &[]);
         assert!(!kept_page.write_cookie);
         assert_eq!(kept_page.cookie, kept);
         assert!(kept_page
@@ -632,7 +667,7 @@ mod tests {
             .html
             .contains("<li data-relay=\"wss://relay0.example\">"));
 
-        let cleared = nojs_relays_view(&path, Some(r#"{"dealt":[],"pinned":[]}"#), "token");
+        let cleared = nojs_relays_view(&path, Some(r#"{"dealt":[],"pinned":[]}"#), "token", &[]);
         assert!(!cleared.write_cookie);
         assert_eq!(cleared.cookie, RelayCookie::empty());
         assert!(cleared
@@ -640,7 +675,7 @@ mod tests {
             .contains("<p class=\"relay-empty\">No relays.</p>"));
         assert!(!cleared.html.contains("<li data-relay="));
 
-        let bad = nojs_relays_view(&path, Some("not json"), "token");
+        let bad = nojs_relays_view(&path, Some("not json"), "token", &[]);
         assert!(bad.write_cookie);
         assert_eq!(bad.cookie.dealt, first.cookie.dealt);
         assert!(bad.cookie.pinned.is_empty());

@@ -191,9 +191,15 @@ fn home_form_context(
         },
     );
     let (relays_sidebar, relays_section, nojs_relays) = if nojs {
-        nojs_landing_relays(cookies, &csrf_token, &relay_message, draft.typed_relay)
+        nojs_landing_relays(
+            cookies,
+            &csrf_token,
+            &relay_message,
+            draft.typed_relay,
+            &config.nostr.relays,
+        )
     } else {
-        let (sidebar, section) = super::relays::landing_relay_blocks();
+        let (sidebar, section) = super::relays::landing_relay_blocks(&config.nostr.relays);
         (sidebar, section, 0)
     };
     context.insert("relays_sidebar".to_string(), relays_sidebar);
@@ -217,12 +223,14 @@ fn nojs_landing_relays(
     csrf_token: &str,
     add_error: &str,
     typed: &str,
+    configured: &[String],
 ) -> (String, String, usize) {
     let saved = cookies.and_then(|jar| {
         jar.get(super::relays::RELAY_LIST_COOKIE)
             .map(|cookie| cookie.value().to_string())
     });
-    let state = super::relays::nojs_relay_state(&super::relays::relay_pool(), saved.as_deref());
+    let state =
+        super::relays::nojs_relay_state(&super::relays::relay_pool(), saved.as_deref(), configured);
     if state.write_cookie {
         if let Some(jar) = cookies {
             super::relays::set_relay_list_cookie(jar, &state.cookie);
