@@ -14,7 +14,7 @@ use crate::template;
 
 use super::fetch_slot::PublicFetchSlot;
 use super::layout::js_seal_href;
-use super::{not_found_html, post_description, relays_for_public_fetch};
+use super::{not_found_html, post_description, public_relays};
 
 #[cfg(test)]
 use super::nojs_test::{canned_nojs_event, note_nojs_fetch_hints};
@@ -533,7 +533,7 @@ pub(crate) fn fetch_sealed_by_id(
     timeout: Duration,
     pool: &Path,
 ) -> Option<String> {
-    let relays = relays_for_public_fetch(hints);
+    let relays = public_relays(hints);
     if let Some(note) = crate::nostr::fetch_sealed(
         &relays,
         event_id,

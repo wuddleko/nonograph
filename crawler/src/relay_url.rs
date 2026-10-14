@@ -6,38 +6,43 @@ pub fn canonical_public_relay(relay: &str) -> Option<String> {
         return None;
     }
     let url = url::Url::parse(relay).ok()?;
+    let host = host_label(&url)?;
+    let mut path = url.path().trim_end_matches('/').to_string();
+    if path == "/" {
+        path.clear();
+    }
+    let mut canonical = format!("wss://{host}{path}");
+    if let Some(query) = url.query() {
+        canonical.push('?');
+        canonical.push_str(query);
+    }
+    Some(canonical)
+}
+
+pub(super) fn relay_host(relay: &str) -> Option<String> {
+    let canonical = canonical_public_relay(relay)?;
+    let url = url::Url::parse(&canonical).ok()?;
+    Some(format!("wss://{}", host_label(&url)?))
+}
+
+pub(super) fn same_publish_relay(left: &str, right: &str) -> bool {
+    match (canonical_public_relay(left), canonical_public_relay(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn host_label(url: &url::Url) -> Option<String> {
     let host = match url.host()? {
         url::Host::Domain(domain) => domain.trim_end_matches('.').to_ascii_lowercase(),
         url::Host::Ipv4(address) => address.to_string(),
         url::Host::Ipv6(address) => format!("[{address}]"),
     };
     if host.is_empty() {
-        return None;
+        None
+    } else {
+        Some(host)
     }
-    Some(format!("wss://{host}"))
-}
-
-pub(super) fn same_publish_relay(left: &str, right: &str) -> bool {
-    match (publish_relay(left), publish_relay(right)) {
-        (Some(left), Some(right)) => left == right,
-        _ => left == right,
-    }
-}
-
-pub(super) fn publish_relay(relay: &str) -> Option<String> {
-    let host = canonical_public_relay(relay)?;
-    let url = url::Url::parse(relay.trim()).ok()?;
-    let mut path = url.path().trim_end_matches('/').to_string();
-    if path == "/" {
-        path.clear();
-    }
-    let mut canonical = host;
-    canonical.push_str(&path);
-    if let Some(query) = url.query() {
-        canonical.push('?');
-        canonical.push_str(query);
-    }
-    Some(canonical)
 }
 
 fn public_relay_url(relay: &str) -> bool {
@@ -70,7 +75,7 @@ fn public_relay_url(relay: &str) -> bool {
     }
 }
 
-fn valid_relay_url(relay: &str) -> bool {
+pub fn valid_relay_url(relay: &str) -> bool {
     let Some(host) = relay.strip_prefix("wss://") else {
         return false;
     };
@@ -80,7 +85,7 @@ fn valid_relay_url(relay: &str) -> bool {
         && !relay.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-fn blocked_relay_ip(ip: IpAddr) -> bool {
+pub fn blocked_relay_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => blocked_relay_ipv4(v4),
         IpAddr::V6(v6) => {

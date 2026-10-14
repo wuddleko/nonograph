@@ -1,5 +1,4 @@
-use crate::canonical_public_relay;
-use crate::relay_url::publish_relay;
+use crate::relay_url::{canonical_public_relay, relay_host};
 
 pub fn deal(
     candidates: &[String],
@@ -17,10 +16,10 @@ pub fn deal(
         if chosen.len() == open {
             break;
         }
-        let Some(url) = publish_relay(candidate) else {
+        let Some(url) = canonical_public_relay(candidate) else {
             continue;
         };
-        let Some(host) = canonical_public_relay(&url) else {
+        let Some(host) = relay_host(&url) else {
             continue;
         };
         if hosts.iter().any(|have| have == &host) {
@@ -33,7 +32,5 @@ pub fn deal(
 }
 
 fn hosts_of(urls: &[String]) -> Vec<String> {
-    urls.iter()
-        .filter_map(|url| canonical_public_relay(url))
-        .collect()
+    urls.iter().filter_map(|url| relay_host(url)).collect()
 }

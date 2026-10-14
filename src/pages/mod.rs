@@ -55,7 +55,7 @@ use nojs_test::{
     NOJS_FETCH_HINTS, NOJS_RECORD_HINTS,
 };
 
-pub(crate) use crate::relay_set::{relays_for_public_fetch, relays_to_assign};
+pub(crate) use crate::relay_set::{public_relays, relays_to_assign};
 
 #[cfg(test)]
 #[path = "../../test/pages.rs"]

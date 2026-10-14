@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::csrf;
-use crate::relay_set::{push_public_relay, relay_timeout, relays_for_public_publish};
+use crate::relay_set::{public_relays, push_public_relay, relay_timeout};
 use crate::render_options;
 use crate::template;
 
@@ -638,7 +638,7 @@ pub(crate) fn note_and_relays_for_publish(
         config.limits.alias_max_length,
         config.limits.content_max_length,
     )?;
-    let relays = relays_for_public_publish(&body.relays);
+    let relays = public_relays(&body.relays);
     if relays.is_empty() {
         return None;
     }

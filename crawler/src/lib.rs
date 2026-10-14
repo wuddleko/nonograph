@@ -8,9 +8,9 @@ mod visit;
 
 pub use batch::run_batch;
 pub use deal::deal;
-pub use list::{list_urls, list_urls_with};
+pub use list::list_urls;
 pub use queue::Queue;
-pub use relay_url::canonical_public_relay;
+pub use relay_url::{blocked_relay_ip, canonical_public_relay, valid_relay_url};
 pub use schedule::{due, schedule};
 pub use visit::VisitHook;
 

@@ -1458,17 +1458,17 @@ fn nojs_open_fetched_opens_the_ciphertext_with_the_secret_and_d_tag() {
 }
 
 #[test]
-fn sealed_query_reuses_relays_for_public_fetch() {
+fn sealed_query_reuses_public_relays() {
     let hints = vec![
         "wss://relay.damus.io".to_string(),
         "wss://127.0.0.1".to_string(),
     ];
     let configured = vec!["wss://relay.primal.net".to_string()];
     assert_eq!(
-        relays_for_public_fetch(&hints),
+        public_relays(&hints),
         vec!["wss://relay.damus.io".to_string()]
     );
-    assert!(!relays_for_public_fetch(&hints)
+    assert!(!public_relays(&hints)
         .iter()
         .any(|relay| configured.contains(relay)));
     let started = std::time::Instant::now();
@@ -1507,7 +1507,7 @@ fn a_fetch_list_returns_only_the_link_relay() {
         "wss://127.0.0.1".to_string(),
     ];
     let configured = "wss://config.example";
-    let relays = relays_for_public_fetch(&link);
+    let relays = public_relays(&link);
     assert_eq!(
         relays,
         vec![
@@ -1520,7 +1520,7 @@ fn a_fetch_list_returns_only_the_link_relay() {
     for index in 0..8 {
         many.push(format!("wss://link{index}.example"));
     }
-    let capped = relays_for_public_fetch(&many);
+    let capped = public_relays(&many);
     assert_eq!(capped.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(capped[0], "wss://link0.example");
     assert_eq!(capped[5], "wss://link5.example");
@@ -1659,13 +1659,13 @@ fn public_fetch_keeps_the_link_relays_in_order() {
         "wss://relay.damus.io".to_string(),
     ];
     assert_eq!(
-        relays_for_public_fetch(&hints),
+        public_relays(&hints),
         vec![
             "wss://hint.example".to_string(),
             "wss://relay.damus.io".to_string(),
         ]
     );
-    assert!(relays_for_public_fetch(&[]).is_empty());
+    assert!(public_relays(&[]).is_empty());
 }
 
 #[test]
@@ -1678,7 +1678,7 @@ fn public_fetch_drops_private_hints_and_caps_relays() {
     for index in 0..10 {
         hints.push(format!("wss://hint{index}.example"));
     }
-    let relays = relays_for_public_fetch(&hints);
+    let relays = public_relays(&hints);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
     assert_eq!(relays.last().unwrap(), "wss://hint5.example");
@@ -1692,7 +1692,7 @@ fn public_fetch_uses_every_hint_slot_when_the_instance_has_no_public_relay() {
     for index in 0..8 {
         hints.push(format!("wss://hint{index}.example"));
     }
-    let relays = relays_for_public_fetch(&hints);
+    let relays = public_relays(&hints);
     assert_eq!(relays.len(), crate::nostr::MAX_FETCH_RELAYS);
     assert_eq!(relays[0], "wss://hint0.example");
     assert_eq!(relays[5], "wss://hint5.example");
@@ -4202,9 +4202,9 @@ fn the_homepage_leaves_out_configured_names_and_the_pool() {
         assert!(!sidebar.contains("wss://pool.example"));
         assert!(!help.contains("wss://pool.example"));
     }
-    assert!(relays_for_public_fetch(&[]).is_empty());
+    assert!(public_relays(&[]).is_empty());
     assert_eq!(
-        relays_for_public_fetch(&["wss://link.example".to_string()]),
+        public_relays(&["wss://link.example".to_string()]),
         vec!["wss://link.example".to_string()]
     );
 

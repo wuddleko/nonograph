@@ -47,6 +47,16 @@ fn push_canonicalizes_a_new_url_and_inserts_its_row() {
 }
 
 #[test]
+fn push_keeps_a_path_and_query() {
+    let mut queue = empty();
+
+    assert!(queue.push("wss://Nos.lol/room/?x=1", NOW));
+
+    assert_eq!(queue.pool().rows[0].url, "wss://nos.lol/room?x=1");
+    assert_eq!(queue.pop().as_deref(), Some("wss://nos.lol/room?x=1"));
+}
+
+#[test]
 fn push_places_a_due_row_and_leaves_a_cooling_row() {
     let mut queue = Queue::new(Pool {
         rows: vec![
