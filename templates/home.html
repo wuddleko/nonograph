@@ -196,10 +196,12 @@
             </div>
 
             <div class="sidebar">
-                <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
-                <div class="char-count" id="charCount">
-                    <span class="live-count">0 / {{content_limit}}</span>
-                    <span class="static-count">{{content_limit}} characters</span>
+                <div class="sidebar-store">
+                    <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
+                    <div class="char-count" id="charCount">
+                        <span class="live-count">0 / {{content_limit}}</span>
+                        <span class="static-count">{{content_limit}} characters</span>
+                    </div>
                 </div>
                 {{relays_sidebar}}
             </div>

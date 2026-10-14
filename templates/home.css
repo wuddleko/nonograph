@@ -283,13 +283,30 @@
                 cursor: not-allowed;
                 opacity: 0.4;
             }
+            .sidebar-store {
+                display: grid;
+                width: max-content;
+                max-width: 100%;
+            }
+
             .sidebar .char-count {
+                width: 0;
+                min-width: 100%;
                 font-size: 15px;
                 color: var(--ink);
                 margin: 6px 0 18px;
                 display: flex;
                 align-items: center;
                 gap: 0;
+            }
+
+            .sidebar .char-count .live-count,
+            .sidebar .char-count .static-count {
+                flex: 1 1 auto;
+                min-width: 100%;
+                white-space: nowrap;
+                text-align: justify;
+                text-align-last: justify;
             }
             .char-count.over-limit {
                 color: #e74c3c;
@@ -305,6 +322,10 @@
             }
             body.nojs .char-count .static-count {
                 display: inline;
+            }
+
+            body.nojs .sidebar .char-count .static-count {
+                display: block;
             }
             .nojs-file-note,
             .needs-js {
@@ -381,10 +402,10 @@
             }
 
             .sidebar-relays .relay-list {
-                order: 2;
+                order: 3;
                 flex-basis: 100%;
                 list-style: none;
-                margin: 10px 0 0;
+                margin: 14px 0 0;
                 padding: 0;
             }
 
@@ -445,9 +466,9 @@
             }
 
             .sidebar-relays .relay-empty {
-                order: 2;
+                order: 3;
                 flex-basis: 100%;
-                margin: 10px 0 0;
+                margin: 14px 0 0;
                 font-size: 12px;
             }
 
@@ -463,14 +484,6 @@
                 align-items: center;
                 max-width: 180px;
                 margin-top: 0;
-            }
-
-            .sidebar .relay-list-user:not([hidden]) {
-                margin-bottom: 36px;
-            }
-
-            .sidebar .relay-add:has(> .relay-list-user[hidden]) {
-                padding-top: 36px;
             }
 
             .relay-url-input {
@@ -1077,8 +1090,7 @@
                     margin-left: 0;
                 }
 
-                body.nojs .sidebar > button,
-                body.nojs .sidebar > .char-count {
+                body.nojs .sidebar-store {
                     display: none;
                 }
 
@@ -1150,12 +1162,18 @@
                 max-width: 420px;
             }
 
+            .relays-page .relay-add {
+                grid-row: 2;
+            }
+
             .relays-page .relay-list {
-                margin: 0 0 20px;
+                grid-row: 3;
+                margin: 20px 0 0;
             }
 
             .relays-page .relay-empty {
-                margin: 0 0 20px;
+                grid-row: 3;
+                margin: 20px 0 0;
                 font-size: 15px;
             }
 
@@ -1173,8 +1191,9 @@
             }
 
             .sidebar-relays .relay-add {
-                order: 3;
+                order: 2;
                 flex-basis: 100%;
+                margin-top: 10px;
             }
 
             .relay-count-row {
@@ -1192,7 +1211,11 @@
 
             .sidebar-relays .relay-count-step {
                 margin-left: auto;
-                margin-right: auto;
+                margin-right: 0;
+            }
+
+            .sidebar-relays .relay-count-row .relay-count-up {
+                justify-content: flex-end;
             }
 
             .relays-page .relay-count-row {
