@@ -88,6 +88,7 @@ pub(crate) fn render_dealt_rows(relays: &[String], candidates: &[String]) -> Str
 pub(crate) fn render_nojs_relay_form(
     dealt: &[String],
     pinned: &[String],
+    candidates: &[String],
     csrf_token: &str,
     add_error: &str,
     typed: &str,
@@ -135,8 +136,10 @@ pub(crate) fn render_nojs_relay_form(
         </div>\n\
         <p class=\"relay-add-error\">{add_error}</p>\n\
         </form>\n\
-        </div>\n",
+        </div>\n\
+        {candidates}",
         count_row = nojs_count_row(total, pinned.len(), &csrf),
+        candidates = candidate_script(candidates),
     )
 }
 
@@ -167,11 +170,16 @@ fn relay_count_row(total: usize) -> String {
 fn nojs_count_row(total: usize, floor: usize, csrf: &str) -> String {
     let up_disabled = if total >= 6 { " disabled" } else { "" };
     let down_disabled = if total <= floor { " disabled" } else { "" };
+    let quiet = if total == 0 {
+        " relay-reshuffle-quiet"
+    } else {
+        ""
+    };
     format!(
         "<form class=\"relay-count-row\" method=\"post\" action=\"/nojs/relays\">\n\
         {csrf}\
         <input type=\"hidden\" name=\"count\" value=\"{total}\" />\n\
-        <button type=\"submit\" class=\"relay-reshuffle\" name=\"action\" value=\"reshuffle\" aria-label=\"Reshuffle\">{icon}</button>\n\
+        <button type=\"submit\" class=\"relay-reshuffle{quiet}\" name=\"action\" value=\"reshuffle\" aria-label=\"Reshuffle\">{icon}</button>\n\
         <span class=\"relay-count-step\">\n\
         <button type=\"submit\" class=\"relay-count-down\" name=\"action\" value=\"down\" aria-label=\"Fewer relays\"{down_disabled}>{down}</button>\n\
         <span class=\"relay-count\">{total}/6</span>\n\

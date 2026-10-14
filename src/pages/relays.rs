@@ -89,6 +89,7 @@ struct NojsRelaysPage {
 pub(super) struct NojsRelayState {
     pub(super) cookie: RelayCookie,
     pub(super) write_cookie: bool,
+    pub(super) urls: Vec<String>,
 }
 
 pub(super) fn nojs_relay_state(path: &Path, saved: Option<&str>) -> NojsRelayState {
@@ -106,6 +107,7 @@ pub(super) fn nojs_relay_state(path: &Path, saved: Option<&str>) -> NojsRelaySta
     NojsRelayState {
         cookie,
         write_cookie,
+        urls,
     }
 }
 
@@ -114,6 +116,7 @@ fn nojs_relays_view(path: &Path, saved: Option<&str>, csrf_token: &str) -> NojsR
     let body = render_nojs_relay_form(
         &state.cookie.dealt,
         &state.cookie.pinned,
+        &state.urls,
         csrf_token,
         "",
         "",

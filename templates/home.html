@@ -50,7 +50,7 @@
                 <a href="#help-sheet" class="help-link">About</a>
                 <a href="#help-sheet" class="help-link relays-open-sheet">Relays</a>
                 <a href="#sidebar-relays" class="help-link relays-open-bar">Relays</a>
-                <button type="submit" form="publishForm">Publish</button>
+                <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
             </div>
         </div>
 
@@ -197,7 +197,7 @@
             </div>
 
             <div class="sidebar">
-                <button type="submit" form="publishForm">Publish</button>
+                <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
                 <div class="char-count" id="charCount">
                     <span class="live-count">0 / {{content_limit}}</span>
                     <span class="static-count">{{content_limit}} characters</span>

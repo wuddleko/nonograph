@@ -359,6 +359,13 @@ function paintRelayList(list, root) {
     if (down) {
         down.disabled = total <= list.pinned.length;
     }
+    const reshuffle = scope.querySelector(".relay-reshuffle");
+    if (reshuffle) {
+        reshuffle.classList.toggle("relay-reshuffle-quiet", total === 0);
+    }
+    if (typeof globalThis.syncNostrButtons === "function") {
+        globalThis.syncNostrButtons();
+    }
 }
 
 function postRelayList(list) {

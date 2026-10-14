@@ -372,8 +372,7 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs.contains("<script src"));
     assert!(!nojs.contains("/home.js"));
     assert!(!nojs.contains("/relays.js"));
-    assert!(!nojs.contains("id=\"relay-candidates\""));
-    assert!(!nojs.contains("<script"));
+    assert!(nojs.contains("id=\"relay-candidates\""));
     assert!(nojs.contains("action=\"/nojs/create\""));
     assert!(nojs.contains("Write something before publishing."));
     assert!(nojs.contains("class=\"nojs\""));
@@ -409,7 +408,7 @@ fn rendered_home_switches_the_content_field() {
     assert!(!js.contains("Config.toml"));
     assert!(!js.contains("stored only in this browser"));
     assert!(!js.contains("class=\"nostr-publish\""));
-    assert_eq!(js.matches(">Publish</button>").count(), 2);
+    assert_eq!(js.matches(">Store</button>").count(), 2);
     assert!(js.contains("type=\"submit\""));
     assert!(nojs.contains("This host seals the note and sends it to these relays over Tor."));
     assert!(nojs.contains("Add one more with the form."));
@@ -444,7 +443,7 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs_relay.contains("name=\"relay_box\""));
     assert!(!nojs_relay.contains("form=\"publishForm\""));
     assert!(nojs.contains("action=\"/nojs/relays\""));
-    assert!(nojs.contains("class=\"relay-reshuffle\""));
+    assert!(nojs.contains("class=\"relay-reshuffle relay-reshuffle-quiet\""));
     assert!(nojs.contains("class=\"relay-count\">"));
     assert!(!nojs.contains("relay-delete-all"));
     assert!(!nojs.contains("name=\"relay_box\""));
@@ -509,7 +508,7 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
         .unwrap();
     assert!(nojs.contains("action=\"/nojs/create\""));
     assert_eq!(
-        nojs.matches("<button type=\"submit\" form=\"publishForm\">Publish</button>")
+        nojs.matches("<button type=\"submit\" form=\"publishForm\" class=\"no-relays\" disabled>Store</button>")
             .count(),
         2
     );
@@ -517,13 +516,13 @@ fn nojs_publish_submits_the_relay_and_add_posts_it() {
     assert!(relay.contains("name=\"relay\""));
     assert!(!relay.contains("form=\"publishForm\""));
     let publish = nojs
-        .find("<button type=\"submit\" form=\"publishForm\">Publish</button>")
+        .find("<button type=\"submit\" form=\"publishForm\" class=\"no-relays\" disabled>Store</button>")
         .unwrap();
     let input = nojs.find("class=\"relay-url-input\"").unwrap();
     assert!(publish < input);
     let first_submit = nojs.find("<button type=\"submit\"").unwrap();
     assert!(nojs[first_submit..]
-        .starts_with("<button type=\"submit\" form=\"publishForm\">Publish</button>"));
+        .starts_with("<button type=\"submit\" form=\"publishForm\" class=\"no-relays\" disabled>Store</button>"));
     assert!(!nojs.contains("relay-add-default"));
     assert!(!nojs[first_submit..first_submit + 80].contains("formaction"));
     let add = tag_after(
@@ -3086,6 +3085,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("publishOnNostr()"));
     assert!(home.contains("Publishing failed. Try again."));
     assert!(home.contains("A title is required."));
+    assert!(home.contains("if (!hasAnyPublishRelay())"));
     assert!(home.contains("if (publishing || !everyRelayHasPath())"));
     assert!(home.contains("leaveBusy = true"));
     assert!(home.contains("if (!leaveBusy)"));
@@ -3109,7 +3109,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(html.contains("type=\"submit\""));
     assert!(!html.contains("class=\"nostr-publish\""));
     assert!(!html.contains("On Nostr"));
-    assert_eq!(html.matches(">Publish</button>").count(), 2);
+    assert_eq!(html.matches(">Store</button>").count(), 2);
     assert!(html.contains("class=\"nojs-file-note\""));
     assert!(html.contains("This host seals the note and does not keep a copy."));
     assert!(html.contains("The key stays in the address."));
@@ -3747,6 +3747,12 @@ async function loadNostr() {
 globalThis.fetch = async function () {
     return { ok: true };
 };
+const publishButton = el("button");
+const publishButtons = [publishButton];
+let relaysForPublicPublish = (relays) => relays.slice();
+const circuitByRelay = new Map();
+let circuitsTracked = false;
+function syncPublishButtons() {}
 bindRelayActions(localStorage, sidebar);
 const saved = JSON.parse(localStorage.getItem("nonograph_relays"));
 const firstThree = ["wss://a.example", "wss://b.example", "wss://c.example"];
@@ -3773,11 +3779,6 @@ if (after.pinned.indexOf("wss://hand.example") === -1) {
 if (after.pinned.indexOf("wss://extra.example") === -1) {
     throw new Error(JSON.stringify(after));
 }
-const publishButton = el("button");
-const publishButtons = [publishButton];
-let relaysForPublicPublish = (relays) => relays.slice();
-const circuitByRelay = new Map();
-let circuitsTracked = false;
 "##,
     );
     let gate_at = home

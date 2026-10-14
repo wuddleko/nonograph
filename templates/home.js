@@ -174,13 +174,14 @@ function paintSavedRelayLists(doc, storage) {
             }
 
             function syncNostrButtons() {
-                const show = hasAnyPublishRelay();
-                const waiting = show && !everyRelayHasPath();
+                const blocked = !hasAnyPublishRelay();
+                const waiting = !blocked && !everyRelayHasPath();
                 publishButtons.forEach((button) => {
-                    button.hidden = !show;
                     button.classList.toggle("circuits-pending", waiting);
-                    button.setAttribute("aria-disabled", waiting ? "true" : "false");
+                    button.classList.toggle("no-relays", blocked);
+                    button.setAttribute("aria-disabled", blocked || waiting ? "true" : "false");
                 });
+                syncPublishButtons();
             }
 
             function relayKey(url) {
@@ -305,6 +306,7 @@ function paintSavedRelayLists(doc, storage) {
                 });
                 syncNostrButtons();
             }
+            globalThis.syncNostrButtons = syncNostrButtons;
             globalThis.refreshRelayCircuits = refreshRelayCircuits;
             refreshRelayCircuits();
             setInterval(refreshRelayCircuits, 2000);
@@ -313,10 +315,12 @@ function paintSavedRelayLists(doc, storage) {
 
             function syncPublishButtons() {
                 const overLimit = editor.value.length > contentLimit;
+                const blocked = !hasAnyPublishRelay();
                 publishButtons.forEach((button) => {
-                    button.disabled = publishing || overLimit;
+                    button.disabled = publishing || overLimit || blocked;
                 });
             }
+            syncNostrButtons();
 
             function setPublishBusy(busy) {
                 publishing = busy;
@@ -360,6 +364,9 @@ function paintSavedRelayLists(doc, storage) {
             }
 
             async function publishOnNostr() {
+                if (!hasAnyPublishRelay()) {
+                    return;
+                }
                 if (publishing || !everyRelayHasPath()) {
                     return;
                 }

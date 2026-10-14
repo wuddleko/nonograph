@@ -201,14 +201,21 @@ fn home_form_context(
             super::layout::theme_boot(version)
         },
     );
-    let (relays_sidebar, relays_section) = if nojs {
+    let (relays_sidebar, relays_section, nojs_relays) = if nojs {
         nojs_landing_relays(cookies, &csrf_token, &relay_message, draft.typed_relay)
     } else {
-        super::relays::landing_relay_blocks()
+        let (sidebar, section) = super::relays::landing_relay_blocks();
+        (sidebar, section, 0)
     };
     context.insert("relays_sidebar".to_string(), relays_sidebar);
     context.insert("relays_section".to_string(), relays_section);
     context.insert("relay_field".to_string(), String::new());
+    let publish_attrs = if nojs && nojs_relays == 0 {
+        " class=\"no-relays\" disabled"
+    } else {
+        ""
+    };
+    context.insert("publish_attrs".to_string(), publish_attrs.to_string());
     let origin = config.normalized_public_origin().unwrap_or_default();
     context.insert(
         "public_url".to_string(),
@@ -222,7 +229,7 @@ fn nojs_landing_relays(
     csrf_token: &str,
     add_error: &str,
     typed: &str,
-) -> (String, String) {
+) -> (String, String, usize) {
     let saved = cookies.and_then(|jar| {
         jar.get(super::relays::RELAY_LIST_COOKIE)
             .map(|cookie| cookie.value().to_string())
@@ -236,6 +243,7 @@ fn nojs_landing_relays(
     let form = crate::relays::render_nojs_relay_form(
         &state.cookie.dealt,
         &state.cookie.pinned,
+        &state.urls,
         csrf_token,
         add_error,
         typed,
@@ -253,7 +261,7 @@ fn nojs_landing_relays(
         .cloned()
         .chain(state.cookie.dealt.iter().cloned())
         .collect();
-    (sidebar, crate::relays::render_about_section(&listed, true))
+    (sidebar, crate::relays::render_about_section(&listed, true), listed.len())
 }
 
 fn nojs_saved_relays(cookies: Option<&CookieJar<'_>>) -> Vec<String> {

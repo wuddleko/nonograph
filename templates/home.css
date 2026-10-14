@@ -435,8 +435,11 @@
             }
 
             .nostr-publish.circuits-pending,
-            button.circuits-pending {
+            button.circuits-pending,
+            button.no-relays,
+            button.no-relays:disabled {
                 filter: blur(3px);
+                opacity: 1;
                 pointer-events: none;
                 user-select: none;
             }
@@ -1251,6 +1254,11 @@
             .sidebar-relays .relay-count-row .relay-reshuffle {
                 margin-left: 6px;
                 margin-right: 2px;
+            }
+
+            .sidebar .relay-count-row .relay-reshuffle.relay-reshuffle-quiet,
+            .relays-page .relay-count-row .relay-reshuffle.relay-reshuffle-quiet {
+                color: var(--quiet);
             }
 
             .sidebar .relay-count-row .relay-count-up,

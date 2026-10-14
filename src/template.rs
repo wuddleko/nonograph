@@ -100,6 +100,7 @@ fn placeholder_value(key: &str, value: &str) -> String {
             | "relays_sidebar"
             | "relay_field"
             | "theme_boot"
+            | "publish_attrs"
     ) {
         value.to_string()
     } else {
