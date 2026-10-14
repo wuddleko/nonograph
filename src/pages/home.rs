@@ -91,12 +91,7 @@ struct HomeDraft<'a> {
     title: &'a str,
     alias: &'a str,
     content: &'a str,
-    #[allow(dead_code)]
-    saved_relay: &'a str,
     typed_relay: &'a str,
-    #[allow(dead_code)]
-    list_relay: bool,
-    surface_relay_error: bool,
 }
 
 pub(super) fn home_context(
@@ -113,10 +108,7 @@ pub(super) fn home_context(
             title: "",
             alias: "",
             content: "",
-            saved_relay: "",
             typed_relay: "",
-            list_relay: false,
-            surface_relay_error: false,
         },
         cookies,
     )
@@ -163,10 +155,7 @@ fn home_form_context(
         )
         .to_string(),
     );
-    let (mut form_error, relay_error) = split_home_error(error);
-    if draft.surface_relay_error && !relay_error.is_empty() {
-        form_error = Some(relay_error);
-    }
+    let (form_error, relay_error) = split_home_error(error);
     context.insert("error".to_string(), home_error_message(form_error));
     let relay_message = if relay_error.is_empty() {
         String::new()
@@ -209,7 +198,6 @@ fn home_form_context(
     };
     context.insert("relays_sidebar".to_string(), relays_sidebar);
     context.insert("relays_section".to_string(), relays_section);
-    context.insert("relay_field".to_string(), String::new());
     let publish_attrs = if nojs && nojs_relays == 0 {
         " class=\"no-relays\" disabled"
     } else {
@@ -260,18 +248,11 @@ fn nojs_landing_relays(
         .cloned()
         .chain(state.cookie.dealt.iter().cloned())
         .collect();
-    (sidebar, crate::relays::render_about_section(&listed, true), listed.len())
-}
-
-fn nojs_saved_relays(cookies: Option<&CookieJar<'_>>) -> Vec<String> {
-    let saved = cookies.and_then(|jar| {
-        jar.get(super::relays::RELAY_LIST_COOKIE)
-            .map(|cookie| cookie.value().to_string())
-    });
-    let Some(list) = super::relays::saved_relay_cookie(saved.as_deref()) else {
-        return Vec::new();
-    };
-    list.pinned.into_iter().chain(list.dealt).collect()
+    (
+        sidebar,
+        crate::relays::render_about_section(&listed, true),
+        listed.len(),
+    )
 }
 
 fn about_durability(nojs: bool) -> &'static str {
@@ -297,10 +278,7 @@ fn render_home(
             title: "",
             alias: "",
             content: "",
-            saved_relay: "",
             typed_relay: typed,
-            list_relay: false,
-            surface_relay_error: false,
         },
         Some(cookies),
     );
@@ -339,12 +317,6 @@ pub(crate) struct NewPost {
     pub(super) content: String,
     pub(super) alias: String,
     pub(super) csrf_token: String,
-    #[field(default = String::new())]
-    pub(super) relay: String,
-    #[field(default = String::new())]
-    pub(super) relay_box: String,
-    #[field(default = false)]
-    pub(super) relay_remove: bool,
 }
 
 fn csrf_cookie(token: &str) -> rocket::http::Cookie<'static> {
@@ -393,7 +365,7 @@ pub(crate) fn create_location(form: &NewPost, config: &Config, csrf_cookie: &str
     create_location_with_cookie(form, config, csrf_cookie, None)
 }
 
-fn create_location_with_cookie(
+pub(crate) fn create_location_with_cookie(
     form: &NewPost,
     config: &Config,
     csrf_cookie: &str,
@@ -410,11 +382,7 @@ fn create_location_with_cookie(
     if let Err(error) = config.validate_post(title, &form.content, alias_check) {
         return format!("{home}?error={error}");
     }
-    let relay = nojs_chosen_relay(form);
-    if !relay.is_empty() && !crate::nostr::public_relay_url(relay) {
-        return format!("{home}?error=relay_invalid");
-    }
-    if relays_for_nojs_write(relay_cookie, relay).is_none() {
+    if relays_for_nojs_write(relay_cookie).is_none() {
         return format!("{home}?error=nostr_publish_failed");
     }
     match publish_nojs_note_with_cookie(form, config, relay_cookie) {
@@ -432,20 +400,12 @@ pub(super) struct NojsPublished {
     pub(super) k: String,
 }
 
-pub(super) fn publish_nojs_note(
-    form: &NewPost,
-    config: &Config,
-) -> Result<NojsPublished, &'static str> {
-    publish_nojs_note_with_cookie(form, config, None)
-}
-
 pub(super) fn publish_nojs_note_with_cookie(
     form: &NewPost,
     config: &Config,
     relay_cookie: Option<&str>,
 ) -> Result<NojsPublished, &'static str> {
-    let relays = relays_for_nojs_write(relay_cookie, nojs_chosen_relay(form))
-        .ok_or("nostr_publish_failed")?;
+    let relays = relays_for_nojs_write(relay_cookie).ok_or("nostr_publish_failed")?;
     #[cfg(test)]
     super::nojs_test::note_nojs_publish_relays(&relays);
     let sealed = match crate::seal::seal_and_sign(
@@ -520,19 +480,7 @@ pub(super) fn nojs_sealed_location(
     ))
 }
 
-pub(super) fn nojs_chosen_relay(form: &NewPost) -> &str {
-    let typed = form.relay_box.trim();
-    if !typed.is_empty() {
-        return typed;
-    }
-    let saved = form.relay.trim();
-    if crate::nostr::public_relay_url(saved) {
-        return saved;
-    }
-    ""
-}
-
-fn relays_for_nojs_write(relay_cookie: Option<&str>, relay: &str) -> Option<Vec<String>> {
+fn relays_for_nojs_write(relay_cookie: Option<&str>) -> Option<Vec<String>> {
     let saved = super::relays::saved_relay_cookie(relay_cookie)
         .map(|list| {
             list.pinned
@@ -541,18 +489,13 @@ fn relays_for_nojs_write(relay_cookie: Option<&str>, relay: &str) -> Option<Vec<
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    nojs_publish_relays(relay, &saved)
+    nojs_publish_relays(&saved)
 }
 
-pub(super) fn nojs_publish_relays(relay: &str, saved: &[String]) -> Option<Vec<String>> {
+pub(super) fn nojs_publish_relays(saved: &[String]) -> Option<Vec<String>> {
     let mut relays = Vec::new();
     for url in saved {
         push_public_relay(&mut relays, url);
-    }
-    if let Some(relay) = crate::nostr::canonical_public_relay(relay) {
-        if !relays.iter().any(|have| have == &relay) {
-            relays.insert(0, relay);
-        }
     }
     if relays.is_empty() {
         None
@@ -565,40 +508,12 @@ pub(super) fn nojs_publish_slot() -> Result<PublicFetchSlot, &'static str> {
     PublicFetchSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
 }
 
-fn nojs_relay_add_status(
-    relay: &str,
-    csrf_token: &str,
-    config: &Config,
-    csrf_cookie: &str,
-    saved: &[String],
-) -> (Option<&'static str>, bool) {
-    if let Some(error) = csrf_failure(config, csrf_token, csrf_cookie) {
-        return (Some(error), false);
-    }
-    if relay.is_empty() {
-        return (Some("relay_required"), false);
-    }
-    if crate::nostr::canonical_public_relay(relay).is_none() {
-        return (Some("relay_invalid"), false);
-    }
-    if saved
-        .iter()
-        .any(|have| crate::nostr::same_public_relay(have, relay))
-    {
-        return (Some("relay_listed"), false);
-    }
-    (None, true)
-}
-
 fn render_nojs_form(
     config: &Config,
     form: &NewPost,
     error: Option<&str>,
-    list_relay: bool,
-    surface_relay_error: bool,
     cookies: Option<&CookieJar<'_>>,
 ) -> content::RawHtml<String> {
-    let saved = crate::nostr::canonical_public_relay(form.relay.trim()).unwrap_or_default();
     let context = home_form_context(
         config,
         true,
@@ -607,10 +522,7 @@ fn render_nojs_form(
             title: &form.title,
             alias: &form.alias,
             content: &form.content,
-            saved_relay: &saved,
-            typed_relay: form.relay_box.trim(),
-            list_relay,
-            surface_relay_error,
+            typed_relay: "",
         },
         cookies,
     );
@@ -618,52 +530,6 @@ fn render_nojs_form(
         Ok(html) => content::RawHtml(html),
         Err(error) => content::RawHtml(format!("Template error: {error}")),
     }
-}
-
-pub(super) fn render_nojs_draft(
-    config: &Config,
-    form: &NewPost,
-    cookies: Option<&CookieJar<'_>>,
-    csrf_cookie: &str,
-) -> content::RawHtml<String> {
-    let saved = nojs_saved_relays(cookies);
-    let mut form = form.clone();
-    if let Some(error) = csrf_failure(config, &form.csrf_token, csrf_cookie) {
-        return render_nojs_form(
-            config,
-            &form,
-            Some(error),
-            nojs_lists_extra_relay(form.relay.trim(), &saved),
-            false,
-            cookies,
-        );
-    }
-    if form.relay_remove {
-        form.relay.clear();
-        return render_nojs_form(config, &form, None, false, false, cookies);
-    }
-    form.relay_box = form.relay_box.trim().to_string();
-    let (error, accept) = nojs_relay_add_status(
-        &form.relay_box,
-        &form.csrf_token,
-        config,
-        csrf_cookie,
-        &saved,
-    );
-    if accept {
-        form.relay = crate::nostr::canonical_public_relay(&form.relay_box)
-            .unwrap_or_else(|| form.relay_box.clone());
-        form.relay_box.clear();
-        return render_nojs_form(config, &form, None, true, false, cookies);
-    }
-    render_nojs_form(
-        config,
-        &form,
-        error,
-        nojs_lists_extra_relay(form.relay.trim(), &saved),
-        false,
-        cookies,
-    )
 }
 
 pub(super) fn nojs_error_code(location: &str) -> Option<&str> {
@@ -675,38 +541,13 @@ pub(super) fn nojs_error_code(location: &str) -> Option<&str> {
     }
 }
 
-fn nojs_lists_extra_relay(relay: &str, saved: &[String]) -> bool {
-    crate::nostr::canonical_public_relay(relay).is_some_and(|relay| {
-        !saved
-            .iter()
-            .any(|have| crate::nostr::same_public_relay(have, &relay))
-    })
-}
-
 pub(super) fn nojs_publish_failure_page(
     config: &Config,
     form: &NewPost,
     error: &str,
     cookies: Option<&CookieJar<'_>>,
 ) -> content::RawHtml<String> {
-    render_nojs_form(
-        config,
-        form,
-        Some(error),
-        nojs_lists_extra_relay(form.relay.trim(), &nojs_saved_relays(cookies)),
-        true,
-        cookies,
-    )
-}
-
-#[post("/nojs/relay", data = "<form>")]
-pub fn nojs_add_relay(
-    form: rocket::form::Form<NewPost>,
-    config: &State<Config>,
-    cookies: &CookieJar<'_>,
-) -> content::RawHtml<String> {
-    let csrf_cookie = request_csrf_cookie(cookies);
-    render_nojs_draft(config, &form, Some(cookies), &csrf_cookie)
+    render_nojs_form(config, form, Some(error), cookies)
 }
 
 #[post("/nojs/create", data = "<form>")]

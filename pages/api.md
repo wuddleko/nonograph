@@ -29,20 +29,16 @@ The host seals the note and publishes it. The form on `/nojs` is this request.
 | `content` | Yes | Markup. Not trimmed. |
 | `alias` | No | Optional name. Trimmed. |
 | `csrf_token` | When CSRF is on | Must match the `nonograph_csrf` cookie. |
-| `relay` | No | Saved extra relay. Used only when `relay_box` is empty and this value is a public relay. Any other value is ignored. |
-| `relay_box` | No | Typed extra relay. When this is non-empty after trimming, it is used instead of `relay`. A value that is not a public relay is `relay_invalid`. |
 
-A public relay is `wss://` on port 443, with no username or password, and not a local or private address.
-
-The extra relay is placed first. The instance relays follow. That list can be 7.
+The relays are the `nonograph_relays` cookie, edited with `POST /nojs/relays`. A public relay is `wss://` on port 443, with no username or password, and not a local or private address. Private URLs in the cookie are skipped. At most 6 public relays are used.
 
 ### Success
 **Status:** `303` redirect to `/s/{locator}/{event-id}#key`
 
-The key is the URL fragment. The host does not store it. `?r=` is added only when the extra relay accepted the note and is not already listed in `Config.toml`.
+The key is the URL fragment. The host does not store it. `?r=` is added for each accepted relay that is not already listed in `Config.toml`.
 
 ### Failure
-The form is rendered again with an error. Common codes: `title_required`, `content_required`, `title_too_long`, `content_too_long`, `alias_too_long`, `csrf_token_invalid`, `relay_invalid`, `nostr_publish_failed`.
+The form is rendered again with an error. Common codes: `title_required`, `content_required`, `title_too_long`, `content_too_long`, `alias_too_long`, `csrf_token_invalid`, `nostr_publish_failed`. An empty relay cookie is `nostr_publish_failed`.
 
 A busy publish slot is `nostr_publish_failed` on this path.
 

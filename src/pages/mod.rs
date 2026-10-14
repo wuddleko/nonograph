@@ -22,12 +22,12 @@ pub(crate) use fetch_slot::{
     release_public_fetch, try_acquire_public_fetch, PublicFetchSlot, MAX_PUBLIC_FETCHES,
 };
 pub use home::{
-    assign_tor_circuits, index, nojs_add_relay, nojs_create_post, nojs_index, nostr_publish,
-    tor_circuits, NostrPublishBody,
+    assign_tor_circuits, index, nojs_create_post, nojs_index, nostr_publish, tor_circuits,
+    NostrPublishBody,
 };
 pub(crate) use home::{
-    create_location, note_and_relays_for_publish, relays_for_circuit_pass, tab_relay_timeout_ms,
-    NewPost, TorCircuitsBody,
+    create_location, create_location_with_cookie, note_and_relays_for_publish,
+    relays_for_circuit_pass, tab_relay_timeout_ms, NewPost, TorCircuitsBody,
 };
 pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
 pub use relays::{nojs_relays_page, nojs_relays_update, relays_page};
@@ -44,10 +44,9 @@ use rocket::http::{ContentType, Status};
 
 #[cfg(test)]
 use home::{
-    home_context, home_error_message, nojs_chosen_relay, nojs_error_code,
-    nojs_publish_failure_page, nojs_publish_relays, nojs_publish_slot, nojs_sealed_location,
-    publish_nojs_note, publish_nojs_note_with_cookie, publish_result, publish_sealed_note,
-    render_nojs_draft,
+    home_context, home_error_message, nojs_error_code, nojs_publish_failure_page,
+    nojs_publish_relays, nojs_publish_slot, nojs_sealed_location, publish_nojs_note_with_cookie,
+    publish_result, publish_sealed_note,
 };
 #[cfg(test)]
 use nojs_test::{

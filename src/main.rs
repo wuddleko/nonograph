@@ -369,7 +369,6 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::nojs_static_page,
                 pages::nojs_sealed_view,
                 pages::nojs_create_post,
-                pages::nojs_add_relay,
                 pages::parser_js,
                 pages::parser_wasm,
                 pages::home_css,

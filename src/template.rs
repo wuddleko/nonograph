@@ -98,7 +98,6 @@ fn placeholder_value(key: &str, value: &str) -> String {
             | "fallback_css"
             | "relays_section"
             | "relays_sidebar"
-            | "relay_field"
             | "theme_boot"
             | "publish_attrs"
     ) {

@@ -412,9 +412,13 @@ pub fn nojs_relays_update(
         }
     } else if form.action == "count" || form.action == "up" || form.action == "down" {
         let count = if form.action == "up" {
-            (list.pinned.len() + list.dealt.len()).saturating_add(1).to_string()
+            (list.pinned.len() + list.dealt.len())
+                .saturating_add(1)
+                .to_string()
         } else if form.action == "down" {
-            (list.pinned.len() + list.dealt.len()).saturating_sub(1).to_string()
+            (list.pinned.len() + list.dealt.len())
+                .saturating_sub(1)
+                .to_string()
         } else {
             form.count.clone()
         };
