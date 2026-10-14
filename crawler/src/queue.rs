@@ -8,6 +8,12 @@ pub struct Queue {
     pool: Pool,
     ready: VecDeque<String>,
     in_flight: HashSet<String>,
+    rotation: usize,
+    usable: fn(&Row) -> bool,
+}
+
+fn outside_rotation(_: &Row) -> bool {
+    false
 }
 
 impl Queue {
@@ -16,7 +22,18 @@ impl Queue {
             pool,
             ready: VecDeque::new(),
             in_flight: HashSet::new(),
+            rotation: usize::MAX,
+            usable: outside_rotation,
         }
+    }
+
+    pub fn set_rotation(&mut self, cap: usize, usable: fn(&Row) -> bool) {
+        self.rotation = cap;
+        self.usable = usable;
+    }
+
+    pub fn needs_relays(&self) -> bool {
+        self.usable_count() < self.rotation
     }
 
     pub fn pool(&self) -> &Pool {
@@ -28,7 +45,15 @@ impl Queue {
     }
 
     pub fn push(&mut self, url: &str, now: i64) -> bool {
-        let Some(url) = self.consider(url, now) else {
+        self.enqueue(url, now, false)
+    }
+
+    pub fn revisit(&mut self, url: &str, now: i64) -> bool {
+        self.enqueue(url, now, true)
+    }
+
+    fn enqueue(&mut self, url: &str, now: i64, force: bool) -> bool {
+        let Some(url) = self.consider(url, now, force) else {
             return false;
         };
         self.ready.push_back(url);
@@ -73,7 +98,7 @@ impl Queue {
 
         let mut found = Vec::new();
         for raw in discovered {
-            let Some(url) = self.consider(raw.as_ref(), now) else {
+            let Some(url) = self.consider(raw.as_ref(), now, false) else {
                 continue;
             };
             if found.iter().any(|queued: &String| queued == &url) {
@@ -86,7 +111,7 @@ impl Queue {
         }
     }
 
-    fn consider(&mut self, raw: &str, now: i64) -> Option<String> {
+    fn consider(&mut self, raw: &str, now: i64, force: bool) -> Option<String> {
         let url = canonical_public_relay(raw)?;
         if !self.pool.rows.iter().any(|row| row.url == url) {
             self.pool.rows.push(Row {
@@ -106,10 +131,33 @@ impl Queue {
             .rows
             .iter()
             .any(|row| row.url == url && is_due(row, now));
-        if due {
+        if self.needs_relays() {
+            if force || due {
+                Some(url)
+            } else {
+                None
+            }
+        } else if due && self.in_rotation(&url) {
             Some(url)
         } else {
             None
         }
+    }
+
+    fn usable_count(&self) -> usize {
+        self.pool
+            .rows
+            .iter()
+            .filter(|row| (self.usable)(row))
+            .count()
+    }
+
+    fn in_rotation(&self, url: &str) -> bool {
+        self.pool
+            .rows
+            .iter()
+            .filter(|row| (self.usable)(row))
+            .take(self.rotation)
+            .any(|row| row.url == url)
     }
 }

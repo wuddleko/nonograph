@@ -413,6 +413,105 @@ fn the_same_url_is_visited_once() {
 }
 
 #[test]
+fn a_pass_stops_after_forty_eight_visits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let urls: Vec<String> = (0..=VISIT_CAP)
+        .map(|index| format!("wss://r{index}.example"))
+        .collect();
+    let mut queue = Queue::new(Pool { rows: Vec::new() });
+    for url in &urls {
+        assert!(queue.push(url, NOW));
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    run_batch(
+        &mut queue,
+        4,
+        NOW,
+        {
+            let seen = Arc::clone(&seen);
+            move || Script {
+                seen: Arc::clone(&seen),
+                overlap: None,
+                discover: false,
+                boom: false,
+            }
+        },
+        &path,
+    )
+    .unwrap();
+
+    assert_eq!(seen.lock().expect("seen").len(), VISIT_CAP);
+    assert!(!queue.idle());
+    assert_eq!(
+        queue
+            .pool()
+            .rows
+            .iter()
+            .filter(|row| row.visit.is_none())
+            .count(),
+        1
+    );
+    assert_eq!(load(&path), *queue.pool());
+}
+
+struct Chain {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl VisitHook for Chain {
+    fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
+        let mut seen = self.seen.lock().expect("seen");
+        seen.push(url.to_owned());
+        let found = format!("wss://n{}.example", seen.len());
+        drop(seen);
+        (
+            Visit {
+                at: now,
+                socket_answered: true,
+                nip11: None,
+                probes: Vec::new(),
+            },
+            vec![found],
+        )
+    }
+}
+
+#[test]
+fn a_discovery_past_the_cap_is_saved_and_not_visited() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let mut queue = queue_with(&["wss://start.example"]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    run_batch(
+        &mut queue,
+        1,
+        NOW,
+        {
+            let seen = Arc::clone(&seen);
+            move || Chain {
+                seen: Arc::clone(&seen),
+            }
+        },
+        &path,
+    )
+    .unwrap();
+
+    assert_eq!(seen.lock().expect("seen").len(), VISIT_CAP);
+    let pending: Vec<_> = queue
+        .pool()
+        .rows
+        .iter()
+        .filter(|row| row.visit.is_none())
+        .map(|row| row.url.as_str())
+        .collect();
+    assert_eq!(pending, vec!["wss://n48.example"]);
+    assert_eq!(load(&path), *queue.pool());
+}
+
+#[test]
 fn a_crawl_save_keeps_a_refusal_and_a_cleared_flag() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");

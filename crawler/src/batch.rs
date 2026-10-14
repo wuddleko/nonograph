@@ -1,14 +1,18 @@
 use std::io;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use crate::{save_crawl, Pool, Queue, Visit, VisitHook};
 
+pub const VISIT_CAP: usize = 48;
+
 struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
+    started: AtomicUsize,
 }
 
 pub fn run_batch<H, F>(
@@ -28,6 +32,7 @@ where
             Queue::new(Pool { rows: Vec::new() }),
         )),
         wake: Condvar::new(),
+        started: AtomicUsize::new(0),
     });
 
     let run = catch_unwind(AssertUnwindSafe(|| {
@@ -61,7 +66,12 @@ fn run_worker<H: VisitHook>(shared: &Shared, hook: &mut H, now: i64) {
         let url = {
             let mut queue = shared.queue.lock().expect("queue lock");
             loop {
+                if shared.started.load(Ordering::Relaxed) >= VISIT_CAP {
+                    shared.wake.notify_all();
+                    return;
+                }
                 if let Some(url) = queue.pop() {
+                    shared.started.fetch_add(1, Ordering::Relaxed);
                     break url;
                 }
                 if queue.idle() {

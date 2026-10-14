@@ -1051,9 +1051,9 @@ fn the_list_request_asks_for_kind_10002() {
     assert_eq!(value[0], "REQ");
     assert_eq!(value[1], "list");
     assert_eq!(value[2]["kinds"][0], 10002);
+    assert_eq!(value[2]["limit"], 50);
     assert!(value[2].get("ids").is_none());
     assert!(value[2].get("authors").is_none());
-    assert!(value[2].get("limit").is_none());
 }
 
 #[test]

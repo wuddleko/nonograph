@@ -303,6 +303,77 @@ fn idle_is_an_empty_ready_list_with_nothing_in_flight() {
     assert!(queue.idle());
 }
 
+fn open_row(row: &Row) -> bool {
+    row.visit.as_ref().is_some_and(|visit| {
+        visit.socket_answered && visit.probes.iter().any(|probe| probe.accepted)
+    })
+}
+
+fn kept(url: &str, next_try: i64) -> Row {
+    Row {
+        url: url.to_owned(),
+        first_seen: 1_700_000_000,
+        next_try,
+        failures: 0,
+        publish_refused: false,
+        visit: Some(answered()),
+    }
+}
+
+#[test]
+fn a_full_rotation_stores_a_discovery_and_visits_the_due_relay() {
+    let mut queue = Queue::new(Pool {
+        rows: vec![
+            kept("wss://due.example", NOW),
+            kept("wss://later.example", NOW + 24 * 60 * 60),
+        ],
+    });
+    queue.set_rotation(1, open_row);
+
+    assert!(!queue.needs_relays());
+    assert!(queue.push("wss://due.example", NOW));
+    assert!(!queue.push("wss://later.example", NOW));
+    assert!(!queue.push("wss://new.example", NOW));
+    assert_eq!(queue.pool().rows.len(), 3);
+    assert!(queue
+        .pool()
+        .rows
+        .iter()
+        .any(|row| row.url == "wss://new.example" && row.visit.is_none()));
+
+    let url = queue.pop().unwrap();
+    queue.finish(&url, answered(), ["wss://found.example"], NOW);
+
+    assert_eq!(url, "wss://due.example");
+    assert_eq!(queue.pool().rows.len(), 4);
+    assert!(queue
+        .pool()
+        .rows
+        .iter()
+        .any(|row| row.url == "wss://found.example" && row.visit.is_none()));
+    assert_eq!(queue.pop(), None);
+}
+
+#[test]
+fn an_open_rotation_revisits_a_cooling_door() {
+    let mut queue = Queue::new(Pool {
+        rows: vec![Row {
+            url: "wss://relay.primal.net".to_owned(),
+            first_seen: 1_700_000_000,
+            next_try: NOW + 15 * 60,
+            failures: 1,
+            publish_refused: false,
+            visit: Some(missed()),
+        }],
+    });
+    queue.set_rotation(1, open_row);
+
+    assert!(queue.needs_relays());
+    assert!(!queue.push("wss://relay.primal.net", NOW));
+    assert!(queue.revisit("wss://relay.primal.net", NOW));
+    assert_eq!(queue.pop().as_deref(), Some("wss://relay.primal.net"));
+}
+
 #[test]
 fn a_cooling_row_left_unpushed_leaves_the_queue_idle() {
     let queue = Queue::new(Pool {

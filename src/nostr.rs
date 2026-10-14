@@ -1997,7 +1997,7 @@ impl ListRead {
 }
 
 fn list_req(sub_id: &str) -> String {
-    serde_json::json!(["REQ", sub_id, { "kinds": [10002] }]).to_string()
+    serde_json::json!(["REQ", sub_id, { "kinds": [10002], "limit": 50 }]).to_string()
 }
 
 fn event_for_sub(frame: &str, sub_id: &str) -> Option<String> {

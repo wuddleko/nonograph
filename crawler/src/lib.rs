@@ -6,7 +6,7 @@ mod relay_url;
 mod schedule;
 mod visit;
 
-pub use batch::run_batch;
+pub use batch::{run_batch, VISIT_CAP};
 pub use deal::deal;
 pub use list::list_urls;
 pub use queue::Queue;

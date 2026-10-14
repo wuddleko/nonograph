@@ -19,6 +19,7 @@ pub(crate) const CANDIDATE_CAP: usize = 48;
 const POOL_FETCH: usize = 3;
 const SAVE_RETRY: Duration = Duration::from_secs(60);
 const BAD_FILE_WAIT: Duration = Duration::from_secs(15 * 60);
+const PASS_PAUSE: Duration = Duration::from_secs(15 * 60);
 
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
@@ -28,8 +29,11 @@ pub(crate) fn batch_queue(path: &Path, now: i64) -> io::Result<Queue> {
     let pool = read_pool(path)?;
     let due_urls = due(&pool.rows, now);
     let mut queue = Queue::new(pool);
-    for door in DOORS {
-        queue.push(door, now);
+    queue.set_rotation(CANDIDATE_CAP, row_is_usable);
+    if queue.needs_relays() {
+        for door in DOORS {
+            queue.revisit(door, now);
+        }
     }
     for url in due_urls {
         queue.push(&url, now);
@@ -61,7 +65,10 @@ pub(crate) fn run_pool(socks: RelaySocks, timeout_secs: u64) {
     let path = pool_path(Path::new("content"));
     serve_pool(
         &path,
-        |now| run_crawl(&path, now, || CrawlVisit::new(timeout_secs, socks)),
+        |now| {
+            let filling = pool_is_filling(&path);
+            run_crawl(&path, now, || CrawlVisit::new(timeout_secs, socks, filling))
+        },
         |wait| {
             std::thread::sleep(wait);
             true
@@ -84,7 +91,7 @@ where
         let wait = match &crawled {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => BAD_FILE_WAIT,
             Err(_) => pool_file_wait(path, now).max(SAVE_RETRY),
-            Ok(()) => pool_file_wait(path, now),
+            Ok(()) => pass_wait(path, now),
         };
         if !sleep(wait) {
             return;
@@ -96,6 +103,50 @@ fn pool_file_wait(path: &Path, now: i64) -> Duration {
     match read_pool(path) {
         Ok(pool) => pool_wait(&pool.rows, now),
         Err(_) => Duration::ZERO,
+    }
+}
+
+fn pass_wait(path: &Path, now: i64) -> Duration {
+    let Ok(pool) = read_pool(path) else {
+        return Duration::ZERO;
+    };
+    if rows_fill_rotation(&pool.rows) {
+        return usable_wait(&pool.rows, now);
+    }
+    let wait = pool_wait(&pool.rows, now);
+    if wait.is_zero() && !due(&pool.rows, now).is_empty() {
+        PASS_PAUSE
+    } else {
+        wait
+    }
+}
+
+fn rows_fill_rotation(rows: &[Row]) -> bool {
+    rows.iter().filter(|row| row_is_usable(row)).count() >= CANDIDATE_CAP
+}
+
+fn pool_is_filling(path: &Path) -> bool {
+    match read_pool(path) {
+        Ok(pool) => !rows_fill_rotation(&pool.rows),
+        Err(_) => false,
+    }
+}
+
+fn usable_wait(rows: &[Row], now: i64) -> Duration {
+    let Some(next) = rows
+        .iter()
+        .filter(|row| row_is_usable(row))
+        .take(CANDIDATE_CAP)
+        .map(|row| row.next_try)
+        .min()
+    else {
+        return Duration::ZERO;
+    };
+    let delay = next.saturating_sub(now);
+    if delay <= 0 {
+        PASS_PAUSE
+    } else {
+        Duration::from_secs(delay as u64)
     }
 }
 
@@ -113,6 +164,7 @@ fn pool_wait(rows: &[Row], now: i64) -> Duration {
 
 pub(crate) struct CrawlVisit<R> {
     timeout_secs: u64,
+    filling: bool,
     read: R,
 }
 
@@ -121,9 +173,10 @@ pub(crate) struct LiveRead {
 }
 
 impl CrawlVisit<LiveRead> {
-    pub(crate) fn new(timeout_secs: u64, socks: RelaySocks) -> Self {
+    pub(crate) fn new(timeout_secs: u64, socks: RelaySocks, filling: bool) -> Self {
         Self {
             timeout_secs,
+            filling,
             read: LiveRead { socks },
         }
     }
@@ -147,13 +200,21 @@ impl RelayRead for LiveRead {
 impl<R: RelayRead> VisitHook for CrawlVisit<R> {
     fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
         let deadline = Instant::now() + Duration::from_secs(self.timeout_secs.max(1));
-        let list = self.read.read_list(url, deadline);
-        let nip11 = nip11_document(self.read.read_nip11(url, deadline));
+        let list = if self.filling && is_door(url) {
+            self.read.read_list(url, deadline)
+        } else {
+            RelayList {
+                socket_answered: false,
+                urls: Vec::new(),
+            }
+        };
+        let body = self.read.read_nip11(url, deadline);
+        let nip11 = nip11_document(body.as_deref());
         let probes = probe_kind(url, nip11.as_ref(), deadline);
         (
             Visit {
                 at: now,
-                socket_answered: list.socket_answered,
+                socket_answered: list.socket_answered || body.is_some(),
                 nip11,
                 probes,
             },
@@ -162,8 +223,15 @@ impl<R: RelayRead> VisitHook for CrawlVisit<R> {
     }
 }
 
-fn nip11_document(body: Option<String>) -> Option<Value> {
-    let value: Value = serde_json::from_str(&body?).ok()?;
+fn is_door(url: &str) -> bool {
+    let Some(url) = crawler::canonical_public_relay(url) else {
+        return false;
+    };
+    DOORS.iter().any(|door| *door == url)
+}
+
+fn nip11_document(body: Option<&str>) -> Option<Value> {
+    let value: Value = serde_json::from_str(body?).ok()?;
     if value.is_object() {
         Some(value)
     } else {
@@ -335,6 +403,30 @@ mod tests {
         seen: Arc<Mutex<Vec<String>>>,
     }
 
+    struct Keep {
+        seen: Arc<Mutex<Vec<String>>>,
+        nip11: Value,
+    }
+
+    impl VisitHook for Keep {
+        fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
+            self.seen.lock().expect("seen").push(url.to_owned());
+            (
+                Visit {
+                    at: now,
+                    socket_answered: true,
+                    nip11: Some(self.nip11.clone()),
+                    probes: vec![ProbeResult {
+                        name: "30323".to_owned(),
+                        accepted: true,
+                        detail: "OK".to_owned(),
+                    }],
+                },
+                vec!["wss://found.example".to_owned()],
+            )
+        }
+    }
+
     impl VisitHook for Script {
         fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
             self.seen.lock().expect("seen").push(url.to_owned());
@@ -499,6 +591,180 @@ mod tests {
     }
 
     #[test]
+    fn a_due_pool_waits_fifteen_minutes_after_a_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        save(
+            &path,
+            &Pool {
+                rows: vec![row("wss://relay.example", 0, None)],
+            },
+        )
+        .unwrap();
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            |_| Ok(()),
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.as_slice(), &[Duration::from_secs(15 * 60)]);
+    }
+
+    #[test]
+    fn a_resting_pool_sleeps_until_the_next_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let later = crate::nostr::now_secs() + 5 * 60;
+        save(
+            &path,
+            &Pool {
+                rows: vec![row("wss://relay.example", later, Some(answered()))],
+            },
+        )
+        .unwrap();
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            |_| Ok(()),
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.len(), 1);
+        assert!(waits[0].as_secs() <= 5 * 60);
+        assert!(waits[0].as_secs() >= 5 * 60 - 5);
+    }
+
+    #[test]
+    fn a_capped_pass_leaves_due_rows_for_fifteen_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let rows = (0..49)
+            .map(|index| row(&format!("wss://r{index}.example"), NOW, None))
+            .collect();
+        save(&path, &Pool { rows }).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            {
+                let path = path.clone();
+                let seen = Arc::clone(&seen);
+                move |now| {
+                    run_crawl(&path, now, {
+                        let seen = Arc::clone(&seen);
+                        move || Script {
+                            seen: Arc::clone(&seen),
+                        }
+                    })
+                }
+            },
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        assert_eq!(seen.lock().expect("seen").len(), crawler::VISIT_CAP);
+        let pool = load(&path);
+        assert_eq!(
+            pool.rows.iter().filter(|row| row.visit.is_some()).count(),
+            crawler::VISIT_CAP
+        );
+        let waiting: Vec<Row> = pool
+            .rows
+            .iter()
+            .filter(|row| row.visit.is_none())
+            .cloned()
+            .collect();
+        assert!(!waiting.is_empty());
+        assert_eq!(due(&waiting, crate::nostr::now_secs()).len(), waiting.len());
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.as_slice(), &[Duration::from_secs(15 * 60)]);
+    }
+
+    #[test]
+    fn a_full_pool_checks_the_due_relays_then_sleeps_until_the_next_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut rows: Vec<Row> = (0..CANDIDATE_CAP)
+            .map(|index| {
+                visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                )
+            })
+            .collect();
+        rows.push(row("wss://new.example", NOW, None));
+        save(&path, &Pool { rows }).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&waits);
+
+        super::serve_pool(
+            &path,
+            {
+                let path = path.clone();
+                let seen = Arc::clone(&seen);
+                let open = open.clone();
+                move |now| {
+                    run_crawl(&path, now, {
+                        let seen = Arc::clone(&seen);
+                        let open = open.clone();
+                        move || Keep {
+                            seen: Arc::clone(&seen),
+                            nip11: open.clone(),
+                        }
+                    })
+                }
+            },
+            move |wait| {
+                recorded.lock().expect("waits").push(wait);
+                false
+            },
+        );
+
+        let mut seen = seen.lock().expect("seen").clone();
+        seen.sort();
+        let mut expected: Vec<String> = (0..CANDIDATE_CAP)
+            .map(|index| format!("wss://relay{index}.example"))
+            .collect();
+        expected.sort();
+        assert_eq!(seen, expected);
+        let pool = load(&path);
+        assert!(pool
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://found.example" && row.visit.is_none()));
+        assert!(pool
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://new.example" && row.visit.is_none()));
+        let day = 24 * 60 * 60;
+        let waits = waits.lock().expect("waits");
+        assert_eq!(waits.len(), 1);
+        assert!(waits[0].as_secs() <= day);
+        assert!(waits[0].as_secs() >= day - 5);
+    }
+
+    #[test]
     fn the_pool_file_lives_beside_the_pages() {
         assert_eq!(
             pool_path(Path::new("content")),
@@ -538,6 +804,119 @@ mod tests {
             .find(|row| row.url == "wss://later.example")
             .unwrap();
         assert_eq!(kept, &cooling);
+    }
+
+    #[test]
+    fn a_full_pool_visits_the_due_relay_and_stores_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut rows: Vec<Row> = (0..CANDIDATE_CAP)
+            .map(|index| {
+                let mut row = visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                );
+                row.next_try = if index == 0 { NOW } else { NOW + 24 * 60 * 60 };
+                row
+            })
+            .collect();
+        let mut outside = visited("wss://relay48.example", true, open, true);
+        outside.next_try = NOW;
+        rows.push(outside);
+        rows.push(row("wss://new.example", NOW, None));
+        save(&path, &Pool { rows }).unwrap();
+
+        let mut queue = batch_queue(&path, NOW).unwrap();
+
+        assert!(!queue.needs_relays());
+        assert_eq!(queue.pop().as_deref(), Some("wss://relay0.example"));
+        assert_eq!(queue.pop(), None);
+        assert!(queue
+            .pool()
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://new.example" && row.visit.is_none()));
+        assert!(!queue
+            .pool()
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://relay.primal.net"));
+    }
+
+    #[test]
+    fn a_full_rotation_stores_a_discovered_url_without_queueing_it() {
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let rows: Vec<Row> = (0..CANDIDATE_CAP)
+            .map(|index| {
+                let mut row = visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                );
+                row.next_try = if index == 0 { NOW } else { NOW + 24 * 60 * 60 };
+                row
+            })
+            .collect();
+        let mut queue = Queue::new(Pool { rows });
+        queue.set_rotation(CANDIDATE_CAP, row_is_usable);
+        assert!(queue.push("wss://relay0.example", NOW));
+        let url = queue.pop().unwrap();
+
+        queue.finish(
+            &url,
+            Visit {
+                at: NOW,
+                socket_answered: true,
+                nip11: Some(open),
+                probes: vec![ProbeResult {
+                    name: "30323".to_owned(),
+                    accepted: true,
+                    detail: "OK".to_owned(),
+                }],
+            },
+            ["wss://found.example"],
+            NOW,
+        );
+
+        assert!(queue
+            .pool()
+            .rows
+            .iter()
+            .any(|row| row.url == "wss://found.example" && row.visit.is_none()));
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn a_short_pool_queues_a_cooling_door() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-pool.json");
+        let open = saved_document(include_str!("../test/nip11/open.json"));
+        let mut rows: Vec<Row> = (0..CANDIDATE_CAP - 1)
+            .map(|index| {
+                let mut row = visited(
+                    &format!("wss://relay{index}.example"),
+                    true,
+                    open.clone(),
+                    true,
+                );
+                row.next_try = NOW + 24 * 60 * 60;
+                row
+            })
+            .collect();
+        rows.push(row("wss://nos.lol", NOW + 15 * 60, Some(silent())));
+        save(&path, &Pool { rows }).unwrap();
+
+        let mut queue = batch_queue(&path, NOW).unwrap();
+
+        assert!(queue.needs_relays());
+        assert_eq!(queue.pop().as_deref(), Some("wss://relay.primal.net"));
+        assert_eq!(queue.pop().as_deref(), Some("wss://nos.lol"));
+        assert_eq!(queue.pop().as_deref(), Some("wss://relay.damus.io"));
+        assert_eq!(queue.pop(), None);
     }
 
     #[test]
@@ -639,11 +1018,12 @@ mod tests {
     }
 
     #[test]
-    fn a_non_public_document_is_stored_with_its_urls_and_no_probe() {
+    fn a_non_door_stores_the_document_and_skips_the_list() {
         let body = include_str!("../test/nip11/auth.json").to_owned();
         let document: serde_json::Value = serde_json::from_str(&body).unwrap();
         let mut hook = CrawlVisit {
             timeout_secs: 30,
+            filling: true,
             read: Saved {
                 body,
                 urls: vec![
@@ -662,8 +1042,7 @@ mod tests {
             Some("wss://auth.example")
         );
 
-        assert_eq!(hook.read.calls, ["list", "nip11"]);
-        assert_eq!(hook.read.deadlines[0], hook.read.deadlines[1]);
+        assert_eq!(hook.read.calls, ["nip11"]);
         let row = queue
             .pool()
             .rows
@@ -675,21 +1054,71 @@ mod tests {
         assert!(visit.socket_answered);
         assert_eq!(visit.nip11.as_ref(), Some(&document));
         assert!(visit.probes.is_empty());
+        assert_eq!(queue.pool().rows.len(), 1);
+    }
+
+    #[test]
+    fn a_door_reads_the_list_while_the_pool_is_filling() {
+        let body = include_str!("../test/nip11/auth.json").to_owned();
+        let mut hook = CrawlVisit {
+            timeout_secs: 30,
+            filling: true,
+            read: Saved {
+                body,
+                urls: vec!["wss://other.example".to_owned()],
+                calls: Vec::new(),
+                deadlines: Vec::new(),
+            },
+        };
+        let mut queue = Queue::new(Pool { rows: Vec::new() });
+        assert!(queue.push("wss://nos.lol", NOW));
+
+        assert_eq!(
+            queue.visit_one(&mut hook, NOW).as_deref(),
+            Some("wss://nos.lol")
+        );
+
+        assert_eq!(hook.read.calls, ["list", "nip11"]);
+        assert_eq!(hook.read.deadlines[0], hook.read.deadlines[1]);
         assert!(queue
             .pool()
             .rows
             .iter()
-            .any(|row| row.url == "wss://relay.damus.io"));
-        assert!(queue
+            .any(|row| row.url == "wss://other.example"));
+    }
+
+    #[test]
+    fn a_health_check_does_not_read_the_list() {
+        let body = include_str!("../test/nip11/auth.json").to_owned();
+        let mut hook = CrawlVisit {
+            timeout_secs: 30,
+            filling: false,
+            read: Saved {
+                body,
+                urls: vec!["wss://other.example".to_owned()],
+                calls: Vec::new(),
+                deadlines: Vec::new(),
+            },
+        };
+        let mut queue = Queue::new(Pool { rows: Vec::new() });
+        assert!(queue.push("wss://nos.lol", NOW));
+
+        assert_eq!(
+            queue.visit_one(&mut hook, NOW).as_deref(),
+            Some("wss://nos.lol")
+        );
+
+        assert_eq!(hook.read.calls, ["nip11"]);
+        assert!(!queue
             .pool()
             .rows
             .iter()
-            .any(|row| row.url == "wss://nos.lol"));
+            .any(|row| row.url == "wss://other.example"));
     }
 
     #[test]
     fn a_missed_socket_still_returns_the_visit() {
-        let mut hook = CrawlVisit::new(30, crate::nostr::RelaySocks::Disabled);
+        let mut hook = CrawlVisit::new(30, crate::nostr::RelaySocks::Disabled, true);
         let started = Instant::now();
         let (visit, urls) = hook.visit("wss://warm.example", NOW);
         assert!(started.elapsed() < Duration::from_millis(50));
