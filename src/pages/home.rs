@@ -236,7 +236,6 @@ fn nojs_landing_relays(
     let form = crate::relays::render_nojs_relay_form(
         &state.cookie.dealt,
         &state.cookie.pinned,
-        &state.urls,
         csrf_token,
         add_error,
         typed,

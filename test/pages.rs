@@ -372,7 +372,8 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs.contains("<script src"));
     assert!(!nojs.contains("/home.js"));
     assert!(!nojs.contains("/relays.js"));
-    assert!(nojs.contains("id=\"relay-candidates\""));
+    assert!(!nojs.contains("id=\"relay-candidates\""));
+    assert!(!nojs.contains("<script"));
     assert!(nojs.contains("action=\"/nojs/create\""));
     assert!(nojs.contains("Write something before publishing."));
     assert!(nojs.contains("class=\"nojs\""));
@@ -4292,8 +4293,8 @@ fn the_homepage_leaves_out_configured_names_and_the_pool() {
         let sidebar = page.get("relays_sidebar").unwrap();
         let help = page.get("relays_section").unwrap();
         assert!(relays.is_empty(), "{nojs}");
-        assert!(!sidebar.contains("wss://config.example"));
-        assert!(!help.contains("wss://config.example"));
+            assert!(!sidebar.contains("wss://config.example"));
+            assert!(!help.contains("wss://config.example"));
         if nojs {
             assert!(!help.contains("Config.toml"));
         }
