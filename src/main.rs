@@ -381,6 +381,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::writemark_css,
                 pages::notice_css,
                 pages::theme_js,
+                pages::editor_mode_js,
                 pages::relays_js,
             ],
         );

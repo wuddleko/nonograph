@@ -216,7 +216,12 @@
             <a href="https://github.com/wuddleko/nonograph" target="_blank"
                 >source code</a
             >
-            <button type="button" class="theme-toggle" aria-label="Dark mode"><span class="theme-to-dark">dark</span><span class="theme-to-light">light</span></button>
+            <span class="footer-tools">
+                <button type="button" class="theme-toggle" aria-label="Dark mode"><span class="theme-to-dark">dark</span><span class="theme-to-light">light</span></button>
+                <span class="view-mode" role="group" aria-label="Editor mode">
+                    <button type="button" data-editor-mode="live" aria-pressed="true">view</button><span class="view-mode-bar" aria-hidden="true">|</span><button type="button" data-editor-mode="source" aria-pressed="false">markdown</button>
+                </span>
+            </span>
         </div>
 
         {{scripts}}

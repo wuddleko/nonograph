@@ -17,6 +17,7 @@ fn static_assets_are_cacheable_and_html_is_not() {
         WRITEMARK_CSS_PATH,
         NOTICE_CSS_PATH,
         THEME_JS_PATH,
+        EDITOR_MODE_JS_PATH,
         RELAYS_JS_PATH,
     ] {
         assert_eq!(
@@ -69,9 +70,12 @@ fn nojs_home_omits_scripts() {
     assert_eq!(nojs.get("form_method").unwrap(), "post");
     let scripts = js.get("scripts").unwrap();
     assert!(scripts.contains("/relays.js?v="));
+    assert!(scripts.contains("/editor-mode.js?v="));
     assert!(scripts.contains("/writemark.js?v="));
     assert!(scripts.contains("/home.js?v="));
+    assert!(scripts.find("/editor-mode.js?v=").unwrap() < scripts.find("/writemark.js?v=").unwrap());
     assert!(scripts.find("/relays.js?v=").unwrap() < scripts.find("/home.js?v=").unwrap());
+    assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
     let field = js.get("content_field").unwrap();
     assert!(field.contains("<writemark-editor"));
     assert!(field.contains("data-syntax-theme=\"ocean&quot;dark\""));
@@ -875,8 +879,14 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
         .render("home", &home_context(&config, false, None, None))
         .unwrap();
     assert!(js.contains("class=\"theme-toggle\""));
+    assert!(js.contains("class=\"view-mode\""));
+    assert!(js.contains("data-editor-mode=\"live\""));
+    assert!(js.contains("data-editor-mode=\"source\""));
+    assert!(js.contains(">view</button>"));
+    assert!(js.contains(">markdown</button>"));
     assert!(js.contains("<script src=\"/theme.js?v="));
     assert!(include_str!("../templates/theme.js").contains("nonograph-theme"));
+    assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
     assert!(!js.contains("&lt;script"));
     let nojs = engine
         .render("home", &home_context(&config, true, None, None))

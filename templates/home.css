@@ -208,6 +208,7 @@
                     "SF Mono", Monaco, "Cascadia Mono", "Roboto Mono",
                     Consolas, monospace;
                 --md-editor-font-size: 20px;
+                --md-editor-source-font-size: 15px;
                 --md-editor-line-height: 1.45;
                 /* Height of a blank source line, matching the 20px paragraph
                    gap of the published post (.article-content p). */
@@ -236,6 +237,11 @@
                 --md-editor-toolbar-hover: color-mix(in srgb, var(--ground) 16%, transparent);
                 --md-editor-toolbar-active: color-mix(in srgb, var(--ground) 26%, transparent);
                 --md-editor-toolbar-radius: 4px;
+                /* Markdown mode is the same canvas, in the source face, with no frame. */
+                --md-editor-source-border-width: 0;
+                --md-editor-source-resize: none;
+                --md-editor-source-overflow: hidden;
+                --md-editor-source-sizing: content;
             }
             @media (prefers-color-scheme: dark) {
                 writemark-editor[name="content"] {
@@ -933,6 +939,64 @@
                     display: inline;
                 }
             }
+            .footer-tools {
+                display: none;
+                margin-left: 28px;
+                white-space: nowrap;
+            }
+            html.js .footer-tools {
+                display: inline;
+            }
+            .footer-tools .theme-toggle {
+                margin: 0 18px 0 0;
+            }
+            .view-mode {
+                display: inline;
+            }
+            .footer-tools .view-mode button,
+            .footer-tools .view-mode button:hover,
+            .footer-tools .view-mode button:focus,
+            .footer-tools .view-mode button:focus-visible,
+            .footer-tools .view-mode button:active {
+                display: inline;
+                margin: 0;
+                padding: 0;
+                border: 0;
+                border-radius: 0;
+                background: none;
+                box-shadow: none;
+                color: var(--quiet);
+                font-family: inherit;
+                font-size: inherit;
+                font-weight: 400;
+                letter-spacing: 0;
+                line-height: inherit;
+                text-transform: none;
+                white-space: nowrap;
+                vertical-align: baseline;
+                cursor: pointer;
+                -webkit-appearance: none;
+                appearance: none;
+            }
+            .footer-tools .view-mode button[aria-pressed="true"],
+            .footer-tools .view-mode button[aria-pressed="true"]:hover,
+            .footer-tools .view-mode button[aria-pressed="true"]:active {
+                color: var(--ink);
+                text-decoration: none;
+            }
+            .footer-tools .view-mode button:hover,
+            .footer-tools .view-mode button:focus-visible {
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .footer-tools .view-mode button[aria-pressed="true"]:focus-visible {
+                text-decoration: underline;
+            }
+            .view-mode-bar {
+                margin: 0 0.42em;
+                color: var(--quiet);
+                user-select: none;
+            }
             body.nojs .footer-nojs,
             body:not(.nojs) .footer-js {
                 display: none;
@@ -1035,6 +1099,12 @@
                 .footer a,
                 .footer .theme-toggle {
                     margin: 0 8px;
+                }
+                .footer-tools {
+                    margin-left: 12px;
+                }
+                .footer-tools .theme-toggle {
+                    margin: 0 12px 0 0;
                 }
             }
 

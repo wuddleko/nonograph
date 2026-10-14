@@ -20,6 +20,7 @@ pub const WRITEMARK_JS_PATH: &str = "/writemark.js";
 pub const WRITEMARK_CSS_PATH: &str = "/writemark.css";
 pub const NOTICE_CSS_PATH: &str = "/notice.css";
 pub const THEME_JS_PATH: &str = "/theme.js";
+pub const EDITOR_MODE_JS_PATH: &str = "/editor-mode.js";
 pub const RELAYS_JS_PATH: &str = "/relays.js";
 
 pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
@@ -46,6 +47,7 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         | WRITEMARK_CSS_PATH
         | NOTICE_CSS_PATH
         | THEME_JS_PATH
+        | EDITOR_MODE_JS_PATH
         | RELAYS_JS_PATH => LONG_CACHE,
         _ => "no-store, max-age=0",
     }
@@ -112,6 +114,7 @@ struct Assets {
     writemark_css: String,
     notice_css: String,
     theme_js: String,
+    editor_mode_js: String,
     relays_js: String,
 }
 
@@ -144,6 +147,7 @@ fn assets() -> &'static Assets {
         let writemark_css = read("writemark.css");
         let notice_css = read("notice.css");
         let theme_js = read("theme.js");
+        let editor_mode_js = read("editor-mode.js");
         let relays_js = read("relays.js");
         let version = asset_version(&[
             &home_css,
@@ -158,6 +162,7 @@ fn assets() -> &'static Assets {
             &writemark_css,
             &notice_css,
             &theme_js,
+            &editor_mode_js,
             &relays_js,
         ]);
         Assets {
@@ -174,6 +179,7 @@ fn assets() -> &'static Assets {
             writemark_css,
             notice_css,
             theme_js,
+            editor_mode_js,
             relays_js,
         }
     })
@@ -193,7 +199,7 @@ pub(super) fn version() -> &'static str {
 
 pub(super) fn home_scripts(version: &str) -> String {
     format!(
-        "<script src=\"/relays.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
+        "<script src=\"/relays.js?v={version}\"></script>\n<script src=\"/editor-mode.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
     )
 }
 
@@ -269,6 +275,11 @@ pub fn notice_css() -> (ContentType, &'static str) {
 #[get("/theme.js")]
 pub fn theme_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, assets().theme_js.as_str())
+}
+
+#[get("/editor-mode.js")]
+pub fn editor_mode_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, assets().editor_mode_js.as_str())
 }
 
 #[get("/relays.js")]

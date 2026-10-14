@@ -47,9 +47,23 @@
 }
 /* The live writing surface is a bare canvas: no frame, ever. */
 .live-editor, .live-editor:focus, .live-editor:focus-within, .live-editor:hover { border: 0; outline: none; box-shadow: none; }
-textarea:focus { outline: none; border-color: var(--md-editor-border-focus); box-shadow: var(--md-editor-focus-ring); }
+textarea:focus { outline: none; border-color: var(--md-editor-source-border, var(--md-editor-border-focus)); box-shadow: var(--md-editor-focus-ring); }
 .live-editor[aria-disabled="true"], textarea:disabled { opacity: 0.62; cursor: not-allowed; }
-textarea { display: none; resize: vertical; font-family: var(--md-editor-mono-font); font-size: var(--md-editor-font-size); tab-size: 2; }
+textarea {
+  display: none;
+  resize: var(--md-editor-source-resize, vertical);
+  border-width: var(--md-editor-source-border-width, 1px);
+  font-family: var(--md-editor-mono-font);
+  font-size: var(--md-editor-source-font-size, var(--md-editor-font-size));
+  tab-size: 2;
+}
+@supports (field-sizing: content) {
+  textarea {
+    overflow: var(--md-editor-source-overflow, auto);
+    field-sizing: var(--md-editor-source-sizing, fixed);
+  }
+}
+textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-muted)); opacity: 1; }
 :host([mode="source"]) .live-editor { display: none; }
 :host([mode="source"]) textarea { display: block; }
 .live-placeholder { color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }

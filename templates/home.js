@@ -87,6 +87,11 @@ function paintSavedRelayLists(doc, storage) {
             const mobileCharCount = document.getElementById("mobileCharCount");
             const form = document.getElementById("publishForm");
 
+            if (editor && editor.shadowRoot && window.CSS && CSS.supports("field-sizing", "content")) {
+                const source = editor.shadowRoot.querySelector("textarea");
+                if (source) source.rows = 1;
+            }
+
             let maxFetchRelays = 6;
             let relaysForPublicPublish = () => [];
             let publicRelayUrl = () => false;

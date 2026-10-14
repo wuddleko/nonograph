@@ -13,6 +13,8 @@ nonograph.pid
 
 # Published posts. Shipped pages live in /pages and are copied here when missing.
 /content/*.md
+# Crawler backoff. Door relays live in code; a missing file starts empty.
+/content/relay-pool.json
 
 # Tor backup directories created by run script
 onion_backup_*/
