@@ -2607,14 +2607,55 @@ class WritemarkEditorElement extends HTMLElement {
     }
     return `${index}:${block.type}:${block.from}`;
   }
+  _sourceFormBlockIndexes(key, blocks) {
+    if (!key) return [];
+    if (key.startsWith("table:")) {
+      const from = Number(key.slice("table:".length).split(":")[0]);
+      const index = blocks.findIndex(block => block.type === "table" && block.from === from);
+      return index < 0 ? null : [index];
+    }
+    const parts = key.split(":");
+    const index = Number(parts[0]);
+    const type = parts[1];
+    const from = Number(parts[2]);
+    const block = blocks[index];
+    if (!block || block.type !== type || block.from !== from) return null;
+    return [index];
+  }
+  _repaintSourceFormBlocks(previousKey, nextKey) {
+    if (this._virtualState.active || !this._liveEditor) return false;
+    const blocks = this._liveBlocks;
+    if (!blocks?.length) return false;
+    const previous = this._sourceFormBlockIndexes(previousKey, blocks);
+    const next = this._sourceFormBlockIndexes(nextKey, blocks);
+    if (!previous || !next) return false;
+    const children = Array.from(this._liveEditor.children);
+    if (children.length !== blocks.length) return false;
+    const indexes = [...new Set([...previous, ...next])].sort((a, b) => b - a);
+    const prepared = [];
+    for (const index of indexes) {
+      const fragment = this._liveFragmentForBlocks([blocks[index]]);
+      const fresh = Array.from(fragment.children);
+      if (fresh.length !== 1 || !children[index]) return false;
+      prepared.push({ oldNode: children[index], fresh: fresh[0] });
+    }
+    for (const item of prepared) item.oldNode.replaceWith(item.fresh);
+    this._rebuildLiveIndex();
+    return true;
+  }
   _syncSourceForm() {
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock || this._pointerSelection || this._isComposing) return;
     const key = this._sourceFormKey();
     if (key === (this._sourceFormKeyShown ?? "")) return;
+    const previousKey = this._sourceFormKeyShown ?? "";
     this._sourceFormLock = true;
     this._sourceFormKeyShown = key;
     try {
-      this._renderAll({ restoreSelection: true, force: true });
+      if (this._repaintSourceFormBlocks(previousKey, key)) {
+        if (!this._isSourceActive()) this._restoreLiveSelection(this._selection);
+      } else {
+        this._renderAll({ restoreSelection: true, force: true });
+      }
     } finally {
       this._sourceFormLock = false;
     }
@@ -2622,10 +2663,11 @@ class WritemarkEditorElement extends HTMLElement {
   _formatWhenIdle() {
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
     if ((this._sourceFormKeyShown ?? "") === "") return;
+    const previousKey = this._sourceFormKeyShown ?? "";
     this._sourceFormLock = true;
     this._sourceFormKeyShown = "";
     try {
-      this._renderAll({ restoreSelection: false, force: true });
+      if (!this._repaintSourceFormBlocks(previousKey, "")) this._renderAll({ restoreSelection: false, force: true });
     } finally {
       this._sourceFormLock = false;
     }

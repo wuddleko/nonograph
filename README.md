@@ -4,7 +4,7 @@
 
 <h1 align="center">Nonograph</h1>
 
-<p align="center"><b>Anonymous publishing for the privacy-conscious web.</b></p>
+<p align="center"><b>Anonymous and decentralized publishing for the shared-privacy-conscious web.</b></p>
 <div align="center">
   <a href="https://unlicense.org">
     <img alt="GitHub License" src="https://img.shields.io/github/license/wuddleko/nonograph">
@@ -23,23 +23,14 @@ English | [简体中文](README.zh.md)
 
 </div>
 
-Nonograph is a simple anonymous publishing platform for anyone who wants their words to exist online without being tied to an identity. You write, you get a shareable link, and that's it. No account creation, no profile, no analytics trail following readers around.
+Nonograph is a simple anonymous publishing platform for anyone who wants their words to exist online without being tied to an identity or a single host.  
+You write, you click on store, your note gets enceypted, you get a shareable link, someone enters that links, it gets decrypted on his/her browser, and that's it.  
+No account creation, no profile, no analytics trail following readers around.  
+The instances publish on the relays via Tor, all they sey is encrypted data from a Tor exit.
 
 https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
-## Nostr (WE NEED INSTANCES)
-
-Publish seals the note in the browser (or on the host, if JavaScript is off) and sends the ciphertext to the relays in `Config.toml` over Tor. What you share is the sealed link, key included. The host does not keep a copy. Your browser never talks to relays; they see a Tor exit, not you. The instance still sees the normal HTTP request.
-
-We could use more hosts running this setup. Pick relays that accept sealed notes (kind 30323). Dead or read-only relays make publish look broken even when everything else is fine. If you're already running Nonograph, wire up `[nostr].relays`, deploy, and open a PR to add yourself to the table (clearnet and/or onion).
-
-| Uptime | Location | Clearnet | Onion |
-|--------|----------|----------|-------|
-| _none listed yet_ | | | |
-
-The original model—write on someone's box, get a link on their domain—is still going strong. Those instances are in the next section.
-
-## Known instances
+## Instances
 
 | Uptime                                                                               | Location      | Clearnet                         | Onion                                                                  |   |
 |--------------------------------------------------------------------------------------|---------------|----------------------------------|------------------------------------------------------------------------|---|
@@ -56,7 +47,7 @@ These are run by other people, with their own rules. Use one you trust, or host 
 
 ## Deploy
 
-`~/nonograph/content` is only for optional copies of the four site pages (about, legal, api, markup). Published notes are not stored there. Tor keys live in `~/nonograph/onion`. Relay defaults come from `[nostr].relays` and `[nostr].socks` in `Config.toml` (Docker Tor is `127.0.0.1:9050`). Visitors can add extra relays in the browser; those are stored locally and sent to this host only when publishing.
+`~/nonograph/content` holds optional copies of the four site pages (about, legal, api, markup) and the crawled relay pool, `relay-pool.json`. Published notes are not stored there. Tor keys live in `~/nonograph/onion`. Outbound relay traffic uses `[nostr].socks` in `Config.toml` (Docker Tor is `127.0.0.1:9050`). `[nostr].relays` names the relays left off the share link.
 
 ### Docker image (quick)
 
@@ -64,7 +55,7 @@ These are run by other people, with their own rules. Use one you trust, or host 
 mkdir -p ~/nonograph/content ~/nonograph/onion
 curl -fsSL -o ~/nonograph/Config.toml \
   https://raw.githubusercontent.com/wuddleko/nonograph/main/Config.toml
-# edit ~/nonograph/Config.toml — especially [nostr].relays
+# edit ~/nonograph/Config.toml — [nostr].socks should be the local Tor port
 
 sudo docker run -d \
   --name nonograph \
@@ -104,7 +95,7 @@ On Debian-style systems: `./scripts/run` (build and run natively). Service helpe
 More detail: [DOCKER.md](DOCKER.md).
 
 ## Features
-Nonograph comes with an extensive list of markup options; type `/` on a new line to display a list of them.
+Nonograph comes with an extensive list of markup options; type `/` to display a list of them.
 
 <img width="561" height="447" alt="image" src="https://github.com/user-attachments/assets/cda96a9c-08bc-4add-bf5b-e8eb0b352201" />
 

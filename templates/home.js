@@ -149,11 +149,12 @@ function paintSavedRelayLists(doc, storage) {
                     }
                 });
 
-                // Auto-resize title textarea
-                titleTextarea.addEventListener("input", function () {
-                    this.style.height = "auto";
-                    this.style.height = this.scrollHeight + "px";
-                });
+                if (!(window.CSS && CSS.supports("field-sizing", "content"))) {
+                    titleTextarea.addEventListener("input", function () {
+                        this.style.height = "auto";
+                        this.style.height = this.scrollHeight + "px";
+                    });
+                }
             }
 
             const contentLimit = Number(editor.getAttribute("maxlength")) || 0;
@@ -464,7 +465,6 @@ function paintSavedRelayLists(doc, storage) {
 
             // The writemark editor emits input events as the document changes.
             editor.addEventListener("md-input", updateCharCount);
-            editor.addEventListener("input", updateCharCount);
             editor.addEventListener("md-change", updateCharCount);
 
             form.addEventListener("submit", function (e) {
