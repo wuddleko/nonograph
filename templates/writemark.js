@@ -1465,14 +1465,20 @@ function displayOffsetToSourceOffset(source, display, displayOffset) {
   while (i < source.length) {
     if (shown === target) {
       if (target < display.length) {
-        while (i < source.length && source[i] !== display[shown]) i += 1;
+        const rest = source.indexOf(display[shown], i);
+        if (rest === -1) return i;
+        i = rest;
       }
       return i;
     }
     if (shown < display.length && source[i] === display[shown]) shown += 1;
+    else if (shown < display.length && source.indexOf(display[shown], i) === -1) {
+      shown += 1;
+      continue;
+    }
     i += 1;
   }
-  return source.length;
+  return i;
 }
 function sourceOffsetToDisplayOffset(source, display, sourceOffset) {
   const target = clamp(Number(sourceOffset) || 0, 0, source.length);
@@ -1725,6 +1731,11 @@ class WritemarkEditorElement extends HTMLElement {
     this._formDisabled = false;
     this._hasConnected = false;
     this._isComposing = false;
+    this._compositionEnding = false;
+    this._compositionEndTimer = 0;
+    this._compositionStamp = 0;
+    this._keyRepeatAt = 0;
+    this._suppressEnterUntil = 0;
     this._beforeInputSnapshot = null;
     this._beforeInputTarget = null;
     this._liveSelectionAPI = null;
@@ -1797,6 +1808,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._completion.abort?.abort();
     if (this._completionUpdateFrame) cancelAnimationFrame(this._completionUpdateFrame);
     if (this._virtualScrollFrame) cancelAnimationFrame(this._virtualScrollFrame);
+    if (this._compositionEndTimer) clearTimeout(this._compositionEndTimer);
+    this._compositionEndTimer = 0;
     this._completionUpdateFrame = 0;
     this._virtualScrollFrame = 0;
   }
@@ -1969,8 +1982,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._sourceTextarea.addEventListener("select", () => this._onSelectionChanged());
     this._sourceTextarea.addEventListener("paste", event => this._onPaste(event));
     this._sourceTextarea.addEventListener("drop", event => this._onDrop(event));
-    this._sourceTextarea.addEventListener("compositionstart", () => { this._isComposing = true; this._closeCompletion(); });
-    this._sourceTextarea.addEventListener("compositionend", () => { this._isComposing = false; this._scheduleCompletionUpdate(); });
+    this._sourceTextarea.addEventListener("compositionstart", () => this._onCompositionStart());
+    this._sourceTextarea.addEventListener("compositionend", event => this._onCompositionEnd(event));
 
     this._liveEditor.addEventListener("focus", () => { if (this._selection.start > this._value.length) this._selection = { start: 0, end: 0, direction: "none" }; }, true);
     this._liveEditor.addEventListener("keydown", event => this._onKeyDown(event));
@@ -1985,8 +1998,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveEditor.addEventListener("cut", event => this._onLiveCut(event));
     this._liveEditor.addEventListener("paste", event => this._onPaste(event));
     this._liveEditor.addEventListener("drop", event => this._onDrop(event));
-    this._liveEditor.addEventListener("compositionstart", () => { this._isComposing = true; this._closeCompletion(); });
-    this._liveEditor.addEventListener("compositionend", () => { this._isComposing = false; this._onSelectionChanged(); });
+    this._liveEditor.addEventListener("compositionstart", () => this._onCompositionStart());
+    this._liveEditor.addEventListener("compositionend", event => this._onCompositionEnd(event));
 
     this._completionPopup.addEventListener("mousedown", e => e.preventDefault());
     this._completionPopup.addEventListener("click", e => { const item = e.target.closest("[data-index]"); if (!item) return; const index = Number(item.dataset.index); if (this._completion.items[index]?.disabled) return; this._completion.activeIndex = index; this._acceptCompletion("pointer"); });
@@ -2166,6 +2179,13 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _renderAll({ restoreSelection = true, previousValue = null, changes = null, force = false } = {}) {
     if (!this._liveEditor) return;
+    // Replacing the DOM (or writing the textarea value) ends a Mac accent menu
+    // or IME session, so the preview can only land on the first candidate.
+    if (this._isComposing || this._holdAccentTarget) {
+      this._liveDirty = true;
+      if (this._holdAccentTarget && this._isLiveVisible()) this._syncAccentMetadata(previousValue, changes);
+      return;
+    }
     this._hasRenderedOnce = true;
     this._sourceTextarea.value = this._value;
     if (restoreSelection && this._isSourceActive() && this._sourceTextarea) {
@@ -2700,6 +2720,7 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _onSourceInput(event) {
+    if (this._isComposing || event?.isComposing) return;
     const before = this._beforeInputSnapshot;
     const previousValue = this._value;
     this._value = normalizeLineEndings(this._sourceTextarea.value);
@@ -2712,7 +2733,14 @@ class WritemarkEditorElement extends HTMLElement {
     if (!this._isComposing) this._scheduleCompletionUpdate();
   }
   _onLiveBeforeInput(event) {
-    if (this._isComposing) return;
+    if (this._isComposing || event?.isComposing || String(event?.inputType || "").includes("Composition")) return;
+    if (this._editableTextDiffers(this._closestEditable(event?.target))) {
+      if (!this._beforeInputSnapshot) {
+        const sel = this._modelSelection();
+        this._beforeInputSnapshot = makeSnapshot(this._value, sel.start, sel.end, sel.direction || "none");
+      }
+      return;
+    }
     this._ignoreSelectionChangeCount = 0;
     this._structuredSelection = null;
     const inputType = event?.inputType || "";
@@ -2763,6 +2791,8 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _onLiveInput(event) {
     if (this.disabled || this.readonly) return;
+    if (this._isComposing || event?.isComposing) return;
+    if (event?.target && event.target.isConnected === false) return;
     this._ignoreSelectionChangeCount = 0;
     this._structuredSelection = null;
     const inputTarget = this._beforeInputTarget;
@@ -2798,8 +2828,11 @@ class WritemarkEditorElement extends HTMLElement {
     const inferredDisplayCursor = changedDisplay
       ? changedDisplay.from + changedDisplay.insert.length
       : null;
+    const compositionCommit = event?.inputType === "insertCompositionText";
     const tableDisplayCursor = editable.dataset.editable === "cell"
-      ? (mappedCursor != null ? mappedCursor : (this._displayOffsetFromSelection(editable) ?? inferredDisplayCursor))
+      ? (compositionCommit
+        ? (this._displayOffsetFromSelection(editable) ?? raw.length)
+        : (mappedCursor != null ? mappedCursor : (this._displayOffsetFromSelection(editable) ?? inferredDisplayCursor)))
       : null;
     const tableEdit = editable.dataset.editable === "cell" ? this._tableCellInputEdit(editable, raw, tableDisplayCursor) : null;
     if (tableEdit) {
@@ -2809,7 +2842,7 @@ class WritemarkEditorElement extends HTMLElement {
       const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction);
       if (before) this._recordUndo(before, after, this._undoGroupForInput(event?.inputType), { coalesce: event?.inputType === "insertText" || event?.inputType === "deleteContentBackward" });
       this._beforeInputSnapshot = null;
-      this._afterValueChanged({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: diffTextChange(previousValue, this._value) });
+      this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: diffTextChange(previousValue, this._value) });
       if (!this._isComposing) this._scheduleCompletionUpdate();
       return;
     }
@@ -2826,20 +2859,47 @@ class WritemarkEditorElement extends HTMLElement {
     const nextValue = previousValue.slice(0, from) + insert + previousValue.slice(to);
     const displayCursor = this._displayOffsetFromSelection(editable);
     const sourceCursor = liveSelection?.end != null ? liveSelection.end - from : null;
-    const liveCursor = cursorAfterLineInput(
-      displayCursor,
-      mappedCursor,
-      sourceCursor,
-      inferredDisplayCursor ?? insert.length - virtualPrefixLength,
-    );
+    const liveCursor = compositionCommit
+      ? (displayCursor != null ? displayCursor : insert.length - virtualPrefixLength)
+      : cursorAfterLineInput(
+        displayCursor,
+        mappedCursor,
+        sourceCursor,
+        inferredDisplayCursor ?? insert.length - virtualPrefixLength,
+      );
     const cursor = clamp(from + virtualPrefixLength + liveCursor, from, from + insert.length);
     this._value = nextValue;
     this._selection = { start: cursor, end: cursor, direction: "none" };
     const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction);
     if (before) this._recordUndo(before, after, this._undoGroupForInput(event?.inputType), { coalesce: event?.inputType === "insertText" || event?.inputType === "deleteContentBackward" });
     this._beforeInputSnapshot = null;
-    this._afterValueChanged({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: [{ from, to, insert }] });
+    this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: [{ from, to, insert }] });
     if (!this._isComposing) this._scheduleCompletionUpdate();
+  }
+  _finishLiveInput(details) {
+    const hold = details.inputType !== "insertCompositionText" && this._accentMenuHoldingTarget();
+    this._holdAccentTarget = hold;
+    try {
+      this._afterValueChanged(details);
+    } finally {
+      this._holdAccentTarget = false;
+    }
+  }
+  _accentMenuHoldingTarget() {
+    if (now() - (this._keyRepeatAt || 0) > 4000) return false;
+    if (!this._domSelectionIsSingleGrapheme()) return false;
+    const editable = this._activeEditableFromSelection();
+    if (!editable || editable.dataset.sourceForm !== "true") return false;
+    if (editable.dataset.kind === "code-fence" || editable.dataset.kind === "image") return false;
+    if (editable.querySelector?.("img, video, span")) return false;
+    return true;
+  }
+  _syncAccentMetadata(previousValue, changes) {
+    const blocks = this._blocksForRender(previousValue, changes);
+    this._liveBlocks = blocks;
+    this._syncLiveMetadata(blocks);
+    this._rebuildLiveIndex();
+    this._sourceFormKeyShown = this._sourceFormKey();
   }
   _inputTargetFromBeforeInput(event) {
     const range = event?.getTargetRanges?.()[0];
@@ -3467,6 +3527,12 @@ class WritemarkEditorElement extends HTMLElement {
       if (this._ignoreSelectionChangeCount > 0) this._ignoreSelectionChangeCount -= 1;
       return;
     }
+    // The accent menu selects the candidate in the DOM before it is in the
+    // model. Mapping that range back turns it into the rest of the line.
+    if (this._isComposing || this._sourceFormDomDirty()) {
+      if (this._ignoreSelectionChangeCount > 0) this._ignoreSelectionChangeCount -= 1;
+      return;
+    }
     if (this._ignoreSelectionChangeCount > 0) {
       this._ignoreSelectionChangeCount -= 1;
       this._emitSelectionChange();
@@ -3538,11 +3604,20 @@ class WritemarkEditorElement extends HTMLElement {
     if (this.mode === "source") { this._sourceTextarea?.focus(options); this._sourceTextarea?.setSelectionRange(this._selection.start, this._selection.end, this._selection.direction); return; }
     this._liveEditor?.focus(options); this._restoreLiveSelection(this._selection);
   }
+  _modelSelection() {
+    const sel = this._selection || { start: 0, end: 0, direction: "none" };
+    return {
+      start: clamp(sel.start, 0, this._value.length),
+      end: clamp(sel.end, 0, this._value.length),
+      direction: sel.direction || "none",
+    };
+  }
   _getCurrentSelection() {
     if (this._isSourceActive() && this._sourceTextarea) return { start: this._sourceTextarea.selectionStart, end: this._sourceTextarea.selectionEnd, direction: this._sourceTextarea.selectionDirection || "none" };
+    if (this._isComposing || this._sourceFormDomDirty()) return this._modelSelection();
     if (this._structuredSelection) return { ...this._structuredSelection };
     const live = this._getLiveSelection();
-    return live || this._selection || { start: 0, end: 0, direction: "none" };
+    return live || this._modelSelection();
   }
   _getLiveSelection(preferredEditable = null) {
     const exposed = this._readLiveSelection(preferredEditable);
@@ -3791,7 +3866,115 @@ class WritemarkEditorElement extends HTMLElement {
     return true;
   }
 
+  _onCompositionStart() {
+    if (this._compositionEndTimer) {
+      clearTimeout(this._compositionEndTimer);
+      this._compositionEndTimer = 0;
+    }
+    this._compositionStamp += 1;
+    this._compositionEnding = false;
+    this._isComposing = true;
+    this._closeCompletion();
+    this._beforeInputTarget = null;
+    const sel = this._modelSelection();
+    this._beforeInputSnapshot = makeSnapshot(this._value, sel.start, sel.end, sel.direction || "none");
+  }
+
+  _onCompositionEnd(event) {
+    const stamp = this._compositionStamp;
+    this._compositionEnding = true;
+    this._suppressEnterUntil = now() + 40;
+    if (!this._isComposing) {
+      this._isComposing = true;
+      if (!this._beforeInputSnapshot) {
+        const sel = this._modelSelection();
+        this._beforeInputSnapshot = makeSnapshot(this._value, sel.start, sel.end, sel.direction || "none");
+      }
+    }
+    if (this._compositionEndTimer) clearTimeout(this._compositionEndTimer);
+    this._compositionEndTimer = setTimeout(() => {
+      this._compositionEndTimer = 0;
+      this._compositionEnding = false;
+      if (stamp !== this._compositionStamp) return;
+      const pending = this._isComposing;
+      this._isComposing = false;
+      if (pending) this._commitComposition(event);
+    }, 0);
+  }
+
+  _commitComposition(event) {
+    const target = event?.target;
+    if (target === this._sourceTextarea || (this._isSourceActive() && this._sourceTextarea)) {
+      this._onSourceInput({ inputType: "insertCompositionText" });
+      return;
+    }
+    let editable = null;
+    if (target && target.isConnected !== false) {
+      editable = this._closestEditable(target) || (target.matches?.("[data-editable]") ? target : null);
+    }
+    if (!editable) editable = this._activeEditableFromSelection();
+    if (!editable) {
+      const sel = this._exposedLiveSelection();
+      const node = sel?.focusNode;
+      editable = this._closestEditable(node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement);
+    }
+    if (!editable || editable.isConnected === false) return;
+    this._onLiveInput({ inputType: "insertCompositionText", target: editable });
+  }
+
+  _pressAndHoldOwnsKey(event) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return false;
+    const key = event.key;
+    const menuKey = key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown" || key === "Enter" || key === "Escape";
+    if (!menuKey || now() - (this._keyRepeatAt || 0) > 4000) return false;
+    return this._domSelectionIsSingleGrapheme();
+  }
+
+  _domSelectionIsSingleGrapheme() {
+    if (this._isSourceActive() && this._sourceTextarea) {
+      const field = this._sourceTextarea;
+      if (field.selectionStart === field.selectionEnd) return false;
+      return [...field.value.slice(field.selectionStart, field.selectionEnd)].length === 1;
+    }
+    const sel = this._exposedLiveSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+    let text = "";
+    try { text = sel.getRangeAt(0).toString(); } catch { return false; }
+    return [...text.replace(/\u00a0/g, " ")].length === 1;
+  }
+
+  _sourceFormDomDirty(event) {
+    if (this._isSourceActive() && this._sourceTextarea) {
+      return normalizeLineEndings(this._sourceTextarea.value) !== this._value;
+    }
+    const editable = this._closestEditable(event?.target) || this._activeEditableFromSelection();
+    return this._editableTextDiffers(editable);
+  }
+
+  _editableTextDiffers(editable) {
+    if (!editable || editable.dataset.sourceForm !== "true") return false;
+    if (editable.dataset.kind === "code-fence" || editable.dataset.kind === "image") return false;
+    if (editable.querySelector?.("img, video, span")) return false;
+    const range = this._editableSourceRange(editable);
+    if (!range) return false;
+    let raw = this._plainText(editable);
+    if (!this._keepsSourceNewlines(editable)) raw = raw.replace(/\n/g, "");
+    const slice = this._value.slice(range.from, range.to);
+    const expected = editable.dataset.editable === "cell" ? unescapeTableCellText(slice) : slice;
+    return raw !== expected;
+  }
+
   _onKeyDown(event) {
+    if (event.repeat && event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) this._keyRepeatAt = now();
+    const menuConfirmingEnter = event.key === "Enter" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey
+      && (this._compositionEnding || now() < (this._suppressEnterUntil || 0));
+    if (menuConfirmingEnter) {
+      event.preventDefault();
+      return;
+    }
+    if (this._isComposing || event.isComposing || event.keyCode === 229 || event.which === 229) return;
+    if (this._pressAndHoldOwnsKey(event)) return;
+    if (this._sourceFormDomDirty(event)) return;
     const isMac = /Mac|iPhone|iPad|iPod/.test(globalThis.navigator?.platform ?? "");
     const mod = isMac ? event.metaKey : event.ctrlKey;
     const taskCheckbox = event.target.closest?.("[data-task-checkbox]");
