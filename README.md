@@ -23,10 +23,13 @@ English | [简体中文](README.zh.md)
 
 </div>
 
-Nonograph is a simple anonymous publishing platform for anyone who wants their words to exist online without being tied to an identity or a single host.  
-You write, you click on store, your note gets enceypted, you get a shareable link, someone enters that links, it gets decrypted on his/her browser, and that's it.  
-No account creation, no profile, no analytics trail following readers around.  
-The instances publish on the relays via Tor, all they sey is encrypted data from a Tor exit.
+Nonograph is a simple anonymous publishing platform for anyone who wants their words online without an identity, nor one entity having your thoughts.  
+
+You write, you click store, the note is encrypted, and you get a link. Someone opens that link, and their browser decrypts it.  
+
+The instance sends the encrypted note to relays over Tor. A relay sees ciphertext from a Tor exit.
+
+No account, no profile, no analytics following readers and writers around.  
 
 https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
