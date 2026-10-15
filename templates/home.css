@@ -190,7 +190,15 @@
                 overflow-x: hidden;
                 overflow-y: auto;
                 white-space: pre-wrap;
-                resize: vertical;
+                resize: none;
+            }
+            @supports (field-sizing: content) {
+                textarea[name="content"] {
+                    height: auto;
+                    min-height: max(320px, 60vh);
+                    overflow: hidden;
+                    field-sizing: content;
+                }
             }
             .form-error {
                 color: #9a3b3b;
