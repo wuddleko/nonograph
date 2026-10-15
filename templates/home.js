@@ -521,3 +521,156 @@ function paintSavedRelayLists(doc, storage) {
                         32,
                     );
                 });
+
+            const saveRoot = document.querySelector(".save-note");
+            if (saveRoot) {
+                const opener = saveRoot.querySelector(".save-open");
+                const formats = saveRoot.querySelector(".save-formats");
+                const saveStatus = saveRoot.querySelector(".save-status");
+
+                function noteFields() {
+                    const title = document.querySelector('textarea[name="title"]');
+                    const alias = document.querySelector('input[name="alias"]');
+                    return {
+                        title: title ? title.value : "",
+                        alias: alias ? alias.value : "",
+                        content: editor.value,
+                    };
+                }
+
+                function noteIsEmpty(fields) {
+                    return !fields.title.trim() && !fields.alias.trim() && !fields.content.trim();
+                }
+
+                function saveFilename(title, extension) {
+                    const cleaned = title
+                        .trim()
+                        .replace(/[\u0000-\u001f\\/:*?"<>|]/g, " ")
+                        .replace(/\s+/g, " ")
+                        .replace(/[. ]+$/g, "")
+                        .trim();
+                    return (cleaned || "note") + extension;
+                }
+
+                function downloadFile(filename, body, type) {
+                    const blob = new Blob([body], { type });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = filename;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    setTimeout(function () {
+                        URL.revokeObjectURL(url);
+                    }, 1000);
+                }
+
+                function showSaveError(message) {
+                    if (!saveStatus) return;
+                    saveStatus.hidden = false;
+                    saveStatus.textContent = message;
+                }
+
+                function clearSaveError() {
+                    if (!saveStatus) return;
+                    saveStatus.textContent = "";
+                    saveStatus.hidden = true;
+                }
+
+                function saveMarkdown(fields) {
+                    downloadFile(
+                        saveFilename(fields.title, ".md"),
+                        fields.content,
+                        "text/markdown;charset=utf-8",
+                    );
+                }
+
+                let pdfModule = null;
+
+                function loadPdfModule() {
+                    if (pdfModule) return Promise.resolve(pdfModule);
+                    if (!loadPdfModule.pending) {
+                        const js = new URL("./pdf/nonograph_pdf.js", import.meta.url);
+                        const wasm = new URL("./pdf/nonograph_pdf_bg.wasm", import.meta.url);
+                        loadPdfModule.pending = import(js.href)
+                            .then((module) =>
+                                module.default({ module_or_path: wasm }).then(() => module),
+                            )
+                            .then((module) => {
+                                pdfModule = module;
+                                return module;
+                            })
+                            .catch((error) => {
+                                loadPdfModule.pending = null;
+                                throw error;
+                            });
+                    }
+                    return loadPdfModule.pending;
+                }
+
+                async function savePdf(fields) {
+                    const page = editor.readyPage ? editor.readyPage() : null;
+                    if (!page || typeof page.render_markdown !== "function") {
+                        showSaveError("PDF is not ready.");
+                        return;
+                    }
+                    try {
+                        const html = page.render_markdown(
+                            fields.content,
+                            editor.syntaxTheme,
+                            editor.maxUrlLength,
+                            editor.externalLinks,
+                        );
+                        const pdf = await loadPdfModule();
+                        if (typeof pdf.note_pdf !== "function") {
+                            showSaveError("PDF is not ready.");
+                            return;
+                        }
+                        const bytes = pdf.note_pdf(fields.title.trim(), fields.alias.trim(), html);
+                        downloadFile(
+                            saveFilename(fields.title, ".pdf"),
+                            bytes,
+                            "application/pdf",
+                        );
+                        clearSaveError();
+                    } catch (error) {
+                        showSaveError("Could not save the PDF.");
+                    }
+                }
+
+                function setSaveOpen(open) {
+                    if (!formats || !opener) return;
+                    formats.hidden = !open;
+                    opener.setAttribute("aria-expanded", open ? "true" : "false");
+                }
+
+                if (opener) {
+                    opener.addEventListener("click", function () {
+                        if (formats && !formats.hidden) {
+                            setSaveOpen(false);
+                            clearSaveError();
+                            return;
+                        }
+                        if (noteIsEmpty(noteFields())) return;
+                        setSaveOpen(true);
+                    });
+                }
+
+                saveRoot.addEventListener("click", function (event) {
+                    const choice = event.target && event.target.closest
+                        ? event.target.closest("[data-save]")
+                        : null;
+                    if (!choice || !saveRoot.contains(choice)) return;
+                    const fields = noteFields();
+                    if (noteIsEmpty(fields)) return;
+                    const kind = choice.getAttribute("data-save");
+                    if (kind === "markdown") {
+                        clearSaveError();
+                        saveMarkdown(fields);
+                        return;
+                    }
+                    if (kind !== "pdf") return;
+                    savePdf(fields);
+                });
+            }

@@ -29,6 +29,9 @@ fn static_assets_are_cacheable_and_html_is_not() {
     // Stable renderer URLs revalidate. They are not pinned for a year and not discarded.
     assert_eq!(cache_control_for_path(PAGE_JS_PATH), "public, no-cache");
     assert_eq!(cache_control_for_path(PAGE_WASM_PATH), "public, no-cache");
+    assert_eq!(cache_control_for_path(PDF_JS_PATH), "public, no-cache");
+    assert_eq!(cache_control_for_path(PDF_WASM_PATH), "public, no-cache");
+    assert_eq!(cache_control_for_path(PDF_LICENSE_PATH), "public, no-cache");
     assert_eq!(cache_control_for_path("/a-post"), "no-store, max-age=0");
     assert_eq!(cache_control_for_path("/"), "no-store, max-age=0");
     assert_eq!(cache_control_for_path("/about"), "no-store, max-age=0");
@@ -73,7 +76,9 @@ fn nojs_home_omits_scripts() {
     assert!(scripts.contains("/editor-mode.js?v="));
     assert!(scripts.contains("/writemark.js?v="));
     assert!(scripts.contains("/home.js?v="));
-    assert!(scripts.find("/editor-mode.js?v=").unwrap() < scripts.find("/writemark.js?v=").unwrap());
+    assert!(
+        scripts.find("/editor-mode.js?v=").unwrap() < scripts.find("/writemark.js?v=").unwrap()
+    );
     assert!(scripts.find("/relays.js?v=").unwrap() < scripts.find("/home.js?v=").unwrap());
     assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
     let field = js.get("content_field").unwrap();
@@ -699,6 +704,20 @@ fn sample_post_context(nojs: bool) -> HashMap<String, String> {
 }
 
 #[test]
+fn pdf_fonts_load_with_the_pdf_module_and_not_the_editor() {
+    let (_, page_wasm) = parser_wasm();
+    let (_, pdf_wasm) = pdf_wasm();
+    let (_, license) = pdf_license();
+    assert!(!page_wasm.windows(6).any(|window| window == b"DejaVu"));
+    assert!(pdf_wasm.windows(6).any(|window| window == b"DejaVu"));
+    assert!(license.contains("Bitstream"));
+    assert!(license.contains("DejaVu"));
+    assert!(PDF_JS.contains("export function note_pdf(title, alias, html)"));
+    assert!(!PAGE_JS.contains("note_pdf"));
+    assert!(include_str!("../templates/home.html").contains("href=\"/pdf/LICENSE\""));
+}
+
+#[test]
 fn post_scripts_do_not_load_the_wasm_renderer() {
     let scripts = post_scripts("abc");
     assert!(scripts.contains("/post.js?v=abc"));
@@ -752,6 +771,10 @@ fn renderer_etag_revalidates_without_pinning() {
     assert!(if_none_match_matches(&format!("\"other\", {wasm}"), wasm));
     assert!(!if_none_match_matches("\"other\"", wasm));
     assert_eq!(entity_tag_for_path("/about"), None);
+    let pdf_wasm = entity_tag_for_path(PDF_WASM_PATH).unwrap();
+    let license = entity_tag_for_path(PDF_LICENSE_PATH).unwrap();
+    assert_ne!(pdf_wasm, wasm);
+    assert_ne!(license, pdf_wasm);
 }
 
 #[test]
@@ -884,6 +907,18 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
     assert!(js.contains("data-editor-mode=\"source\""));
     assert!(js.contains(">view</button>"));
     assert!(js.contains(">markdown</button>"));
+    let tools = js.find("class=\"footer-tools\"").unwrap();
+    let view = js[tools..].find("class=\"view-mode\"").unwrap();
+    let save = js[tools..].find("class=\"save-note\"").unwrap();
+    assert!(view < save);
+    assert!(js.contains("class=\"save-formats\" id=\"save-formats\" role=\"group\" aria-label=\"Save format\" hidden"));
+    assert!(include_str!("../templates/home.css").contains(
+        ".save-formats {\n                position: absolute;\n                left: 100%;\n                top: 0;"
+    ));
+    assert!(js.contains("data-save=\"markdown\""));
+    assert!(js.contains("data-save=\"pdf\""));
+    assert!(js.contains(">save</button>"));
+    assert!(js.contains("class=\"save-status\" role=\"status\" hidden"));
     assert!(js.contains("<script src=\"/theme.js?v="));
     assert!(include_str!("../templates/theme.js").contains("nonograph-theme"));
     assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
@@ -897,6 +932,7 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
 
     let post = engine.render("post", &sample_post_context(false)).unwrap();
     assert!(post.contains("<script src=\"/theme.js?v="));
+    assert!(!post.contains("class=\"save-note\""));
     let post_nojs = engine.render("post", &sample_post_context(true)).unwrap();
     assert!(post_nojs.contains("class=\"theme-toggle\""));
     assert!(!post_nojs.contains("<script"));
@@ -908,6 +944,41 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
     let locked = sealed_shell("", "0123456789abcdef0123", &event_id, &[], "", &config);
     assert!(locked.contains("class=\"theme-toggle\""));
     assert!(!locked.contains("<script"));
+}
+
+#[test]
+fn save_reads_the_note_in_the_tab_and_names_the_file_from_the_title() {
+    let home = include_str!("../templates/home.js");
+    let start = home.find("function noteFields()").unwrap();
+    let save = &home[start..];
+    assert!(save.contains("content: editor.value"));
+    assert!(save.contains("!fields.title.trim() && !fields.alias.trim() && !fields.content.trim()"));
+    assert!(save.contains("if (noteIsEmpty(noteFields())) return;"));
+    assert!(save.contains("saveFilename(fields.title, \".md\")"));
+    assert!(save.contains("fields.content,"));
+    assert!(save.contains("const page = editor.readyPage ? editor.readyPage() : null;"));
+    assert!(save.contains("showSaveError(\"PDF is not ready.\");"));
+    assert!(save.contains("showSaveError(\"Could not save the PDF.\");"));
+    assert!(save.contains("page.render_markdown("));
+    assert!(save.contains("./pdf/nonograph_pdf.js"));
+    assert!(save.contains("./pdf/nonograph_pdf_bg.wasm"));
+    assert!(save.contains("module.default({ module_or_path: wasm })"));
+    let rendered = save.find("page.render_markdown(").unwrap();
+    let loaded = save.find("await loadPdfModule()").unwrap();
+    let drawn = save.find("pdf.note_pdf(").unwrap();
+    let download = save.find("saveFilename(fields.title, \".pdf\")").unwrap();
+    assert!(rendered < loaded && loaded < drawn && drawn < download);
+    assert!(save.contains("fields.title.trim(), fields.alias.trim(), html"));
+    assert!(save.contains("cleaned || \"note\""));
+    assert!(save.contains("savePdf(fields);"));
+    assert_eq!(save.matches("await ").count(), 1);
+    assert!(!save.contains("page.note_pdf"));
+    assert!(!save.contains("fetch("));
+    assert!(!save.contains("XMLHttpRequest"));
+    assert!(!save.contains("sendBeacon"));
+    assert!(!save.contains("form.submit"));
+    let writemark = include_str!("../templates/writemark.js");
+    assert!(writemark.contains("readyPage() {\n    return pageModule;\n  }"));
 }
 
 #[test]
@@ -990,6 +1061,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(PAGE_JS.contains(
         "export function render_markdown(markdown, syntax_theme, max_url_length, external_link_security)"
     ));
+    assert!(!PAGE_JS.contains("note_pdf"));
     assert_eq!(body.matches("location.hash").count(), 1);
     assert!(!body.contains("fetch("));
     assert!(!body.contains("XMLHttpRequest"));

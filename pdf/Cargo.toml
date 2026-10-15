@@ -1,0 +1,9 @@
+[package]
+name = "pdf"
+version = "0.4.6"
+edition = "2021"
+
+[dependencies]
+subsetter = { version = "0.2", default-features = false }
+ttf-parser = "0.25"
+unicode-normalization = "0.1.24"

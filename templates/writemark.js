@@ -2104,6 +2104,9 @@ class WritemarkEditorElement extends HTMLElement {
       external: this.externalLinks,
     };
   }
+  readyPage() {
+    return pageModule;
+  }
   _ensurePageRenderer() {
     if (pageModule || this._pageLoad) return;
     this._pageLoad = loadPageModule().then(() => {

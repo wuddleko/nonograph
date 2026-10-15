@@ -8,6 +8,9 @@ use crate::template;
 
 pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
 pub const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
+pub const PDF_JS_PATH: &str = "/pdf/nonograph_pdf.js";
+pub const PDF_WASM_PATH: &str = "/pdf/nonograph_pdf_bg.wasm";
+pub const PDF_LICENSE_PATH: &str = "/pdf/LICENSE";
 pub const HOME_CSS_PATH: &str = "/home.css";
 pub const HOME_JS_PATH: &str = "/home.js";
 pub const NOSTR_JS_PATH: &str = "/nostr.js";
@@ -25,6 +28,9 @@ pub const RELAYS_JS_PATH: &str = "/relays.js";
 
 pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
 const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
+pub(crate) const PDF_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_pdf.js"));
+const PDF_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_pdf_bg.wasm"));
+const PDF_LICENSE: &str = include_str!("../../pdf/fonts/LICENSE");
 
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "public, no-cache";
@@ -34,7 +40,9 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         return "no-store";
     }
     match path {
-        PAGE_JS_PATH | PAGE_WASM_PATH => REVALIDATE,
+        PAGE_JS_PATH | PAGE_WASM_PATH | PDF_JS_PATH | PDF_WASM_PATH | PDF_LICENSE_PATH => {
+            REVALIDATE
+        }
         HOME_CSS_PATH
         | HOME_JS_PATH
         | NOSTR_JS_PATH
@@ -56,6 +64,9 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
 struct PageAssetTags {
     js: String,
     wasm: String,
+    pdf_js: String,
+    pdf_wasm: String,
+    pdf_license: String,
 }
 
 fn page_asset_tags() -> &'static PageAssetTags {
@@ -63,6 +74,9 @@ fn page_asset_tags() -> &'static PageAssetTags {
     TAGS.get_or_init(|| PageAssetTags {
         js: entity_tag(PAGE_JS.as_bytes()),
         wasm: entity_tag(PAGE_WASM),
+        pdf_js: entity_tag(PDF_JS.as_bytes()),
+        pdf_wasm: entity_tag(PDF_WASM),
+        pdf_license: entity_tag(PDF_LICENSE.as_bytes()),
     })
 }
 
@@ -85,6 +99,9 @@ pub fn entity_tag_for_path(path: &str) -> Option<&'static str> {
     match path {
         PAGE_JS_PATH => Some(tags.js.as_str()),
         PAGE_WASM_PATH => Some(tags.wasm.as_str()),
+        PDF_JS_PATH => Some(tags.pdf_js.as_str()),
+        PDF_WASM_PATH => Some(tags.pdf_wasm.as_str()),
+        PDF_LICENSE_PATH => Some(tags.pdf_license.as_str()),
         _ => None,
     }
 }
@@ -215,6 +232,21 @@ pub fn parser_js() -> (ContentType, &'static str) {
 #[get("/page/nonograph_page_bg.wasm")]
 pub fn parser_wasm() -> (ContentType, &'static [u8]) {
     (ContentType::new("application", "wasm"), PAGE_WASM)
+}
+
+#[get("/pdf/nonograph_pdf.js")]
+pub fn pdf_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, PDF_JS)
+}
+
+#[get("/pdf/nonograph_pdf_bg.wasm")]
+pub fn pdf_wasm() -> (ContentType, &'static [u8]) {
+    (ContentType::new("application", "wasm"), PDF_WASM)
+}
+
+#[get("/pdf/LICENSE")]
+pub fn pdf_license() -> (ContentType, &'static str) {
+    (ContentType::Plain, PDF_LICENSE)
 }
 
 #[get("/home.css")]

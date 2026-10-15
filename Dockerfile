@@ -14,6 +14,7 @@ COPY parser ./parser
 COPY page ./page
 COPY nip44 ./nip44
 COPY crawler ./crawler
+COPY pdf ./pdf
 COPY src ./src
 
 RUN cargo build --release

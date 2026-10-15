@@ -953,11 +953,39 @@
             .view-mode {
                 display: inline;
             }
+            .save-note {
+                display: inline-block;
+                position: relative;
+                margin-left: 40px;
+                margin-right: 12px;
+                vertical-align: baseline;
+            }
+            .save-formats {
+                position: absolute;
+                left: 100%;
+                top: 0;
+                white-space: nowrap;
+            }
+            .save-formats[hidden] {
+                display: none;
+            }
+            .save-status {
+                margin-left: 12px;
+                color: #9a3b3b;
+            }
+            .save-status[hidden] {
+                display: none;
+            }
             .footer-tools .view-mode button,
             .footer-tools .view-mode button:hover,
             .footer-tools .view-mode button:focus,
             .footer-tools .view-mode button:focus-visible,
-            .footer-tools .view-mode button:active {
+            .footer-tools .view-mode button:active,
+            .footer-tools .save-note button,
+            .footer-tools .save-note button:hover,
+            .footer-tools .save-note button:focus,
+            .footer-tools .save-note button:focus-visible,
+            .footer-tools .save-note button:active {
                 display: inline;
                 margin: 0;
                 padding: 0;
@@ -985,9 +1013,17 @@
                 text-decoration: none;
             }
             .footer-tools .view-mode button:hover,
-            .footer-tools .view-mode button:focus-visible {
+            .footer-tools .view-mode button:focus-visible,
+            .footer-tools .save-note button:hover,
+            .footer-tools .save-note button:focus-visible {
                 color: var(--ink);
                 text-decoration: underline;
+            }
+            .footer-tools .save-note button[aria-expanded="true"],
+            .footer-tools .save-note button[aria-expanded="true"]:hover,
+            .footer-tools .save-note button[aria-expanded="true"]:active {
+                color: var(--ink);
+                text-decoration: none;
             }
             .footer-tools .view-mode button[aria-pressed="true"]:focus-visible {
                 text-decoration: underline;
@@ -1105,6 +1141,10 @@
                 }
                 .footer-tools .theme-toggle {
                     margin: 0 12px 0 0;
+                }
+                .save-note {
+                    margin-left: 20px;
+                    margin-right: 8px;
                 }
             }
 

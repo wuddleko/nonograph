@@ -4,6 +4,7 @@ Cargo.lock
 
 # Cached page bundle. build.rs copies it into OUT_DIR and rebuilds it when sources change.
 /page/pkg/
+/pdf/pkg/
 
 # Runtime and log files
 nonograph.log
