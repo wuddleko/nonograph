@@ -50,7 +50,9 @@ fn seal_query_asks_for_the_event_id() {
 fn a_sealed_relay_event_is_returned_unchanged() {
     let locator = "0123456789abcdef0123";
     let payload_max = crate::seal::sealed_payload_max(0, 0, 4);
-    let note = sign_sealed_note("abcd", locator, 1_700_000_000);
+    let content = v2_payload(locator, 2);
+    assert!(content.len() <= payload_max);
+    let note = sign_sealed_note(&content, locator, 1_700_000_000);
     let spaced = note.event_json.replace("\":\"", "\" : \"");
     let message = format!(r#"["EVENT","sub",{spaced}]"#);
     let (created_at, event_json) =
@@ -58,7 +60,7 @@ fn a_sealed_relay_event_is_returned_unchanged() {
     assert_eq!(created_at, 1_700_000_000);
     assert_eq!(event_json, spaced);
     let parsed: serde_json::Value = serde_json::from_str(&event_json).unwrap();
-    assert_eq!(parsed["content"], "abcd");
+    assert_eq!(parsed["content"], content);
     assert_eq!(parsed["id"], note.id_hex());
     assert!(parsed["content"].as_str().unwrap().len() <= payload_max);
     let huge = sign_sealed_note(&"h".repeat(payload_max + 1), locator, 1_700_000_000);
@@ -117,7 +119,7 @@ fn a_sealed_relay_event_is_returned_unchanged() {
 fn a_sealed_fetch_sizes_the_event_not_the_frame() {
     let locator = "0123456789abcdef0123";
     let payload_max = crate::seal::sealed_payload_max(0, 0, 4);
-    let note = sign_sealed_note("abcd", locator, 1_700_000_000);
+    let note = sign_sealed_note(&v2_payload(locator, 2), locator, 1_700_000_000);
     let pretty = serde_json::to_string_pretty(
         &serde_json::from_str::<serde_json::Value>(&note.event_json).unwrap(),
     )
@@ -160,24 +162,27 @@ fn a_sealed_fetch_sizes_the_event_not_the_frame() {
 #[test]
 fn a_sealed_fetch_keeps_the_requested_event() {
     let locator = "0123456789abcdef0123";
-    let older = sign_sealed_note("old1", locator, 1_700_000_000);
-    let newer = sign_sealed_note("new1", locator, 1_800_000_000);
+    let older_body = v2_payload(locator, 2);
+    let newer_body = v2_payload(locator, 3);
+    assert_ne!(older_body, newer_body);
+    let older = sign_sealed_note(&older_body, locator, 1_700_000_000);
+    let newer = sign_sealed_note(&newer_body, locator, 1_800_000_000);
     let event_id = older.id_hex();
     let payload_max = crate::seal::sealed_payload_max(128, 32, 256);
     let old_message = format!(r#"["EVENT","sub",{}]"#, older.event_json);
     let new_message = format!(r#"["EVENT","sub",{}]"#, newer.event_json);
     let old_json = note_for_query(&old_message, &event_id, locator, payload_max).unwrap();
     assert!(note_for_query(&new_message, &event_id, locator, payload_max).is_none());
-    assert!(old_json.contains("old1"));
-    assert!(!old_json.contains("new1"));
+    assert!(old_json.contains(&older_body));
+    assert!(!old_json.contains(&newer_body));
     let (tx, rx) = mpsc::channel();
     tx.send(Some(old_json)).unwrap();
     drop(tx);
     let started = Instant::now();
     let kept = take_first_note(rx, Instant::now() + Duration::from_secs(2)).unwrap();
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(kept.contains("old1"));
-    assert!(!kept.contains("new1"));
+    assert!(kept.contains(&older_body));
+    assert!(!kept.contains(&newer_body));
 }
 
 #[test]
@@ -196,7 +201,7 @@ fn a_title_tag_is_dropped_on_the_sealed_fetch_path() {
             ],
             vec!["title".to_string(), "Visible".to_string()],
         ],
-        "abcd",
+        &v2_payload(locator, 2),
     );
     let message = format!(r#"["EVENT","sub",{}]"#, titled.event_json);
     assert!(titled.event_json.contains("Visible"));
@@ -332,12 +337,24 @@ fn a_sealed_fetch_caps_the_websocket_frame() {
     assert_eq!(max, 4 + SEALED_EVENT_OVERHEAD + SEALED_FRAME_OVERHEAD);
     assert_eq!(socket.get_config().max_message_size, Some(max));
     assert_eq!(socket.get_config().max_frame_size, Some(max));
+    limit_socket(&mut socket, PUBLISH_FRAME_MAX);
+    assert_eq!(
+        socket.get_config().max_message_size,
+        Some(PUBLISH_FRAME_MAX)
+    );
+    assert_eq!(socket.get_config().max_frame_size, Some(PUBLISH_FRAME_MAX));
+    limit_socket(&mut socket, LIST_FRAME_MAX);
+    assert_eq!(socket.get_config().max_message_size, Some(LIST_FRAME_MAX));
+    assert_eq!(socket.get_config().max_frame_size, Some(LIST_FRAME_MAX));
+    assert!(LIST_FRAME_MAX < 64 * 1024 * 1024);
+    assert!(PUBLISH_FRAME_MAX < LIST_FRAME_MAX);
+    assert_rejects_claimed_frame(PUBLISH_FRAME_MAX);
+    assert_rejects_claimed_frame(LIST_FRAME_MAX);
 }
 
-#[test]
-fn a_sealed_fetch_stops_on_an_oversize_frame() {
-    let max = sealed_frame_max(4);
+fn assert_rejects_claimed_frame(max: usize) {
     let claimed = 16u64 << 20;
+    assert!(claimed as usize > max);
     let mut frame = vec![0x81, 0x7F];
     frame.extend_from_slice(&claimed.to_be_bytes());
     let mut socket = tungstenite::WebSocket::from_raw_socket(
@@ -345,24 +362,23 @@ fn a_sealed_fetch_stops_on_an_oversize_frame() {
         tungstenite::protocol::Role::Client,
         None,
     );
-    limit_sealed_socket(&mut socket, 4);
-    match socket.read() {
-        Err(tungstenite::Error::Capacity(tungstenite::error::CapacityError::MessageTooLong {
-            size,
-            max_size,
-        })) => {
-            assert_eq!(size, claimed as usize);
-            assert_eq!(max_size, max);
+    limit_socket(&mut socket, max);
+    for _ in 0..2 {
+        match socket.read() {
+            Err(tungstenite::Error::Capacity(
+                tungstenite::error::CapacityError::MessageTooLong { size, max_size },
+            )) => {
+                assert_eq!(size, claimed as usize);
+                assert_eq!(max_size, max);
+            }
+            other => panic!("{other:?}"),
         }
-        other => panic!("{other:?}"),
     }
-    match socket.read() {
-        Err(tungstenite::Error::Capacity(tungstenite::error::CapacityError::MessageTooLong {
-            size,
-            ..
-        })) => assert_eq!(size, claimed as usize),
-        other => panic!("{other:?}"),
-    }
+}
+
+#[test]
+fn a_sealed_fetch_stops_on_an_oversize_frame() {
+    assert_rejects_claimed_frame(sealed_frame_max(4));
 }
 
 #[test]
@@ -1347,10 +1363,10 @@ fn a_misconfigured_socks_proxy_does_not_dial() {
 
 #[test]
 fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
-    let content = "ciphertext";
     let locator = "0123456789abcdef0123";
     let created_at = 1_700_000_000;
-    let note = sign_sealed_note(content, locator, created_at);
+    let content = v2_payload(locator, 2);
+    let note = sign_sealed_note(&content, locator, created_at);
     let value: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let (parsed, parsed_locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, note.id);
@@ -1360,6 +1376,9 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
     let over_value: serde_json::Value = serde_json::from_str(&over.event_json).unwrap();
     assert!(sealed_note_from_json(&over_value, 0, 0, 1).is_none());
     assert!(sealed_note_from_json(&value, 0, 0, 1).is_some());
+    let clear = sign_sealed_note("plaintext", locator, created_at);
+    let clear_value: serde_json::Value = serde_json::from_str(&clear.event_json).unwrap();
+    assert!(sealed_note_from_json(&clear_value, 128, 32, 256_000).is_none());
 
     let mut bad_sig = value.clone();
     let sig = bad_sig["sig"].as_str().unwrap().to_string();
@@ -1373,7 +1392,7 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
 
     let keypair = Keypair::new(SECP256K1, &mut thread_rng());
     let kind = nonograph_nip44::KIND;
-    let weak = signed_without_enough_zero_bits(&keypair, created_at, kind, locator, content);
+    let weak = signed_without_enough_zero_bits(&keypair, created_at, kind, locator, &content);
     let weak_value: serde_json::Value = serde_json::from_str(&weak.event_json).unwrap();
     assert!(sealed_note_from_json(&weak_value, 128, 32, 256_000).is_none());
 
@@ -1390,7 +1409,7 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
             ],
             vec!["title".to_string(), "Visible".to_string()],
         ],
-        content,
+        &content,
     );
     let titled_value: serde_json::Value = serde_json::from_str(&titled.event_json).unwrap();
     assert!(sealed_note_from_json(&titled_value, 128, 32, 256_000).is_none());
@@ -1400,7 +1419,7 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
         created_at,
         kind,
         &crate::seal::sealed_tags("0123456789ABCDEF0123", "1"),
-        content,
+        &content,
     );
     let uppercase_value: serde_json::Value = serde_json::from_str(&uppercase.event_json).unwrap();
     assert!(sealed_note_from_json(&uppercase_value, 128, 32, 256_000).is_none());

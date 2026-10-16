@@ -1932,7 +1932,7 @@ fn assert_nojs_error(form: &NewPost, config: &crate::config::Config, error: &str
 
 #[test]
 fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
-    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -2001,7 +2001,7 @@ fn nostr_publish_refuses_a_clear_long_form_note() {
 
 #[test]
 fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
-    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -2254,7 +2254,7 @@ fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
     assert!(!pool.rows.iter().any(|row| row.url == "wss://hand.example"));
     assert_eq!(super::relays::read_relay_cookie(Some(&cookie)), list);
 
-    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event = serde_json::from_str(&note.event_json).unwrap();
     let body = NostrPublishBody {
         event,
@@ -2297,7 +2297,7 @@ fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
 
 #[test]
 fn nostr_publish_sends_the_saved_relays_and_leaves_out_configured_names() {
-    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -4324,7 +4324,7 @@ async function loadNostr() {
     );
     run_javascript("nonograph-empty-saved", &program);
 
-    let note = crate::nostr::sign_sealed_note("ciphertext", "0123456789abcdef0123", 1_700_000_000);
+    let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;

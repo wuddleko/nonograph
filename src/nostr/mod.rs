@@ -40,6 +40,8 @@ use nip11::{decode_http_message, NIP11_BODY_MAX};
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
 const SEALED_EVENT_OVERHEAD: usize = 8192;
 const SEALED_FRAME_OVERHEAD: usize = 1024;
+const PUBLISH_FRAME_MAX: usize = 64 * 1024;
+const LIST_FRAME_MAX: usize = 1024 * 1024;
 
 pub struct SignedNote {
     pub id: [u8; 32],
@@ -72,6 +74,17 @@ pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> Signed
         &mined.tags,
         content,
     )
+}
+
+#[cfg(test)]
+fn v2_payload(locator: &str, mark: u8) -> String {
+    nonograph_nip44::seal("Title", "", "body", locator, &[1u8; 32], &[mark; 32])
+        .expect("v2 payload")
+}
+
+#[cfg(test)]
+pub fn sign_v2_note(locator: &str, created_at: i64) -> SignedNote {
+    sign_sealed_note(&v2_payload(locator, 2), locator, created_at)
 }
 
 #[derive(Clone, Copy)]
@@ -127,7 +140,7 @@ fn sealed_note_capped(
     {
         return None;
     }
-    if parsed.content.len() > payload_max {
+    if parsed.content.len() > payload_max || !nonograph_nip44::is_v2_payload(&parsed.content) {
         return None;
     }
     let locator = stamp_locator(&parsed.tags)?;
@@ -280,6 +293,7 @@ fn send_event(
     }
     let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())
         .map_err(SendFailure::Unanswered)?;
+    limit_socket(&mut socket, PUBLISH_FRAME_MAX);
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(
         socket.get_ref().get_ref(),
@@ -523,7 +537,7 @@ pub(crate) fn read_relay_list(relay: &str, deadline: Instant, socks: RelaySocks)
         Ok(socket) => socket,
         Err(_) => return ListRead::unanswered().finish(),
     };
-    // Kind 10002 lists are larger than a sealed note, so leave the default frame cap.
+    limit_socket(&mut socket, LIST_FRAME_MAX);
     let mut read = ListRead::answered();
     let sub_id = random_hex(8);
     let payload = list_req(&sub_id);
@@ -676,12 +690,15 @@ fn sealed_frame_max(content_max: usize) -> usize {
     sealed_event_max(content_max).saturating_add(SEALED_FRAME_OVERHEAD)
 }
 
-fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, content_max: usize) {
-    let max = sealed_frame_max(content_max);
+fn limit_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, max: usize) {
     socket.set_config(|config| {
         config.max_message_size = Some(max);
         config.max_frame_size = Some(max);
     });
+}
+
+fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, content_max: usize) {
+    limit_socket(socket, sealed_frame_max(content_max));
 }
 
 pub(crate) fn sealed_locator(locator: &str) -> bool {
