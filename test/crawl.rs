@@ -36,6 +36,7 @@ fn row(url: &str, next_try: i64, visit: Option<Visit>) -> Row {
         next_try,
         failures: 0,
         publish_refused: false,
+        seen_from: vec!["wss://a.example".to_owned(), "wss://b.example".to_owned()],
         visit,
     }
 }
@@ -445,6 +446,32 @@ fn doors_are_pushed_before_rows_that_are_already_due() {
         .find(|row| row.url == "wss://later.example")
         .unwrap();
     assert_eq!(kept, &cooling);
+}
+
+#[test]
+fn a_full_pool_of_unnamed_relays_still_reads_door_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    let rows: Vec<Row> = (0..CANDIDATE_CAP)
+        .map(|index| {
+            let mut row = visited(
+                &format!("wss://relay{index}.example"),
+                true,
+                open.clone(),
+                true,
+            );
+            row.seen_from.clear();
+            row.next_try = NOW + 24 * 60 * 60;
+            row
+        })
+        .collect();
+    save(&path, &Pool { rows }).unwrap();
+
+    assert!(pool_is_filling(&path));
+    let mut queue = batch_queue(&path, NOW).unwrap();
+    assert!(queue.needs_relays());
+    assert_eq!(queue.pop().as_deref(), Some("wss://relay.primal.net"));
 }
 
 #[test]
@@ -999,6 +1026,41 @@ fn candidates_return_the_open_relay_and_leave_out_an_unvisited_door() {
 }
 
 #[test]
+fn candidates_wait_for_a_second_source_and_reread_when_the_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    let mut once = visited("wss://once.example", true, open.clone(), true);
+    once.seen_from = vec!["wss://door.example".to_owned()];
+    save(
+        &path,
+        &Pool {
+            rows: vec![
+                once,
+                visited("wss://twice.example", true, open.clone(), true),
+            ],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        candidates(&path, &[]),
+        vec!["wss://twice.example".to_string()]
+    );
+
+    save(
+        &path,
+        &Pool {
+            rows: vec![visited("wss://later.example", true, open, true)],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        candidates(&path, &[]),
+        vec!["wss://later.example".to_string()]
+    );
+}
+
+#[test]
 fn candidates_stop_at_forty_eight() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
@@ -1067,6 +1129,33 @@ fn a_marked_host_deals_the_open_path() {
 }
 
 #[test]
+fn a_row_without_two_sources_is_not_dealt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    let mut legacy = visited("wss://legacy.example", true, open.clone(), true);
+    legacy.seen_from.clear();
+    let mut advertised = visited("wss://once.example", true, open.clone(), true);
+    advertised.seen_from = vec!["aa".repeat(32)];
+    let named = visited("wss://twice.example", true, open, true);
+    save(
+        &path,
+        &Pool {
+            rows: vec![advertised, legacy, named],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        candidates(&path, &["wss://Config.Example/".to_string()]),
+        vec![
+            "wss://config.example".to_string(),
+            "wss://twice.example".to_string()
+        ]
+    );
+}
+
+#[test]
 fn a_bad_pool_file_shows_the_configured_relays() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
@@ -1083,6 +1172,27 @@ fn a_bad_pool_file_shows_the_configured_relays() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), b"not a pool");
     assert!(candidates(&dir.path().join("missing.json"), &configured).is_empty());
+}
+
+#[test]
+fn next_pool_relays_skip_a_single_advertisement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    let mut once = visited("wss://once.example", true, open.clone(), true);
+    once.seen_from = vec!["wss://door.example".to_owned()];
+    save(
+        &path,
+        &Pool {
+            rows: vec![once, visited("wss://twice.example", true, open, true)],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        next_pool_relays(&path, &[]),
+        vec!["wss://twice.example".to_string()]
+    );
 }
 
 #[test]

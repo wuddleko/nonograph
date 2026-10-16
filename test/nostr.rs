@@ -6,6 +6,69 @@ use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 
 #[test]
+fn relay_log_lines_escape_control_characters() {
+    assert_eq!(log_text("wss://ok.example"), "wss://ok.example");
+    assert_eq!(log_text("wss://a.example\r\nOK"), "wss://a.example\\r\\nOK");
+}
+
+fn warm_identity() -> native_tls::Identity {
+    use std::sync::OnceLock;
+    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+    let bytes = BYTES.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("nonograph-warm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        let p12 = dir.join("warm.p12");
+        let subject = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                key.to_str().unwrap(),
+                "-out",
+                cert.to_str().unwrap(),
+                "-days",
+                "1",
+                "-nodes",
+                "-subj",
+                "/CN=warm.example",
+            ])
+            .status()
+            .expect("openssl req");
+        assert!(subject.success());
+        let exported = std::process::Command::new("openssl")
+            .args([
+                "pkcs12",
+                "-export",
+                "-out",
+                p12.to_str().unwrap(),
+                "-inkey",
+                key.to_str().unwrap(),
+                "-in",
+                cert.to_str().unwrap(),
+                "-passout",
+                "pass:test",
+                "-name",
+                "warm.example",
+                "-certpbe",
+                "PBE-SHA1-3DES",
+                "-keypbe",
+                "PBE-SHA1-3DES",
+                "-macalg",
+                "SHA1",
+            ])
+            .status()
+            .expect("openssl pkcs12");
+        assert!(exported.success());
+        std::fs::read(&p12).unwrap()
+    });
+    native_tls::Identity::from_pkcs12(bytes, "test").unwrap()
+}
+
+#[test]
 fn test_npub_bech32_matches_nip19() {
     let bytes =
         decode_fixed_hex::<32>("3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d")
@@ -332,6 +395,12 @@ fn a_sealed_fetch_caps_the_websocket_frame() {
     assert_eq!(max, 4 + SEALED_EVENT_OVERHEAD + SEALED_FRAME_OVERHEAD);
     assert_eq!(socket.get_config().max_message_size, Some(max));
     assert_eq!(socket.get_config().max_frame_size, Some(max));
+    cap_relay_socket(&mut socket);
+    assert_eq!(
+        socket.get_config().max_message_size,
+        Some(RELAY_MESSAGE_CAP)
+    );
+    assert_eq!(socket.get_config().max_frame_size, Some(RELAY_MESSAGE_CAP));
 }
 
 #[test]
@@ -566,6 +635,7 @@ fn a_second_miss_is_not_retried_after_thirty_seconds() {
     let log = Arc::clone(&opened);
     let open: OpenRelay = Arc::new(move |relay: &str, _: Duration| {
         log.lock().expect("opens").push(relay.to_string());
+        true
     });
     let relay = "wss://dead.example";
     pass.mark_requested(
@@ -602,6 +672,81 @@ fn a_second_miss_is_not_retried_after_thirty_seconds() {
         vec![relay.to_string()]
     );
     assert_eq!(pass.misses(relay), Some(3));
+}
+
+#[test]
+fn a_missing_hold_is_retried_and_a_live_hold_is_not() {
+    let pass = Arc::new(RelayPass::new());
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&opened);
+    let open: OpenRelay = Arc::new(move |relay: &str, _: Duration| {
+        log.lock().expect("opens").push(relay.to_string());
+        true
+    });
+    let failed = "wss://failed.example";
+    pass.mark_requested(
+        failed,
+        Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        1,
+    );
+    pass.submit(
+        vec![failed.to_string()],
+        Vec::new(),
+        Duration::from_secs(30),
+        Arc::clone(&open),
+        Arc::new(|| Some(HashMap::new())),
+    );
+    wait_until(|| pass.settled());
+    assert_eq!(
+        opened.lock().expect("opens").clone(),
+        vec![failed.to_string()]
+    );
+    assert_eq!(pass.misses(failed), Some(2));
+
+    let warm = "wss://warm.example";
+    pass.mark_requested(
+        warm,
+        Instant::now().checked_sub(Duration::from_secs(40)).unwrap(),
+        1,
+    );
+    pass.note_result(warm, true);
+    opened.lock().expect("opens").clear();
+    pass.submit(
+        vec![warm.to_string()],
+        Vec::new(),
+        Duration::from_secs(30),
+        Arc::clone(&open),
+        Arc::new(|| Some(HashMap::new())),
+    );
+    wait_until(|| pass.settled());
+    assert_eq!(
+        opened.lock().expect("opens").clone(),
+        vec![warm.to_string()]
+    );
+    assert_eq!(pass.misses(warm), Some(1));
+
+    let held = "wss://held.example";
+    pass.mark_requested(
+        held,
+        Instant::now().checked_sub(Duration::from_secs(40)).unwrap(),
+        1,
+    );
+    pass.note_result(held, true);
+    opened.lock().expect("opens").clear();
+    let circuits: ReadCircuits =
+        Arc::new(|| Some(HashMap::from([(held.to_string(), String::new())])));
+    pass.submit(
+        vec![held.to_string()],
+        Vec::new(),
+        Duration::from_secs(30),
+        open,
+        circuits,
+    );
+    wait_until(|| pass.settled());
+    assert!(opened.lock().expect("opens").is_empty());
+    assert!(super::transport::warm_relay_map()
+        .values()
+        .all(|path| path.is_empty()));
 }
 
 #[test]
@@ -679,6 +824,7 @@ fn assignment_pass_opens_relays_the_decision_still_needs() {
     let open: OpenRelay = Arc::new(move |relay: &str, timeout: Duration| {
         assert_eq!(timeout, Duration::from_secs(30));
         log.lock().expect("opens").push(relay.to_string());
+        true
     });
     let paths = HashMap::from([
         ("wss://damus.io".to_string(), "g → m → e".to_string()),
@@ -759,6 +905,7 @@ fn a_running_pass_keeps_only_the_newest_relay_list() {
         if calls.fetch_add(1, Ordering::AcqRel) == 0 {
             let _ = release_rx.lock().expect("release").recv();
         }
+        true
     });
     let circuits: ReadCircuits = Arc::new(|| Some(HashMap::new()));
     pass.submit(
@@ -826,7 +973,7 @@ fn held_handshakes_expire_and_keep_only_the_newest() {
 fn assignment_pass_forgets_relays_left_off_the_list() {
     let pass = Arc::new(RelayPass::new());
     pass.mark_requested("wss://gone.example", Instant::now(), 1);
-    let open: OpenRelay = Arc::new(|_: &str, _: Duration| {});
+    let open: OpenRelay = Arc::new(|_: &str, _: Duration| true);
     pass.submit(
         vec!["wss://kept.example".to_string()],
         Vec::new(),
@@ -852,6 +999,7 @@ fn assignment_pass_stops_dialing_once_the_budget_is_spent() {
     let count = Arc::clone(&opened);
     let open: OpenRelay = Arc::new(move |_: &str, _: Duration| {
         *count.lock().expect("opens") += 1;
+        true
     });
     pass.submit(
         vec!["wss://budget.example".to_string()],
@@ -910,7 +1058,7 @@ fn assign_relay_does_not_dial_a_private_relay() {
 
 #[test]
 fn the_production_connector_rejects_the_test_certificate() {
-    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let identity = warm_identity();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -939,7 +1087,7 @@ fn the_production_connector_rejects_the_test_certificate() {
 #[test]
 fn assign_relay_opens_tls_through_socks_for_the_relay_url() {
     use_invalid_test_certs();
-    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let identity = warm_identity();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy = listener.local_addr().unwrap();
@@ -1066,20 +1214,45 @@ fn saved_event_and_eose_frames_fill_the_relay_list() {
     ));
     assert!(read.urls.is_empty());
     assert!(!read.push("list", include_str!("list/10002-event.json")));
+    assert!(read.urls.is_empty());
+
+    let first = Keypair::new(SECP256K1, &mut thread_rng());
+    let second = Keypair::new(SECP256K1, &mut thread_rng());
+    let relays = [
+        "wss://relay.damus.io",
+        "wss://nos.lol",
+        "wss://relay.primal.net",
+    ];
+    let (frame, author) = signed_list_frame(&first, &relays);
+    assert!(!read.push("list", &frame));
     assert_eq!(
         read.urls,
-        vec![
-            "wss://relay.damus.io".to_string(),
-            "wss://nos.lol".to_string(),
-            "wss://relay.primal.net".to_string(),
-        ]
+        relays
+            .iter()
+            .map(|url| format!("{author}\n{url}"))
+            .collect::<Vec<_>>()
     );
-    assert!(!read.push("list", include_str!("list/10002-event.json")));
+    assert!(!read.push("list", &frame));
     assert_eq!(read.urls.len(), 3);
+    let (again, _) = signed_list_frame(&second, &["wss://relay.damus.io"]);
+    assert!(!read.push("list", &again));
+    assert_eq!(read.urls.len(), 4);
+    assert!(read.urls[3].ends_with("\nwss://relay.damus.io"));
+    assert!(!read.urls[3].starts_with(&author));
     assert!(read.push("list", include_str!("list/10002-eose.json")));
     let list = read.finish();
     assert!(list.socket_answered);
-    assert_eq!(list.urls.len(), 3);
+    assert_eq!(list.urls.len(), 4);
+}
+
+fn signed_list_frame(keypair: &Keypair, relays: &[&str]) -> (String, String) {
+    let tags: Vec<Vec<String>> = relays
+        .iter()
+        .map(|url| vec!["r".to_string(), (*url).to_string()])
+        .collect();
+    let note = signed_event(keypair, 1_700_000_000, 10002, &tags, "");
+    let author = hex_encode(&note.pubkey);
+    (format!(r#"["EVENT","list",{}]"#, note.event_json), author)
 }
 
 #[test]
@@ -1155,7 +1328,7 @@ fn nip11_response(status: &str, body: &str) -> String {
 
 fn fetch_saved_nip11(relay: &str, response: &str) -> (Option<String>, String) {
     use_invalid_test_certs();
-    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let identity = warm_identity();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy = listener.local_addr().unwrap();
@@ -1253,7 +1426,7 @@ fn read_socks_connect(stream: &mut std::net::TcpStream) -> Option<(String, Strin
 
 fn park_held_relay(relay: &str) {
     use_invalid_test_certs();
-    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let identity = warm_identity();
     let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy = listener.local_addr().unwrap();
@@ -1350,9 +1523,14 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
     let content = "ciphertext";
     let locator = "0123456789abcdef0123";
     let created_at = 1_700_000_000;
-    let note = sign_sealed_note(content, locator, created_at);
+    let payload =
+        nonograph_nip44::seal("Title", "Ada", "hello", locator, &[7u8; 32], &[9u8; 32]).unwrap();
+    let note = sign_sealed_note(&payload, locator, created_at);
     let value: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();
     let (parsed, parsed_locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
+    let plain = sign_sealed_note(content, locator, created_at);
+    let plain_value: serde_json::Value = serde_json::from_str(&plain.event_json).unwrap();
+    assert!(sealed_note_from_json(&plain_value, 128, 32, 256_000).is_none());
     assert_eq!(parsed.id, note.id);
     assert_eq!(parsed_locator, locator);
     let payload_max = crate::seal::sealed_payload_max(0, 0, 1);

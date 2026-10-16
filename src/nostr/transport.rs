@@ -16,7 +16,11 @@ pub(super) type HeldTls = native_tls::TlsStream<TcpStream>;
 // A parked handshake is one socket. Relays close an idle one after about a minute,
 // and a visitor can name a new set of relays faster than that.
 pub(super) const HELD_RELAY_LIMIT: usize = 16;
+pub(super) const CONNECT_LIMIT: Duration = Duration::from_secs(10);
 const HELD_RELAY_TTL: Duration = Duration::from_secs(45);
+// Refresh a parked handshake before the relay drops it, without treating that
+// refresh as a failed dial.
+pub(super) const HELD_RELAY_WARM: Duration = Duration::from_secs(40);
 
 struct HeldRelay {
     at: Instant,
@@ -56,6 +60,30 @@ pub(super) fn store_held(relay: &str, tls: HeldTls) {
         dropped
     };
     drop(dropped);
+}
+
+pub(super) fn held_keys_younger_than(max_age: Duration) -> Vec<String> {
+    reap_held_relays();
+    let held = held_relays().lock().expect("held relay");
+    let now = Instant::now();
+    let mut keys: Vec<String> = held
+        .iter()
+        .filter(|(_, entry)| now.saturating_duration_since(entry.at) < max_age)
+        .map(|(key, _)| key.clone())
+        .collect();
+    keys.sort();
+    keys
+}
+
+pub(super) fn warm_relay_map() -> HashMap<String, String> {
+    held_keys_younger_than(HELD_RELAY_WARM)
+        .into_iter()
+        .map(|key| (key, String::new()))
+        .collect()
+}
+
+pub(super) fn warm_relay_keys() -> Vec<String> {
+    held_keys_younger_than(HELD_RELAY_TTL)
 }
 
 pub(super) fn reap_held_relays() {
@@ -490,6 +518,15 @@ pub(super) fn resolve_host(
     }
 }
 
+pub(super) fn connect_deadline(deadline: Instant) -> Instant {
+    let limit = Instant::now() + CONNECT_LIMIT;
+    if deadline < limit {
+        deadline
+    } else {
+        limit
+    }
+}
+
 pub(super) fn with_relay_tls<T>(
     relay: &str,
     deadline: Instant,
@@ -498,6 +535,7 @@ pub(super) fn with_relay_tls<T>(
     socks: RelaySocks,
     mut use_tls: impl FnMut(native_tls::TlsStream<TcpStream>) -> Result<T, String>,
 ) -> Result<T, String> {
+    let deadline = connect_deadline(deadline);
     let proxy = match socks {
         RelaySocks::Direct => None,
         RelaySocks::Proxy(addr) => Some(addr),
@@ -566,8 +604,9 @@ pub(super) fn connect_relay(
     let request = relay
         .into_client_request()
         .map_err(|error| error.to_string())?;
-    with_relay_tls(relay, deadline, cancel, public_only, socks, |tls| {
-        websocket_handshake(request.clone(), tls, deadline, cancel)
+    let connect_by = connect_deadline(deadline);
+    with_relay_tls(relay, connect_by, cancel, public_only, socks, |tls| {
+        websocket_handshake(request.clone(), tls, connect_by, cancel)
     })
 }
 
@@ -706,13 +745,31 @@ pub(super) fn open_relay_socket(
     public_only: bool,
     socks: RelaySocks,
 ) -> Result<RelaySocket, String> {
+    let connect_by = connect_deadline(deadline);
     if let Some(tls) = take_held(relay) {
         // A relay can close this parked handshake while Tor still lists its circuit.
         if let Ok(request) = relay.into_client_request() {
-            if let Ok(socket) = websocket_handshake(request, tls, deadline, None) {
+            if let Ok(socket) = websocket_handshake(request, tls, connect_by, None) {
                 return Ok(socket);
             }
         }
     }
     connect_relay(relay, deadline, None, public_only, socks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{connect_deadline, CONNECT_LIMIT};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_connect_deadline_is_at_most_ten_seconds() {
+        let far = Instant::now() + Duration::from_secs(30);
+        let capped = connect_deadline(far);
+        let left = capped.saturating_duration_since(Instant::now());
+        assert!(left <= CONNECT_LIMIT);
+        assert!(left + Duration::from_secs(1) > CONNECT_LIMIT);
+        let soon = Instant::now() + Duration::from_millis(40);
+        assert!(connect_deadline(soon) <= soon);
+    }
 }

@@ -37,6 +37,8 @@ pub struct Row {
     pub failures: u32,
     #[serde(default)]
     pub publish_refused: bool,
+    #[serde(default)]
+    pub seen_from: Vec<String>,
     pub visit: Option<Visit>,
 }
 

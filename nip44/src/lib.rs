@@ -83,6 +83,10 @@ pub fn encrypt(
     Ok(base64::engine::general_purpose::STANDARD.encode(payload))
 }
 
+pub fn is_v2_payload(payload: &str) -> bool {
+    decode_payload(payload).is_ok()
+}
+
 pub fn decrypt(payload: &str, conversation_key: &[u8; 32]) -> Result<String, Error> {
     let (nonce, ciphertext, mac) = decode_payload(payload)?;
     let (chacha_key, chacha_nonce, hmac_key) = message_keys(conversation_key, &nonce);

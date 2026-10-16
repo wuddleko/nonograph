@@ -162,7 +162,7 @@ function paintSavedRelayLists(doc, storage) {
                 'button[type="submit"][form="publishForm"]',
             );
             const errorEl = form.querySelector(".form-error");
-            const circuitByRelay = new Map();
+            const readyRelays = new Set();
             let circuitsTracked = false;
 
             function everyRelayHasPath() {
@@ -170,13 +170,10 @@ function paintSavedRelayLists(doc, storage) {
                     return true;
                 }
                 const relays = relaysForPublicPublish(savedRelayUrls(localStorage));
-                return (
-                    relays.length > 0 &&
-                    relays.every((relay) => {
-                        const path = circuitByRelay.get(relayKey(relay));
-                        return typeof path === "string" && path.length > 0;
-                    })
-                );
+                if (relays.length === 0) {
+                    return true;
+                }
+                return relays.every((relay) => readyRelays.has(relayKey(relay)));
             }
 
             function syncNostrButtons() {
@@ -264,51 +261,18 @@ function paintSavedRelayLists(doc, storage) {
                     return;
                 }
                 circuitsTracked = payload.tracking === true;
-                const live = new Set();
-                if (circuitsTracked) {
-                    for (const [relay, path] of Object.entries(payload.relays || {})) {
-                        if (typeof path !== "string" || !path) {
-                            continue;
+                readyRelays.clear();
+                if (circuitsTracked && Array.isArray(payload.ready)) {
+                    for (const relay of payload.ready) {
+                        if (typeof relay === "string" && relay) {
+                            readyRelays.add(relayKey(relay));
                         }
-                        const key = relayKey(relay);
-                        live.add(key);
-                        circuitByRelay.set(key, path);
-                    }
-                }
-                for (const key of [...circuitByRelay.keys()]) {
-                    if (!live.has(key)) {
-                        circuitByRelay.delete(key);
                     }
                 }
                 paintRelayCircuits();
             }
-            function relayGuardIcon() {
-                const svg = "http://www.w3.org/2000/svg";
-                const icon = document.createElementNS(svg, "svg");
-                icon.setAttribute("class", "relay-guard-icon");
-                icon.setAttribute("viewBox", "0 0 16 16");
-                icon.setAttribute("width", "12");
-                icon.setAttribute("height", "12");
-                icon.setAttribute("aria-hidden", "true");
-                icon.setAttribute("focusable", "false");
-                const shape = document.createElementNS(svg, "path");
-                shape.setAttribute("fill", "none");
-                shape.setAttribute("stroke", "currentColor");
-                shape.setAttribute("stroke-width", "1.6");
-                shape.setAttribute("stroke-linejoin", "round");
-                shape.setAttribute(
-                    "d",
-                    "M8 1.75 13 3.6v4.1c0 3.1-2.1 5.2-5 6.55C5.1 12.9 3 10.8 3 7.7V3.6Z",
-                );
-                icon.append(shape);
-                return icon;
-            }
-
             function paintRelayCircuits() {
                 document.querySelectorAll(".relay-list li[data-relay]").forEach((row) => {
-                    const path = circuitsTracked
-                        ? circuitByRelay.get(relayKey(row.dataset.relay || ""))
-                        : "";
                     let line = row.querySelector(".relay-circuit");
                     if (!line) {
                         line = document.createElement("div");
@@ -316,41 +280,14 @@ function paintSavedRelayLists(doc, storage) {
                         row.append(line);
                     }
                     line.replaceChildren();
+                    line.classList.remove("relay-circuit-wait");
                     if (!circuitsTracked) {
-                        line.classList.remove("relay-circuit-wait");
                         return;
                     }
-                    if (path) {
-                        line.classList.remove("relay-circuit-wait");
-                        const guard = document.createElement("span");
-                        guard.className = "relay-guard";
-                        guard.title = "Entry guard";
-                        const label = document.createElement("span");
-                        label.className = "relay-guard-label";
-                        label.textContent = "guard";
-                        guard.append(relayGuardIcon(), label);
-                        line.append(guard);
-                        for (const name of path.split(" → ")) {
-                            if (!name) {
-                                continue;
-                            }
-                            const arrow = document.createElement("span");
-                            arrow.className = "relay-circuit-arrow";
-                            arrow.setAttribute("aria-hidden", "true");
-                            arrow.textContent = "→";
-                            const hop = document.createElement("span");
-                            hop.className = "relay-circuit-hop";
-                            hop.textContent = name;
-                            line.append(arrow, hop);
-                        }
-                        return;
-                    }
-                    line.classList.add("relay-circuit-wait");
-                    const spinner = document.createElement("span");
-                    spinner.className = "relay-spinner";
-                    spinner.setAttribute("role", "status");
-                    spinner.setAttribute("aria-label", "Opening a circuit");
-                    line.append(spinner);
+                    const label = document.createElement("span");
+                    label.className = "relay-guard-label";
+                    label.textContent = "via Tor";
+                    line.append(label);
                 });
                 syncNostrButtons();
             }
@@ -360,12 +297,13 @@ function paintSavedRelayLists(doc, storage) {
             setInterval(refreshRelayCircuits, 2000);
 
             let publishing = false;
+            let handlerBound = false;
 
             function syncPublishButtons() {
                 const overLimit = editor.value.length > contentLimit;
                 const blocked = !hasAnyPublishRelay();
                 publishButtons.forEach((button) => {
-                    button.disabled = publishing || overLimit || blocked;
+                    button.disabled = !handlerBound || publishing || overLimit || blocked;
                 });
             }
             syncNostrButtons();
@@ -513,6 +451,8 @@ function paintSavedRelayLists(doc, storage) {
                 e.preventDefault();
                 publishOnNostr();
             });
+            handlerBound = true;
+            syncPublishButtons();
 
             updateCharCount();
 

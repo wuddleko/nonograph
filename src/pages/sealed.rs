@@ -230,6 +230,8 @@ pub fn nojs_sealed_view(
     NojsSealedHeaders(Ok(content::RawHtml(run_locally_page())))
 }
 
+const MAX_CALLER_HINTS: usize = 2;
+
 pub(crate) fn fetch_sealed_by_id(
     hints: &[String],
     event_id: &str,
@@ -240,7 +242,10 @@ pub(crate) fn fetch_sealed_by_id(
     timeout: Duration,
     pool: &Path,
 ) -> Option<String> {
-    let relays = public_relays(hints);
+    let relays: Vec<String> = public_relays(hints)
+        .into_iter()
+        .take(MAX_CALLER_HINTS)
+        .collect();
     if let Some(note) = crate::nostr::fetch_sealed(
         &relays,
         event_id,
@@ -252,7 +257,7 @@ pub(crate) fn fetch_sealed_by_id(
     ) {
         return Some(note);
     }
-    let rows = crate::crawl::next_pool_relays(pool, hints);
+    let rows = crate::crawl::next_pool_relays(pool, &relays);
     crate::nostr::fetch_sealed(
         &rows,
         event_id,

@@ -8,6 +8,7 @@ fn visited(url: &str, next_try: i64) -> Row {
         next_try,
         failures: 0,
         publish_refused: false,
+        seen_from: Vec::new(),
         visit: Some(Visit {
             at: 1_700_000_000,
             socket_answered: true,
@@ -24,6 +25,7 @@ fn unvisited(url: &str, next_try: i64) -> Row {
         next_try,
         failures: 0,
         publish_refused: false,
+        seen_from: Vec::new(),
         visit: None,
     }
 }

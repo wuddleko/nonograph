@@ -1,36 +1,19 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+#[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 struct CircuitLatch {
     pins: HashMap<String, String>,
 }
 
+#[cfg(test)]
 static LATCH: Mutex<Option<CircuitLatch>> = Mutex::new(None);
 
-pub(crate) fn view(proxied: bool) -> (bool, HashMap<String, String>) {
-    if !proxied {
-        return circuit_status(false, None);
-    }
-    circuit_status(true, reported())
-}
-
-fn circuit_status(
-    proxied: bool,
-    live: Option<HashMap<String, String>>,
-) -> (bool, HashMap<String, String>) {
-    match live {
-        Some(relays) if proxied => (true, relays),
-        _ => (false, HashMap::new()),
-    }
-}
-
-pub(crate) fn reported() -> Option<HashMap<String, String>> {
-    Some(remember(&control_reply()?))
-}
-
+#[cfg(test)]
 fn remember(reply: &str) -> HashMap<String, String> {
     let mut latch = LATCH.lock().expect("tor circuit latch");
     let pins = latch
@@ -42,12 +25,25 @@ fn remember(reply: &str) -> HashMap<String, String> {
     paths
 }
 
+#[cfg(test)]
+fn circuit_status(
+    proxied: bool,
+    live: Option<HashMap<String, String>>,
+) -> (bool, HashMap<String, String>) {
+    match live {
+        Some(relays) if proxied => (true, relays),
+        _ => (false, HashMap::new()),
+    }
+}
+
+#[cfg(test)]
 struct BuiltCircuit {
     id: String,
     relay: String,
     path: String,
 }
 
+#[cfg(test)]
 fn built_circuits(reply: &str) -> Vec<BuiltCircuit> {
     let mut circuits = Vec::new();
     for line in info_lines(reply, "circuit-status") {
@@ -79,10 +75,12 @@ fn built_circuits(reply: &str) -> Vec<BuiltCircuit> {
     circuits
 }
 
+#[cfg(test)]
 pub(crate) fn paths_by_relay(reply: &str) -> HashMap<String, String> {
     stabilize(built_circuits(reply), &HashMap::new()).0
 }
 
+#[cfg(test)]
 fn stabilize(
     circuits: Vec<BuiltCircuit>,
     pins: &HashMap<String, String>,
@@ -107,6 +105,7 @@ fn stabilize(
     (paths, next_pins)
 }
 
+#[cfg(test)]
 fn socks_username(line: &str) -> Option<String> {
     let value = line
         .split_whitespace()
@@ -120,6 +119,7 @@ fn socks_username(line: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn unquote(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     if bytes.first() != Some(&b'"') {
@@ -183,6 +183,7 @@ pub(crate) fn relay_key(url: &str) -> Option<String> {
     Some(format!("wss://{host}{tail}"))
 }
 
+#[cfg(test)]
 fn hop_names(hops: &str) -> String {
     hops.split(',')
         .skip(1)
@@ -192,6 +193,7 @@ fn hop_names(hops: &str) -> String {
         .join(" → ")
 }
 
+#[cfg(test)]
 fn info_lines<'a>(reply: &'a str, key: &str) -> Vec<&'a str> {
     let multi = format!("250+{key}=");
     if let Some(start) = reply.find(&multi) {
@@ -217,79 +219,18 @@ fn info_lines<'a>(reply: &'a str, key: &str) -> Vec<&'a str> {
     Vec::new()
 }
 
+#[cfg(test)]
 const CONTROL_CACHE: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
 struct CachedReply {
     at: Instant,
     reply: Option<String>,
 }
 
-fn control_cache() -> &'static Mutex<Option<CachedReply>> {
-    static CACHE: Mutex<Option<CachedReply>> = Mutex::new(None);
-    &CACHE
-}
-
+#[cfg(test)]
 fn reused_control_reply(cached: &CachedReply, now: Instant) -> Option<Option<String>> {
     (now.saturating_duration_since(cached.at) < CONTROL_CACHE).then(|| cached.reply.clone())
-}
-
-fn control_reply() -> Option<String> {
-    let mut cache = control_cache().lock().expect("tor control cache");
-    let now = Instant::now();
-    if let Some(cached) = cache.as_ref() {
-        if let Some(reply) = reused_control_reply(cached, now) {
-            return reply;
-        }
-    }
-    let reply = fetch_control_reply();
-    *cache = Some(CachedReply {
-        at: Instant::now(),
-        reply: reply.clone(),
-    });
-    reply
-}
-
-fn fetch_control_reply() -> Option<String> {
-    let cookie = cookie_hex()?;
-    let mut stream =
-        TcpStream::connect_timeout(&"127.0.0.1:9051".parse().ok()?, Duration::from_millis(400))
-            .ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    let command = format!("AUTHENTICATE {cookie}\r\nGETINFO circuit-status\r\nQUIT\r\n");
-    stream.write_all(command.as_bytes()).ok()?;
-    let mut reply = String::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                reply.push_str(&String::from_utf8_lossy(&buf[..n]));
-                if reply.contains("250 closing connection") || reply.len() > 512 * 1024 {
-                    break;
-                }
-            }
-        }
-    }
-    reply.contains("250 OK").then_some(reply)
-}
-
-fn cookie_hex() -> Option<String> {
-    for path in [
-        "/run/tor-control/cookie",
-        "/var/lib/tor/control_auth_cookie",
-    ] {
-        if let Ok(bytes) = std::fs::read(path) {
-            if !bytes.is_empty() {
-                return Some(bytes.iter().map(|byte| format!("{byte:02X}")).collect());
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
