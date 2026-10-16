@@ -329,14 +329,20 @@ function paintSavedRelayLists(doc, storage) {
                         label.className = "relay-guard-label";
                         label.textContent = "guard";
                         guard.append(relayGuardIcon(), label);
-                        const arrow = document.createElement("span");
-                        arrow.className = "relay-circuit-arrow";
-                        arrow.setAttribute("aria-hidden", "true");
-                        arrow.textContent = " → ";
-                        const hops = document.createElement("span");
-                        hops.className = "relay-circuit-hops";
-                        hops.textContent = path;
-                        line.append(guard, arrow, hops);
+                        line.append(guard);
+                        for (const name of path.split(" → ")) {
+                            if (!name) {
+                                continue;
+                            }
+                            const arrow = document.createElement("span");
+                            arrow.className = "relay-circuit-arrow";
+                            arrow.setAttribute("aria-hidden", "true");
+                            arrow.textContent = "→";
+                            const hop = document.createElement("span");
+                            hop.className = "relay-circuit-hop";
+                            hop.textContent = name;
+                            line.append(arrow, hop);
+                        }
                         return;
                     }
                     line.classList.add("relay-circuit-wait");

@@ -3521,7 +3521,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     paintRelayCircuits();
     for (const row of document.querySelectorAll(".relay-list li[data-relay]")) {
         const line = row.querySelector(".relay-circuit");
-        const hops = line && line.querySelector(".relay-circuit-hops");
+        const hops = line && line.querySelector(".relay-circuit-hop");
         const guard = line && line.querySelector(".relay-guard-label");
         if (!hops || hops.textContent !== "OldPath" || !guard || guard.textContent !== "guard") {
             throw new Error("rows did not show the old paths");
@@ -3603,7 +3603,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     await refreshCircuits();
     for (const row of document.querySelectorAll(".relay-list li[data-relay]")) {
         const line = row.querySelector(".relay-circuit");
-        const hops = line && line.querySelector(".relay-circuit-hops");
+        const hops = line && line.querySelector(".relay-circuit-hop");
         const guard = line && line.querySelector(".relay-guard-label");
         if (!hops || hops.textContent !== "path-" + row.dataset.relay) {
             throw new Error(hops && hops.textContent);

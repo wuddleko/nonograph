@@ -432,6 +432,8 @@
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
+                column-gap: 0.45em;
+                row-gap: 2px;
                 min-height: 14px;
                 margin-top: 2px;
                 color: var(--quiet);
