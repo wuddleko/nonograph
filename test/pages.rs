@@ -69,8 +69,8 @@ fn nojs_home_omits_scripts() {
     assert!(!field.contains("writemark-editor"));
 
     let js = home_context(&config, false, None, None);
-    assert_eq!(js.get("form_action").unwrap(), "/");
-    assert_eq!(js.get("form_method").unwrap(), "post");
+    assert_eq!(js.get("form_action").unwrap(), "/nojs");
+    assert_eq!(js.get("form_method").unwrap(), "get");
     assert_eq!(nojs.get("form_method").unwrap(), "post");
     let scripts = js.get("scripts").unwrap();
     assert!(scripts.contains("/relays.js?v="));
@@ -410,9 +410,9 @@ fn rendered_home_switches_the_content_field() {
     assert!(js.contains("0 / 128,000"));
     assert!(js.contains("class=\"\""));
     assert!(!js.contains("class=\"nojs\""));
-    assert!(js.contains("action=\"/\""));
-    assert!(!js.contains("action=\"/nojs\""));
-    assert!(js.contains("method=\"post\""));
+    assert!(js.contains("action=\"/nojs\""));
+    assert!(!js.contains("action=\"/nojs/create\""));
+    assert!(js.contains("method=\"get\""));
     assert!(nojs.contains("method=\"post\""));
     assert_eq!(js.matches("On Nostr").count(), 1); // About copy
     assert!(!js.contains("Config.toml"));
@@ -1357,7 +1357,6 @@ fn a_fetch_with_dead_link_relays_reads_from_a_usable_row() {
         next_try: 1_700_000_100,
         failures: 0,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(crawler::Visit {
             at: 1_700_000_100,
             socket_answered: usable,
@@ -1433,7 +1432,6 @@ fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
                 next_try: 1_700_000_100,
                 failures: 0,
                 publish_refused: false,
-                seen_from: Vec::new(),
                 visit: Some(crawler::Visit {
                     at: 1_700_000_100,
                     socket_answered: true,
@@ -1470,120 +1468,6 @@ fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
     );
     assert!(answers.asked("wss://live.example"));
     assert!(!answers.asked("wss://row.example"));
-}
-
-#[test]
-fn a_fetch_asks_two_caller_hints_before_the_pool() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("relay-pool.json");
-    let document: serde_json::Value =
-        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
-    crawler::save(
-        &path,
-        &crawler::Pool {
-            rows: vec![crawler::Row {
-                url: "wss://row.example".to_string(),
-                first_seen: 1_700_000_000,
-                next_try: 1_700_000_100,
-                failures: 0,
-                publish_refused: false,
-                seen_from: Vec::new(),
-                visit: Some(crawler::Visit {
-                    at: 1_700_000_100,
-                    socket_answered: true,
-                    nip11: Some(document),
-                    probes: vec![crawler::ProbeResult {
-                        name: "30323".to_string(),
-                        accepted: true,
-                        detail: "OK".to_string(),
-                    }],
-                }),
-            }],
-        },
-    )
-    .unwrap();
-    let locator = "0123456789abcdef0123";
-    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
-    let answers = crate::nostr::RelayAnswer::begin();
-    answers.answer("wss://row.example", &note.event_json);
-    let hints: Vec<String> = (0..4)
-        .map(|index| format!("wss://hint{index}.example"))
-        .collect();
-    assert_eq!(
-        fetch_sealed_by_id(
-            &hints,
-            &note.id_hex(),
-            locator,
-            128,
-            32,
-            4,
-            std::time::Duration::from_secs(2),
-            &path,
-        )
-        .as_deref(),
-        Some(note.event_json.as_str())
-    );
-    assert!(answers.asked("wss://hint0.example"));
-    assert!(answers.asked("wss://hint1.example"));
-    assert!(!answers.asked("wss://hint2.example"));
-    assert!(answers.asked("wss://row.example"));
-}
-
-#[test]
-fn a_later_hint_does_not_hide_the_pool_relay() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("relay-pool.json");
-    let document: serde_json::Value =
-        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
-    crawler::save(
-        &path,
-        &crawler::Pool {
-            rows: vec![crawler::Row {
-                url: "wss://hint2.example".to_string(),
-                first_seen: 1_700_000_000,
-                next_try: 1_700_000_100,
-                failures: 0,
-                publish_refused: false,
-                seen_from: Vec::new(),
-                visit: Some(crawler::Visit {
-                    at: 1_700_000_100,
-                    socket_answered: true,
-                    nip11: Some(document),
-                    probes: vec![crawler::ProbeResult {
-                        name: "30323".to_string(),
-                        accepted: true,
-                        detail: "OK".to_string(),
-                    }],
-                }),
-            }],
-        },
-    )
-    .unwrap();
-    let locator = "0123456789abcdef0123";
-    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
-    let answers = crate::nostr::RelayAnswer::begin();
-    answers.answer("wss://hint2.example", &note.event_json);
-    let hints: Vec<String> = (0..4)
-        .map(|index| format!("wss://hint{index}.example"))
-        .collect();
-    assert_eq!(
-        fetch_sealed_by_id(
-            &hints,
-            &note.id_hex(),
-            locator,
-            128,
-            32,
-            4,
-            std::time::Duration::from_secs(2),
-            &path,
-        )
-        .as_deref(),
-        Some(note.event_json.as_str())
-    );
-    assert!(answers.asked("wss://hint0.example"));
-    assert!(answers.asked("wss://hint1.example"));
-    assert!(answers.asked("wss://hint2.example"));
-    assert!(!answers.asked("wss://hint3.example"));
 }
 
 #[test]
@@ -2304,7 +2188,6 @@ fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
         next_try: 1,
         failures: 0,
         publish_refused: refused,
-        seen_from: Vec::new(),
         visit: None,
     };
     crawler::save(
@@ -2598,15 +2481,12 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
     assert!(refresh < get);
     assert!(home[refresh..get].contains("await sendRelayList()"));
     assert!(!home[get..get + paint].contains("method: \"POST\""));
+    assert!(home.contains("relay-spinner"));
     assert!(home.contains("everyRelayHasPath()"));
     let waiting = home.find("function everyRelayHasPath()").unwrap();
     let sync = home.find("function syncNostrButtons()").unwrap();
-    let gate = &home[waiting..sync];
-    assert!(gate.contains("return true"));
-    assert!(gate.contains("circuitsTracked"));
-    assert!(gate.contains("readyRelays"));
-    assert!(gate.contains("relaysForPublicPublish"));
-    assert!(!gate.contains("→"));
+    assert!(home[waiting..sync].contains("if (!circuitsTracked)"));
+    assert!(home[waiting..sync].contains("relaysForPublicPublish(savedRelayUrls(localStorage))"));
     assert!(home.contains("payload.tracking === true"));
     assert!(home.contains("circuits-pending"));
     assert!(!home.contains("waiting for publish"));
@@ -3247,7 +3127,7 @@ async function loadNostr() {
     };
 }
 let relaysForPublicPublish = (relays) => relays.slice();
-const readyRelays = new Set();
+const circuitByRelay = new Map();
 let circuitsTracked = false;
 "##,
     );
@@ -3274,14 +3154,14 @@ let circuitsTracked = false;
     }
     circuitsTracked = true;
     for (const relay of expected) {
-        readyRelays.add(relay);
+        circuitByRelay.set(relay, "path-" + relay);
     }
     if (!everyRelayHasPath()) {
-        throw new Error("warm relays should allow publish");
+        throw new Error("saved relays with paths should allow publish");
     }
-    readyRelays.delete("wss://dealt.example");
+    circuitByRelay.delete("wss://dealt.example");
     if (everyRelayHasPath()) {
-        throw new Error("a cold relay should wait");
+        throw new Error("a saved relay without a path should wait");
     }
     circuitsTracked = false;
     if (!everyRelayHasPath()) {
@@ -3309,9 +3189,8 @@ let circuitsTracked = false;
         throw new Error("configured names should stay off the button");
     }
     circuitsTracked = true;
-    readyRelays.clear();
-    if (!everyRelayHasPath()) {
-        throw new Error("an empty list should still allow publish");
+    if (everyRelayHasPath()) {
+        throw new Error("an empty list should wait");
     }
 })();
 "##,
@@ -3561,7 +3440,7 @@ globalThis.fetch = async function () {
 const publishButton = el("button");
 const publishButtons = [publishButton];
 let relaysForPublicPublish = (relays) => relays.slice();
-const readyRelays = new Set();
+const circuitByRelay = new Map();
 let circuitsTracked = false;
 function syncPublishButtons() {}
 bindRelayActions(localStorage, sidebar);
@@ -3637,14 +3516,19 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
         }
     }
     circuitsTracked = true;
+    for (const row of document.querySelectorAll(".relay-list li[data-relay]")) {
+        circuitByRelay.set(row.dataset.relay, "OldPath");
+    }
     paintRelayCircuits();
     for (const row of document.querySelectorAll(".relay-list li[data-relay]")) {
         const line = row.querySelector(".relay-circuit");
+        const hops = line && line.querySelector(".relay-circuit-hop");
         const guard = line && line.querySelector(".relay-guard-label");
-        if (line.querySelector(".relay-circuit-hop") || !guard || guard.textContent !== "via Tor") {
-            throw new Error("rows showed a hop name");
+        if (!hops || hops.textContent !== "OldPath" || !guard || guard.textContent !== "guard") {
+            throw new Error("rows did not show the old paths");
         }
     }
+    let circuitPaths = {};
     const calls = [];
     let refreshPromise = Promise.resolve();
     const refreshCircuits = globalThis.refreshRelayCircuits;
@@ -3663,13 +3547,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
         }
         return {
             ok: true,
-            json: async () => {
-                const saved = JSON.parse(localStorage.getItem("nonograph_relays") || "{}");
-                const ready = []
-                    .concat(saved.pinned || [])
-                    .concat(saved.dealt || []);
-                return { tracking: true, ready };
-            },
+            json: async () => ({ tracking: true, relays: circuitPaths }),
         };
     };
     const hand = sidebar.querySelector(".relay-list").children.find(function (row) {
@@ -3707,13 +3585,39 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
             throw new Error("removed relay stayed on the row");
         }
         const line = row.querySelector(".relay-circuit");
+        if (!line || line.textContent === "OldPath" || !line.classList.contains("relay-circuit-wait")) {
+            throw new Error("paths did not start over");
+        }
+        if (!row.querySelector(".relay-spinner")) {
+            throw new Error("a row is missing its circuit spinner");
+        }
+    }
+    if (everyRelayHasPath() || publishButton.attributes["aria-disabled"] !== "true") {
+        throw new Error("publish should stay quiet until every relay has a path");
+    }
+    if (!publishButton.classList.contains("circuits-pending")) {
+        throw new Error("publish should show that circuits are pending");
+    }
+    for (const url of nextList) {
+        circuitPaths[url] = "path-" + url;
+    }
+    await refreshCircuits();
+    for (const row of document.querySelectorAll(".relay-list li[data-relay]")) {
+        const line = row.querySelector(".relay-circuit");
+        const hops = line && line.querySelector(".relay-circuit-hop");
         const guard = line && line.querySelector(".relay-guard-label");
-        if (!guard || guard.textContent !== "via Tor" || line.querySelector(".relay-circuit-hop")) {
-            throw new Error("a row showed a hop name");
+        if (!hops || hops.textContent !== "path-" + row.dataset.relay) {
+            throw new Error(hops && hops.textContent);
+        }
+        if (!guard || guard.textContent !== "guard") {
+            throw new Error("a path is missing its guard");
+        }
+        if (line.classList.contains("relay-circuit-wait")) {
+            throw new Error("a finished path is still waiting");
         }
     }
     if (!everyRelayHasPath() || publishButton.attributes["aria-disabled"] !== "false") {
-        throw new Error("publish should proceed when the relays are warm");
+        throw new Error("publish should proceed once every relay has a path");
     }
 })();
 "##,
@@ -3806,7 +3710,6 @@ fn a_nojs_form_adds_removes_and_reshuffles_and_the_write_sends_the_cookie() {
             next_try: 1,
             failures: 0,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(crawler::Visit {
                 at: 1,
                 socket_answered: true,
@@ -3991,7 +3894,6 @@ fn a_fixture_pool_renders_the_deal_controls_in_the_landing_sidebar() {
             next_try: 1,
             failures: 0,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(crawler::Visit {
                 at: 1,
                 socket_answered: true,
@@ -4058,7 +3960,6 @@ fn the_homepage_leaves_out_configured_names_and_the_pool() {
                 next_try: 1_700_000_100,
                 failures: 0,
                 publish_refused: false,
-                seen_from: Vec::new(),
                 visit: Some(crawler::Visit {
                     at: 1_700_000_100,
                     socket_answered: true,
@@ -4565,17 +4466,9 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
-    let mut readers = Vec::new();
-    for _ in 0..MAX_PUBLIC_FETCHES {
-        readers.push(PublicFetchSlot::acquire().expect("read slot"));
-    }
-    let publish = nojs_publish_slot().expect("reads do not fill the publish pool");
-    drop(publish);
-    drop(readers);
-
     let mut held = Vec::new();
-    for _ in 0..MAX_PUBLISHES {
-        held.push(PublishSlot::acquire().expect("publish slot"));
+    for _ in 0..MAX_PUBLIC_FETCHES {
+        held.push(PublicFetchSlot::acquire().expect("public fetch slot"));
     }
     let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert_eq!(
@@ -4612,12 +4505,12 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         set_nojs_test_accepted(Some(vec!["wss://relay.primal.net".to_string()]));
         let href = create_location_with_cookie(&form, &config, "", Some(&relays));
         assert_eq!(href, "/nojs?error=nostr_publish_failed");
-        assert!(nojs_publish_slot().is_err(), "sealing took a publish slot");
+        assert!(nojs_publish_slot().is_err(), "sealing took a reader slot");
 
         held.pop();
         let href = create_location_with_cookie(&form, &config, "", Some(&relays));
         assert!(href.starts_with("/s/"), "{href}");
-        let released = nojs_publish_slot().expect("publish released its slot");
+        let released = nojs_publish_slot().expect("publish released the reader slot");
         drop(released);
     }));
     drop(held);

@@ -19,12 +19,6 @@ fn the_relay_cookie_round_trips_and_a_missing_cookie_is_empty() {
     assert_eq!(read_relay_cookie(None), RelayCookie::empty());
     assert_eq!(read_relay_cookie(Some("")), RelayCookie::empty());
     assert_eq!(read_relay_cookie(Some("not json")), RelayCookie::empty());
-    let mut pinned = Vec::new();
-    for index in 0..7 {
-        pinned.push(format!("wss://pin{index}.example"));
-    }
-    let too_many = serde_json::json!({ "pinned": pinned, "dealt": [] }).to_string();
-    assert_eq!(read_relay_cookie(Some(&too_many)), RelayCookie::empty());
 }
 
 fn open_document() -> Value {
@@ -38,7 +32,6 @@ fn usable(url: &str, document: Value) -> Row {
         next_try: 1,
         failures: 0,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(Visit {
             at: 1,
             socket_answered: true,

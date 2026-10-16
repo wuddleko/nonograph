@@ -1,15 +1,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) const MAX_PUBLIC_FETCHES: usize = 8;
-pub(crate) const MAX_PUBLISHES: usize = 8;
 static PUBLIC_FETCHES: AtomicUsize = AtomicUsize::new(0);
-static PUBLISHES: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct PublicFetchSlot {
-    _private: (),
-}
-
-pub(crate) struct PublishSlot {
     _private: (),
 }
 
@@ -23,25 +17,9 @@ impl PublicFetchSlot {
     }
 }
 
-impl PublishSlot {
-    pub(crate) fn acquire() -> Option<Self> {
-        if try_acquire_public_fetch(&PUBLISHES, MAX_PUBLISHES) {
-            Some(Self { _private: () })
-        } else {
-            None
-        }
-    }
-}
-
 impl Drop for PublicFetchSlot {
     fn drop(&mut self) {
         release_public_fetch(&PUBLIC_FETCHES);
-    }
-}
-
-impl Drop for PublishSlot {
-    fn drop(&mut self) {
-        release_public_fetch(&PUBLISHES);
     }
 }
 

@@ -24,10 +24,6 @@ use transport::{
 };
 
 pub(crate) use assign::schedule_relay_assignments;
-
-pub(crate) fn warm_relays() -> Vec<String> {
-    transport::warm_relay_keys()
-}
 #[cfg(test)]
 use assign::{
     assign_relay, assignment_due, next_misses, relay_needs_assignment, relays_needing_assignment,
@@ -131,7 +127,7 @@ fn sealed_note_capped(
     {
         return None;
     }
-    if parsed.content.len() > payload_max || !nonograph_nip44::is_v2_payload(&parsed.content) {
+    if parsed.content.len() > payload_max {
         return None;
     }
     let locator = stamp_locator(&parsed.tags)?;
@@ -223,11 +219,7 @@ fn publish_to_relays_inner(
                 match send_event(&relay, &event_json, &event_id, deadline, public_only) {
                     Ok(()) => Some(Ok(relay)),
                     Err(SendFailure::Refused(error)) => {
-                        eprintln!(
-                            "Nonograph: relay {} did not accept the note: {}",
-                            log_text(&relay),
-                            log_text(&error)
-                        );
+                        eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
                         if durable_refusal(&error) {
                             Some(Err(relay))
                         } else {
@@ -235,11 +227,7 @@ fn publish_to_relays_inner(
                         }
                     }
                     Err(SendFailure::Unanswered(error)) => {
-                        eprintln!(
-                            "Nonograph: relay {} did not accept the note: {}",
-                            log_text(&relay),
-                            log_text(&error)
-                        );
+                        eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
                         None
                     }
                 }
@@ -292,7 +280,6 @@ fn send_event(
     }
     let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())
         .map_err(SendFailure::Unanswered)?;
-    cap_relay_socket(&mut socket);
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(
         socket.get_ref().get_ref(),
@@ -433,11 +420,7 @@ fn fetch_from_relays(
                 Ok(note) => note,
                 Err(error) => {
                     if error != RELAY_TIMEOUT {
-                        eprintln!(
-                            "Nonograph: relay {} did not return the note: {}",
-                            log_text(&relay),
-                            log_text(&error)
-                        );
+                        eprintln!("Nonograph: relay {relay} did not return the note: {error}");
                     }
                     None
                 }
@@ -501,12 +484,9 @@ impl ListRead {
             return true;
         }
         if let Some(event) = event_for_sub(frame, sub_id) {
-            if let Some(author) = verified_list_author(&event) {
-                for url in crawler::list_urls(&event) {
-                    let named = format!("{author}\n{url}");
-                    if !self.urls.iter().any(|have| have == &named) {
-                        self.urls.push(named);
-                    }
+            for url in crawler::list_urls(&event) {
+                if !self.urls.iter().any(|have| have == &url) {
+                    self.urls.push(url);
                 }
             }
             return false;
@@ -529,25 +509,6 @@ fn list_req(sub_id: &str) -> String {
     serde_json::json!(["REQ", sub_id, { "kinds": [10002], "limit": 50 }]).to_string()
 }
 
-fn verified_list_author(event: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(event).ok()?;
-    let parsed = parse_event(&value)?;
-    if parsed.kind != 10002 {
-        return None;
-    }
-    let id = nonograph_nip44::event_id(
-        &parsed.pubkey_hex,
-        parsed.created_at,
-        parsed.kind,
-        &parsed.tags,
-        &parsed.content,
-    );
-    if id != parsed.id || !verify_sig(&parsed) {
-        return None;
-    }
-    Some(parsed.pubkey_hex.to_ascii_lowercase())
-}
-
 fn event_for_sub(frame: &str, sub_id: &str) -> Option<String> {
     let (kind, sub, event): (String, String, Box<serde_json::value::RawValue>) =
         serde_json::from_str(frame).ok()?;
@@ -562,7 +523,7 @@ pub(crate) fn read_relay_list(relay: &str, deadline: Instant, socks: RelaySocks)
         Ok(socket) => socket,
         Err(_) => return ListRead::unanswered().finish(),
     };
-    cap_relay_socket(&mut socket);
+    // Kind 10002 lists are larger than a sealed note, so leave the default frame cap.
     let mut read = ListRead::answered();
     let sub_id = random_hex(8);
     let payload = list_req(&sub_id);
@@ -713,15 +674,6 @@ fn sealed_event_max(content_max: usize) -> usize {
 
 fn sealed_frame_max(content_max: usize) -> usize {
     sealed_event_max(content_max).saturating_add(SEALED_FRAME_OVERHEAD)
-}
-
-const RELAY_MESSAGE_CAP: usize = 2 * 1024 * 1024;
-
-fn cap_relay_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>) {
-    socket.set_config(|config| {
-        config.max_message_size = Some(RELAY_MESSAGE_CAP);
-        config.max_frame_size = Some(RELAY_MESSAGE_CAP);
-    });
 }
 
 fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, content_max: usize) {
@@ -925,22 +877,6 @@ fn random_hex(bytes: usize) -> String {
     let mut rng = thread_rng();
     let raw: Vec<u8> = (0..bytes).map(|_| rng.gen()).collect();
     hex_encode(&raw)
-}
-
-pub(crate) fn log_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other if other.is_control() => {
-                out.push_str(&format!("\\u{{{:x}}}", other as u32));
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {

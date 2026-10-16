@@ -8,7 +8,6 @@ fn row_at(failures: u32, answered: bool) -> Row {
         next_try: 1_700_000_000,
         failures,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(Visit {
             at: 1_700_000_000,
             socket_answered: answered,
@@ -77,7 +76,6 @@ fn a_row_with_no_visit_is_due_at_the_timestamp() {
         next_try: 1_800_000_000,
         failures: 2,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: None,
     };
 

@@ -12,7 +12,7 @@ use crate::relay_set::{public_relays, push_public_relay, relay_timeout};
 use crate::render_options;
 use crate::template;
 
-use super::fetch_slot::PublishSlot;
+use super::fetch_slot::PublicFetchSlot;
 
 fn home_content_field(
     nojs: bool,
@@ -166,9 +166,12 @@ fn home_form_context(
     context.insert("csrf_token".to_string(), csrf_token.clone());
     context.insert(
         "form_action".to_string(),
-        if nojs { "/nojs/create" } else { "/" }.to_string(),
+        if nojs { "/nojs/create" } else { "/nojs" }.to_string(),
     );
-    context.insert("form_method".to_string(), "post".to_string());
+    context.insert(
+        "form_method".to_string(),
+        if nojs { "post" } else { "get" }.to_string(),
+    );
     let version = super::assets::version();
     context.insert("asset_version".to_string(), version.to_string());
     context.insert(
@@ -203,10 +206,8 @@ fn home_form_context(
     context.insert("relays_section".to_string(), relays_section);
     let publish_attrs = if nojs && nojs_relays == 0 {
         " class=\"no-relays\" disabled"
-    } else if nojs {
-        ""
     } else {
-        " disabled"
+        ""
     };
     context.insert("publish_attrs".to_string(), publish_attrs.to_string());
     let origin = config.normalized_public_origin().unwrap_or_default();
@@ -477,8 +478,8 @@ pub(super) fn nojs_publish_relays(saved: &[String]) -> Option<Vec<String>> {
     }
 }
 
-pub(super) fn nojs_publish_slot() -> Result<PublishSlot, &'static str> {
-    PublishSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
+pub(super) fn nojs_publish_slot() -> Result<PublicFetchSlot, &'static str> {
+    PublicFetchSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
 }
 
 fn render_nojs_form(
@@ -641,9 +642,10 @@ pub(super) fn publish_result(
 
 #[get("/tor-circuits")]
 pub fn tor_circuits() -> Json<serde_json::Value> {
+    let (tracking, relays) = crate::tor_circuits::view(crate::nostr::relays_use_proxy());
     Json(serde_json::json!({
-        "tracking": crate::nostr::relays_use_proxy(),
-        "ready": crate::nostr::warm_relays(),
+        "tracking": tracking,
+        "relays": relays,
     }))
 }
 
@@ -723,7 +725,7 @@ pub async fn nostr_publish(
     let config = config.inner().clone();
     let body = body.into_inner();
     let csrf_cookie = csrf::request_csrf_cookie(cookies);
-    let Some(_slot) = PublishSlot::acquire() else {
+    let Some(_slot) = PublicFetchSlot::acquire() else {
         return Err(Status::ServiceUnavailable);
     };
     match rocket::tokio::task::spawn_blocking(move || {

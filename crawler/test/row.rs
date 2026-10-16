@@ -9,7 +9,6 @@ fn row_holds_a_visit() {
         next_try: 1_700_086_400,
         failures: 0,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(Visit {
             at: 1_700_000_100,
             socket_answered: true,
@@ -46,7 +45,6 @@ fn save_and_load_round_trip() {
             next_try: 1_700_086_400,
             failures: 0,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(Visit {
                 at: 1_700_000_100,
                 socket_answered: true,
@@ -103,7 +101,6 @@ fn a_bad_pool_file_is_left_in_place() {
             next_try: 2,
             failures: 0,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: None,
         }],
     };
@@ -144,7 +141,6 @@ fn save_crawl_keeps_a_path_flag_off_the_host() {
         next_try: 1,
         failures: 4,
         publish_refused: refused,
-        seen_from: Vec::new(),
         visit: Some(old.clone()),
     };
     let crawl_row = |url: &str| Row {
@@ -153,7 +149,6 @@ fn save_crawl_keeps_a_path_flag_off_the_host() {
         next_try: 9,
         failures: 0,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(fresh.clone()),
     };
     save(
@@ -249,7 +244,6 @@ fn publish_refused_survives_save_and_load() {
             next_try: 1_700_000_900,
             failures: 0,
             publish_refused: true,
-            seen_from: Vec::new(),
             visit: None,
         }],
     };
@@ -270,7 +264,6 @@ fn failures_survive_save_and_load() {
             next_try: 1_700_000_900,
             failures: 3,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: None,
         }],
     };

@@ -66,7 +66,6 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 next_try: NOW + 24 * 60 * 60,
                 failures: 0,
                 publish_refused: false,
-                seen_from: Vec::new(),
                 visit: None,
             },
             Row {
@@ -75,7 +74,6 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 next_try: NOW,
                 failures: 4,
                 publish_refused: false,
-                seen_from: Vec::new(),
                 visit: Some(missed()),
             },
             Row {
@@ -84,7 +82,6 @@ fn push_places_a_due_row_and_leaves_a_cooling_row() {
                 next_try: NOW + 15 * 60,
                 failures: 1,
                 publish_refused: false,
-                seen_from: Vec::new(),
                 visit: Some(missed()),
             },
         ],
@@ -137,7 +134,6 @@ fn finish_writes_the_visit_and_an_answer_waits_one_day() {
             next_try: NOW,
             failures: 4,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(missed()),
         }],
     });
@@ -168,7 +164,6 @@ fn finish_replaces_the_visit_and_leaves_publish_refused() {
             next_try: NOW,
             failures: 0,
             publish_refused: true,
-            seen_from: Vec::new(),
             visit: Some(missed()),
         }],
     });
@@ -252,7 +247,6 @@ fn a_discovered_url_already_waiting_or_in_flight_is_left_alone() {
             next_try: NOW + 60 * 60,
             failures: 2,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(missed()),
         }],
     });
@@ -322,7 +316,6 @@ fn kept(url: &str, next_try: i64) -> Row {
         next_try,
         failures: 0,
         publish_refused: false,
-        seen_from: Vec::new(),
         visit: Some(answered()),
     }
 }
@@ -370,7 +363,6 @@ fn an_open_rotation_revisits_a_cooling_door() {
             next_try: NOW + 15 * 60,
             failures: 1,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(missed()),
         }],
     });
@@ -391,166 +383,9 @@ fn a_cooling_row_left_unpushed_leaves_the_queue_idle() {
             next_try: NOW + 15 * 60,
             failures: 1,
             publish_refused: false,
-            seen_from: Vec::new(),
             visit: Some(missed()),
         }],
     });
 
     assert!(queue.idle());
-}
-
-#[test]
-fn a_full_pool_replaces_an_advertisement_and_keeps_a_corroborated_relay() {
-    let mut rows = Vec::new();
-    rows.push(Row {
-        url: "wss://kept.example".to_owned(),
-        first_seen: NOW,
-        next_try: NOW,
-        failures: 0,
-        publish_refused: false,
-        seen_from: vec!["wss://a.example".to_owned(), "wss://b.example".to_owned()],
-        visit: None,
-    });
-    for index in 0..511 {
-        rows.push(Row {
-            url: format!("wss://ad{index}.example"),
-            first_seen: NOW,
-            next_try: NOW + 10_000,
-            failures: 0,
-            publish_refused: false,
-            seen_from: vec!["wss://door.example".to_owned()],
-            visit: None,
-        });
-    }
-    let mut queue = Queue::new(Pool { rows });
-    queue.revisit("wss://other.example", NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://other.example"));
-    queue.finish(
-        "wss://other.example",
-        missed(),
-        ["wss://fresh.example"],
-        NOW,
-    );
-
-    assert_eq!(queue.pool().rows.len(), 512);
-    assert!(queue
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://kept.example"));
-    assert!(queue
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://fresh.example"));
-    assert!(!queue
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://ad0.example"));
-
-    let corroborated: Vec<Row> = (0..512)
-        .map(|index| Row {
-            url: format!("wss://full{index}.example"),
-            first_seen: NOW + index as i64,
-            next_try: NOW + 10_000,
-            failures: 0,
-            publish_refused: false,
-            seen_from: vec!["wss://a.example".to_owned(), "wss://b.example".to_owned()],
-            visit: None,
-        })
-        .collect();
-    let mut full = Queue::new(Pool { rows: corroborated });
-    assert!(full.push("wss://extra.example", NOW));
-    assert_eq!(full.pool().rows.len(), 512);
-    assert!(full
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://extra.example"));
-    assert!(!full
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://full0.example"));
-    assert!(full
-        .pool()
-        .rows
-        .iter()
-        .any(|row| row.url == "wss://full511.example"));
-}
-
-#[test]
-fn the_pool_keeps_512_rows() {
-    let mut queue = empty();
-    for index in 0..600 {
-        queue.push(&format!("wss://r{index}.example"), NOW);
-    }
-    assert_eq!(queue.pool().rows.len(), 512);
-}
-
-#[test]
-fn one_pubkey_on_two_relays_is_one_source() {
-    let mut queue = empty();
-    let author = "ab".repeat(32);
-    let other = "cd".repeat(32);
-    queue.revisit("wss://door.example", NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://door.example"));
-    queue.finish(
-        "wss://door.example",
-        missed(),
-        [format!("{author}\nwss://found.example")],
-        NOW,
-    );
-    assert_eq!(queue.pop().as_deref(), Some("wss://found.example"));
-    queue.finish("wss://found.example", missed(), Vec::<String>::new(), NOW);
-    queue.revisit("wss://other.example", NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://other.example"));
-    queue.finish(
-        "wss://other.example",
-        missed(),
-        [
-            format!("{author}\nwss://found.example"),
-            format!("{other}\nwss://found.example"),
-        ],
-        NOW,
-    );
-    let found = queue
-        .pool()
-        .rows
-        .iter()
-        .find(|row| row.url == "wss://found.example")
-        .unwrap();
-    assert_eq!(found.seen_from, vec![author, other]);
-}
-
-#[test]
-fn a_discovered_relay_remembers_two_sources() {
-    let mut queue = empty();
-    queue.revisit("wss://door.example", NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://door.example"));
-    queue.finish("wss://door.example", missed(), ["wss://found.example"], NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://found.example"));
-    queue.finish("wss://found.example", missed(), Vec::<&str>::new(), NOW);
-    queue.revisit("wss://other.example", NOW);
-    assert_eq!(queue.pop().as_deref(), Some("wss://other.example"));
-    queue.finish(
-        "wss://other.example",
-        missed(),
-        ["wss://found.example"],
-        NOW,
-    );
-    let found = queue
-        .pool()
-        .rows
-        .iter()
-        .find(|row| row.url == "wss://found.example")
-        .unwrap();
-    assert_eq!(
-        found.seen_from,
-        vec![
-            "wss://door.example".to_string(),
-            "wss://other.example".to_string()
-        ]
-    );
 }

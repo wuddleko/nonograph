@@ -25,17 +25,6 @@ fn list_urls_reads_public_relays_and_keeps_a_path() {
 }
 
 #[test]
-fn list_urls_keeps_twenty_relays_from_one_event() {
-    let tags = (0..25)
-        .map(|index| format!(r#"["r","wss://relay{index}.example"]"#))
-        .collect::<Vec<_>>()
-        .join(",");
-    let event = format!(r#"{{"kind":10002,"tags":[{tags}]}}"#);
-    assert_eq!(list_urls(&event).len(), 20);
-    assert_eq!(list_urls(&event)[0], "wss://relay0.example");
-}
-
-#[test]
 fn list_urls_returns_nothing_when_the_event_does_not_match() {
     assert!(list_urls("not json").is_empty());
     assert!(list_urls(r#"{"kind": 3, "tags": [["r", "wss://relay.example"]]}"#).is_empty());

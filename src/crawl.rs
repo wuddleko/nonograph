@@ -1,7 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use crawler::{due, edit_pool, read_pool, run_batch, Queue, Row, Visit, VisitHook};
 use serde_json::Value;
@@ -26,46 +25,11 @@ pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
 }
 
-struct PoolCache {
-    path: PathBuf,
-    stamp: Option<(SystemTime, u64)>,
-    pool: crawler::Pool,
-}
-
-fn pool_cache() -> &'static Mutex<Option<PoolCache>> {
-    static CACHE: Mutex<Option<PoolCache>> = Mutex::new(None);
-    &CACHE
-}
-
-fn pooled(path: &Path) -> io::Result<crawler::Pool> {
-    let stamp = match std::fs::metadata(path) {
-        Ok(meta) => Some((
-            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            meta.len(),
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let mut cache = pool_cache().lock().unwrap_or_else(|err| err.into_inner());
-    if let Some(cached) = cache.as_ref() {
-        if cached.path == path && cached.stamp == stamp {
-            return Ok(cached.pool.clone());
-        }
-    }
-    let pool = read_pool(path)?;
-    *cache = Some(PoolCache {
-        path: path.to_path_buf(),
-        stamp,
-        pool: pool.clone(),
-    });
-    Ok(pool)
-}
-
 pub(crate) fn batch_queue(path: &Path, now: i64) -> io::Result<Queue> {
     let pool = read_pool(path)?;
     let due_urls = due(&pool.rows, now);
     let mut queue = Queue::new(pool);
-    queue.set_rotation(CANDIDATE_CAP, row_in_rotation);
+    queue.set_rotation(CANDIDATE_CAP, row_is_usable);
     if queue.needs_relays() {
         for door in DOORS {
             queue.revisit(door, now);
@@ -158,7 +122,7 @@ fn pass_wait(path: &Path, now: i64) -> Duration {
 }
 
 fn rows_fill_rotation(rows: &[Row]) -> bool {
-    rows.iter().filter(|row| row_in_rotation(row)).count() >= CANDIDATE_CAP
+    rows.iter().filter(|row| row_is_usable(row)).count() >= CANDIDATE_CAP
 }
 
 fn pool_is_filling(path: &Path) -> bool {
@@ -171,7 +135,7 @@ fn pool_is_filling(path: &Path) -> bool {
 fn usable_wait(rows: &[Row], now: i64) -> Duration {
     let Some(next) = rows
         .iter()
-        .filter(|row| row_in_rotation(row))
+        .filter(|row| row_is_usable(row))
         .take(CANDIDATE_CAP)
         .map(|row| row.next_try)
         .min()
@@ -276,7 +240,7 @@ fn nip11_document(body: Option<&str>) -> Option<Value> {
 }
 
 pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
-    let rows = match pooled(path) {
+    let rows = match read_pool(path) {
         Ok(pool) => pool.rows,
         Err(error) => {
             eprintln!(
@@ -290,29 +254,14 @@ pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
 }
 
 pub(crate) fn candidates(path: &Path, configured: &[String]) -> Vec<String> {
-    match pooled(path) {
-        Ok(pool) => {
-            let mut urls = if path.is_file() {
-                configured_relays(configured)
-            } else {
-                Vec::new()
-            };
-            for row in pool.rows {
-                if urls.len() == CANDIDATE_CAP {
-                    break;
-                }
-                // One list naming a relay is an advertisement. None means the
-                // row was stored before sources were recorded.
-                if !row_is_usable(&row) || !named_by_enough_sources(&row) {
-                    continue;
-                }
-                if urls.iter().any(|have| have == &row.url) {
-                    continue;
-                }
-                urls.push(row.url);
-            }
-            urls
-        }
+    match read_pool(path) {
+        Ok(pool) => pool
+            .rows
+            .into_iter()
+            .filter(row_is_usable)
+            .take(CANDIDATE_CAP)
+            .map(|row| row.url)
+            .collect(),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             eprintln!(
                 "Nonograph: relay pool {} was not read: {error}",
@@ -369,9 +318,6 @@ fn pool_url_listed(url: &str, urls: &[String]) -> bool {
 pub(crate) fn next_pool_relays(path: &Path, link: &[String]) -> Vec<String> {
     let mut relays = Vec::new();
     for row in usable_rows(path) {
-        if !named_by_enough_sources(&row) {
-            continue;
-        }
         if relays.len() == POOL_FETCH {
             break;
         }
@@ -384,14 +330,6 @@ pub(crate) fn next_pool_relays(path: &Path, link: &[String]) -> Vec<String> {
         relays.push(row.url);
     }
     relays
-}
-
-fn named_by_enough_sources(row: &Row) -> bool {
-    row.seen_from.len() >= 2
-}
-
-fn row_in_rotation(row: &Row) -> bool {
-    row_is_usable(row) && named_by_enough_sources(row)
 }
 
 fn row_is_usable(row: &Row) -> bool {

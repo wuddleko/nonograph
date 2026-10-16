@@ -31,10 +31,9 @@ pub(super) fn assign_relay(
     let host = uri.host().ok_or("relay url has no host")?.to_string();
     let port = uri.port_u16().unwrap_or(443);
     let connector = tls_connector()?;
-    let connect_by = super::transport::connect_deadline(deadline);
-    let tcp = connect_tcp(proxy, connect_by, None)?;
-    socks5_connect(&tcp, &host, port, relay, connect_by, None)?;
-    let tls = tls_handshake(connector, &host, tcp, connect_by, None)?;
+    let tcp = connect_tcp(proxy, deadline, None)?;
+    socks5_connect(&tcp, &host, port, relay, deadline, None)?;
+    let tls = tls_handshake(connector, &host, tcp, deadline, None)?;
     store_held(relay, tls);
     Ok(())
 }
@@ -96,7 +95,7 @@ pub(super) fn relays_needing_assignment(
         .collect()
 }
 
-pub(super) type OpenRelay = Arc<dyn Fn(&str, Duration) -> bool + Send + Sync>;
+pub(super) type OpenRelay = Arc<dyn Fn(&str, Duration) + Send + Sync>;
 pub(super) type ReadCircuits = Arc<dyn Fn() -> Option<HashMap<String, String>> + Send + Sync>;
 
 struct PendingAssignment {
@@ -114,7 +113,6 @@ pub(super) const ASSIGN_WINDOW: Duration = Duration::from_secs(60);
 struct RelayAttempt {
     at: Instant,
     misses: u32,
-    ok: bool,
 }
 
 pub(super) struct RelayPass {
@@ -195,17 +193,12 @@ impl RelayPass {
             if !self.allow_assignment(now) {
                 break;
             }
-            let seen = circuit_seen(paths.as_ref(), &relay);
-            // A parked handshake that aged out is dialed again, and that refresh
-            // does not count as another miss.
-            let misses = if seen == Some(false) && self.opened_ok(&relay) {
-                1
-            } else {
-                next_misses(noted.get(relay.as_str()).map(|(_, misses)| *misses), seen)
-            };
+            let misses = next_misses(
+                noted.get(relay.as_str()).map(|(_, misses)| *misses),
+                circuit_seen(paths.as_ref(), &relay),
+            );
             self.mark_requested(&relay, now, misses);
-            let ok = (job.open)(&relay, job.timeout);
-            self.note_result(&relay, ok);
+            (job.open)(&relay, job.timeout);
         }
         self.retain_requested(&chosen);
     }
@@ -253,39 +246,10 @@ impl RelayPass {
         let Some(key) = crate::tor_circuits::relay_key(relay) else {
             return;
         };
-        self.requested.lock().expect("relay circuit pass").insert(
-            key,
-            RelayAttempt {
-                at,
-                misses,
-                ok: false,
-            },
-        );
-    }
-
-    fn opened_ok(&self, relay: &str) -> bool {
-        let Some(key) = crate::tor_circuits::relay_key(relay) else {
-            return false;
-        };
         self.requested
             .lock()
             .expect("relay circuit pass")
-            .get(&key)
-            .is_some_and(|attempt| attempt.ok)
-    }
-
-    pub(super) fn note_result(&self, relay: &str, ok: bool) {
-        let Some(key) = crate::tor_circuits::relay_key(relay) else {
-            return;
-        };
-        if let Some(attempt) = self
-            .requested
-            .lock()
-            .expect("relay circuit pass")
-            .get_mut(&key)
-        {
-            attempt.ok = ok;
-        }
+            .insert(key, RelayAttempt { at, misses });
     }
 
     #[cfg(test)]
@@ -330,7 +294,7 @@ pub(crate) fn schedule_relay_assignments(
     if let Some(state) = watched_assignment() {
         let chosen = crate::relay_set::relays_to_assign(&page, &configured);
         *state.chosen.lock().expect("relay assignment watch") = chosen;
-        let open: OpenRelay = Arc::new(|_: &str, _: Duration| true);
+        let open: OpenRelay = Arc::new(|_: &str, _: Duration| {});
         state.pass.apply(&PendingAssignment {
             page,
             configured,
@@ -588,20 +552,10 @@ pub(super) fn schedule_relay_assignments_via(
     }
     let open: OpenRelay = Arc::new(move |relay: &str, timeout: Duration| {
         let deadline = Instant::now() + timeout;
-        match assign_relay(relay, deadline, socks) {
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!(
-                    "Nonograph: relay {} was not assigned a circuit: {}",
-                    super::log_text(relay),
-                    super::log_text(&error)
-                );
-                false
-            }
+        if let Err(error) = assign_relay(relay, deadline, socks) {
+            eprintln!("Nonograph: relay {relay} was not assigned a circuit: {error}");
         }
     });
-    // Keys are relays with a parked handshake. Values stay empty: hop nicknames
-    // are not available once the control port is gone.
-    let circuits: ReadCircuits = Arc::new(|| Some(super::transport::warm_relay_map()));
+    let circuits: ReadCircuits = Arc::new(|| crate::tor_circuits::reported());
     shared_relay_pass().submit(page, configured, timeout, open, circuits);
 }

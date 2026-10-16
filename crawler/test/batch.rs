@@ -598,7 +598,6 @@ fn stored(url: &str, refused: bool) -> Row {
         next_try: NOW,
         failures: 0,
         publish_refused: refused,
-        seen_from: Vec::new(),
         visit: Some(Visit {
             at: NOW - 5,
             socket_answered: false,
