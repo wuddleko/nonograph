@@ -5,6 +5,68 @@ use serde_json::Value;
 use super::*;
 
 #[test]
+fn a_long_relay_cookie_is_cut_to_six_and_the_count_does_not_panic() {
+    let pinned: Vec<_> = (0..8)
+        .map(|index| format!("wss://pin{index}.example"))
+        .collect();
+    let dealt: Vec<_> = (0..4)
+        .map(|index| format!("wss://dealt{index}.example"))
+        .collect();
+    let raw = serde_json::json!({ "pinned": pinned, "dealt": dealt }).to_string();
+    let cookie = read_relay_cookie(Some(&raw));
+    assert_eq!(cookie.pinned.len(), RELAY_CAP);
+    assert!(cookie.dealt.is_empty());
+    assert_eq!(bounded_count(8, "1"), RELAY_CAP);
+    assert_eq!(bounded_count(2, "9"), RELAY_CAP);
+    assert_eq!(bounded_count(2, "nope"), 2);
+}
+
+#[test]
+fn an_https_forward_marks_the_relay_and_csrf_cookies_secure() {
+    use super::super::nojs_index;
+    let config = crate::config::Config::default();
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![nojs_index]),
+    )
+    .unwrap();
+    let plain = client.get("/nojs").dispatch();
+    assert_eq!(plain.status(), Status::Ok);
+    let relay = plain
+        .cookies()
+        .get(RELAY_LIST_COOKIE)
+        .expect("relay cookie");
+    assert_eq!(relay.secure(), None);
+    let csrf = plain.cookies().get(crate::csrf::COOKIE_NAME);
+    if let Some(csrf) = csrf {
+        assert_eq!(csrf.secure(), None);
+    }
+
+    let https_client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount("/", routes![nojs_index]),
+    )
+    .unwrap();
+    let https = https_client
+        .get("/nojs")
+        .header(rocket::http::Header::new("X-Forwarded-Proto", "https"))
+        .dispatch();
+    assert_eq!(https.status(), Status::Ok);
+    let relay = https
+        .cookies()
+        .get(RELAY_LIST_COOKIE)
+        .expect("relay cookie");
+    assert_eq!(relay.secure(), Some(true));
+    let csrf = https
+        .cookies()
+        .get(crate::csrf::COOKIE_NAME)
+        .expect("csrf cookie");
+    assert_eq!(csrf.secure(), Some(true));
+}
+
+#[test]
 fn the_relay_cookie_round_trips_and_a_missing_cookie_is_empty() {
     let list = RelayCookie {
         dealt: vec![

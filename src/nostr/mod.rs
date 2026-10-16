@@ -20,7 +20,7 @@ use transport::{
 #[cfg(test)]
 use transport::{
     build_tls_connector, held_keys_to_drop, resolve_host, store_held, take_held, tls_handshake,
-    use_invalid_test_certs, HELD_RELAY_LIMIT, SOCKS_MISCONFIGURED,
+    use_invalid_test_certs, CONNECT_LIMIT, HELD_RELAY_LIMIT, SOCKS_MISCONFIGURED,
 };
 
 pub(crate) use assign::schedule_relay_assignments;

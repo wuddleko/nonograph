@@ -1,5 +1,7 @@
 use crate::canonical_public_relay;
 
+pub const MAX_LIST_URLS: usize = 20;
+
 pub fn list_urls(event: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(event) else {
         return Vec::new();
@@ -12,6 +14,9 @@ pub fn list_urls(event: &str) -> Vec<String> {
     };
     let mut urls = Vec::new();
     for entry in tags {
+        if urls.len() == MAX_LIST_URLS {
+            break;
+        }
         let Some(parts) = entry.as_array() else {
             continue;
         };

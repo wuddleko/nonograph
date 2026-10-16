@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crawler::{load, save, schedule, Pool, ProbeResult, Row, Visit, VisitHook};
 use serde_json::json;
+use serial_test::serial;
 
 use super::*;
 
@@ -699,14 +700,16 @@ fn a_non_door_stores_the_document_and_skips_the_list() {
 }
 
 #[test]
+#[serial(relay_sightings)]
 fn a_door_reads_the_list_while_the_pool_is_filling() {
+    clear_sightings();
     let body = include_str!("../test/nip11/auth.json").to_owned();
     let mut hook = CrawlVisit {
         timeout_secs: 30,
         filling: true,
         read: Saved {
             body,
-            urls: vec!["wss://other.example".to_owned()],
+            urls: vec!["wss://two-source.example".to_owned()],
             calls: Vec::new(),
             deadlines: Vec::new(),
         },
@@ -721,11 +724,45 @@ fn a_door_reads_the_list_while_the_pool_is_filling() {
 
     assert_eq!(hook.read.calls, ["list", "nip11"]);
     assert_eq!(hook.read.deadlines[0], hook.read.deadlines[1]);
+    assert!(!queue
+        .pool()
+        .rows
+        .iter()
+        .any(|row| row.url == "wss://two-source.example"));
+
+    assert!(queue.push("wss://relay.damus.io", NOW));
+    assert_eq!(
+        queue.visit_one(&mut hook, NOW).as_deref(),
+        Some("wss://relay.damus.io")
+    );
     assert!(queue
         .pool()
         .rows
         .iter()
-        .any(|row| row.url == "wss://other.example"));
+        .any(|row| row.url == "wss://two-source.example"));
+}
+
+#[test]
+#[serial(relay_sightings)]
+fn a_full_sighting_book_still_admits_a_second_source() {
+    clear_sightings();
+    for index in 0..SIGHTING_CAP {
+        let admitted =
+            admit_discovered("wss://nos.lol", vec![format!("wss://junk{index}.example")]);
+        assert!(admitted.is_empty());
+    }
+    let first = admit_discovered("wss://nos.lol", vec!["wss://kept.example".to_string()]);
+    assert!(first.is_empty());
+    let again = admit_discovered("wss://nos.lol", vec!["wss://kept.example".to_string()]);
+    assert!(again.is_empty());
+    assert_eq!(
+        admit_discovered(
+            "wss://relay.damus.io",
+            vec!["wss://kept.example".to_string()]
+        ),
+        vec!["wss://kept.example".to_string()]
+    );
+    clear_sightings();
 }
 
 #[test]

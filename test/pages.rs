@@ -419,6 +419,11 @@ fn rendered_home_switches_the_content_field() {
     assert!(!js.contains("stored only in this browser"));
     assert!(!js.contains("class=\"nostr-publish\""));
     assert_eq!(js.matches(">Store</button>").count(), 2);
+    assert_eq!(
+        js.matches("<button type=\"submit\" form=\"publishForm\" disabled>Store</button>")
+            .count(),
+        2
+    );
     assert!(js.contains("type=\"submit\""));
     assert!(nojs.contains("This host seals the note and sends it to these relays over Tor."));
     assert!(nojs.contains("Add or remove relays with the form."));
@@ -1471,6 +1476,68 @@ fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
 }
 
 #[test]
+fn a_later_hint_stays_available_in_the_pool() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let document: serde_json::Value =
+        serde_json::from_str(include_str!("nip11/open.json")).unwrap();
+    let row = |url: &str| crawler::Row {
+        url: url.to_string(),
+        first_seen: 1_700_000_000,
+        next_try: 1_700_000_100,
+        failures: 0,
+        publish_refused: false,
+        visit: Some(crawler::Visit {
+            at: 1_700_000_100,
+            socket_answered: true,
+            nip11: Some(document.clone()),
+            probes: vec![crawler::ProbeResult {
+                name: "30323".to_string(),
+                accepted: true,
+                detail: "OK".to_string(),
+            }],
+        }),
+    };
+    crawler::save(
+        &path,
+        &crawler::Pool {
+            rows: vec![row("wss://extra.example"), row("wss://row.example")],
+        },
+    )
+    .unwrap();
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://row.example", &note.event_json);
+    let event_id = note.id_hex();
+    assert_eq!(
+        fetch_sealed_by_id(
+            &[
+                "wss://hint0.example".to_string(),
+                "wss://hint1.example".to_string(),
+                "wss://hintonly.example".to_string(),
+                "wss://extra.example".to_string(),
+                "wss://row.example".to_string(),
+            ],
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            std::time::Duration::from_secs(2),
+            &path,
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert!(answers.asked("wss://hint0.example"));
+    assert!(answers.asked("wss://hint1.example"));
+    assert!(answers.asked("wss://extra.example"));
+    assert!(answers.asked("wss://row.example"));
+    assert!(!answers.asked("wss://hintonly.example"));
+}
+
+#[test]
 fn public_fetch_keeps_the_link_relays_in_order() {
     let hints = vec![
         "wss://hint.example".to_string(),
@@ -1806,7 +1873,7 @@ fn nojs_publish_failure_keeps_the_draft() {
         csrf_token: "not-a-token".to_string(),
     };
 
-    let expired = nojs_publish_failure_page(&config, &form, "csrf_token_invalid", None).0;
+    let expired = nojs_publish_failure_page(&config, &form, "csrf_token_invalid", None, false).0;
     assert!(expired.contains("The publish form expired. Try again."));
     assert!(expired.contains("Hello &lt;World&gt;"));
     assert!(expired.contains("  # ici  "));
@@ -1820,7 +1887,7 @@ fn nojs_publish_failure_keeps_the_draft() {
 
     let mut blank = form.clone();
     blank.content = " \n ".to_string();
-    let empty = nojs_publish_failure_page(&config, &blank, "content_required", None).0;
+    let empty = nojs_publish_failure_page(&config, &blank, "content_required", None, false).0;
     assert!(empty.contains("Write something before publishing."));
     assert!(empty.contains("Hello &lt;World&gt;"));
     assert!(empty.contains(" \n "));
@@ -1831,7 +1898,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     );
     assert_eq!(relay_field_error(&empty), "");
 
-    let known = nojs_publish_failure_page(&config, &form, "nostr_publish_failed", None).0;
+    let known = nojs_publish_failure_page(&config, &form, "nostr_publish_failed", None, false).0;
     assert!(known.contains("Publishing failed. Try again."));
     assert!(!relay_url_input_after(&known, "sidebar-relays").contains("value="));
     assert!(!known.contains("<li data-relay=\"wss://relay.primal.net\">"));
@@ -1845,7 +1912,7 @@ fn nojs_publish_failure_keeps_the_draft() {
     assert!(nojs_error_code("/nojs?error=").is_none());
     assert!(nojs_error_code("/?error=title_required").is_none());
 
-    let too_long = nojs_publish_failure_page(&config, &form, "content_too_long", None).0;
+    let too_long = nojs_publish_failure_page(&config, &form, "content_too_long", None, false).0;
     assert!(too_long.contains("The post is too long."));
     assert!(too_long.contains("Hello &lt;World&gt;"));
     assert!(too_long.contains("  # ici  "));
@@ -1899,7 +1966,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
         Err(error) => panic!("{error}"),
         Ok(_) => panic!("expected content_too_long"),
     }
-    let page = nojs_publish_failure_page(&config, &over, "content_too_long", None).0;
+    let page = nojs_publish_failure_page(&config, &over, "content_too_long", None, false).0;
     assert!(page.contains("The post is too long."));
     assert!(page.contains("Hello &lt;World&gt;"));
     assert!(page.contains(&"b".repeat(64)));
@@ -1916,7 +1983,7 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
     assert!(controls.content.len() <= wide.limits.content_max_length);
     let href = create_location_with_cookie(&controls, &wide, "", Some(&relays));
     assert_eq!(href, "/nojs?error=content_too_long");
-    let kept = nojs_publish_failure_page(&wide, &controls, "content_too_long", None).0;
+    let kept = nojs_publish_failure_page(&wide, &controls, "content_too_long", None, false).0;
     assert!(kept.contains("The post is too long."));
     assert!(kept.contains("value=\"T\"") || kept.contains(">T</textarea>"));
     assert!(kept.contains(&controls.content));
@@ -4465,10 +4532,16 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
 
 #[test]
 #[serial(nojs_sealed_fetch)]
-fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
-    let mut held = Vec::new();
+fn nojs_create_takes_a_public_publish_slot_until_it_finishes() {
+    let mut readers = Vec::new();
     for _ in 0..MAX_PUBLIC_FETCHES {
-        held.push(PublicFetchSlot::acquire().expect("public fetch slot"));
+        readers.push(PublicFetchSlot::acquire().expect("public fetch slot"));
+    }
+    drop(nojs_publish_slot().expect("publish has its own slots"));
+    drop(readers);
+    let mut held = Vec::new();
+    for _ in 0..MAX_PUBLIC_PUBLISHES {
+        held.push(PublicPublishSlot::acquire().expect("public publish slot"));
     }
     let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert_eq!(
@@ -4505,12 +4578,12 @@ fn nojs_create_takes_a_public_fetch_slot_until_it_finishes() {
         set_nojs_test_accepted(Some(vec!["wss://relay.primal.net".to_string()]));
         let href = create_location_with_cookie(&form, &config, "", Some(&relays));
         assert_eq!(href, "/nojs?error=nostr_publish_failed");
-        assert!(nojs_publish_slot().is_err(), "sealing took a reader slot");
+        assert!(nojs_publish_slot().is_err(), "sealing took a publish slot");
 
         held.pop();
         let href = create_location_with_cookie(&form, &config, "", Some(&relays));
         assert!(href.starts_with("/s/"), "{href}");
-        let released = nojs_publish_slot().expect("publish released the reader slot");
+        let released = nojs_publish_slot().expect("publish released the publish slot");
         drop(released);
     }));
     drop(held);

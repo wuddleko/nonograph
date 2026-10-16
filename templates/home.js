@@ -164,6 +164,7 @@ function paintSavedRelayLists(doc, storage) {
             const errorEl = form.querySelector(".form-error");
             const circuitByRelay = new Map();
             let circuitsTracked = false;
+            let storeReady = false;
 
             function everyRelayHasPath() {
                 if (!circuitsTracked) {
@@ -365,7 +366,7 @@ function paintSavedRelayLists(doc, storage) {
                 const overLimit = editor.value.length > contentLimit;
                 const blocked = !hasAnyPublishRelay();
                 publishButtons.forEach((button) => {
-                    button.disabled = publishing || overLimit || blocked;
+                    button.disabled = !storeReady || publishing || overLimit || blocked;
                 });
             }
             syncNostrButtons();
@@ -513,6 +514,7 @@ function paintSavedRelayLists(doc, storage) {
                 e.preventDefault();
                 publishOnNostr();
             });
+            storeReady = true;
 
             updateCharCount();
 

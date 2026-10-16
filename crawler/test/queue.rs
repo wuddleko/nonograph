@@ -375,6 +375,16 @@ fn an_open_rotation_revisits_a_cooling_door() {
 }
 
 #[test]
+fn the_pool_stops_accepting_rows_at_the_cap() {
+    let mut queue = Queue::new(Pool { rows: Vec::new() });
+    for index in 0..MAX_POOL_ROWS {
+        assert!(queue.push(&format!("wss://row{index}.example"), NOW));
+    }
+    assert!(!queue.push("wss://overflow.example", NOW));
+    assert_eq!(queue.pool().rows.len(), MAX_POOL_ROWS);
+}
+
+#[test]
 fn a_cooling_row_left_unpushed_leaves_the_queue_idle() {
     let queue = Queue::new(Pool {
         rows: vec![Row {

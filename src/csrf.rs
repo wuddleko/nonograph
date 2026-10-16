@@ -92,9 +92,31 @@ fn random_token() -> String {
     hex_encode(&bytes)
 }
 
+pub(crate) fn forwarded_https(request: &rocket::Request<'_>) -> bool {
+    request
+        .headers()
+        .get_one("X-Forwarded-Proto")
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+}
+
+pub(crate) struct HttpsForward(pub bool);
+
+#[rocket::async_trait]
+impl<'r> rocket::request::FromRequest<'r> for HttpsForward {
+    type Error = std::convert::Infallible;
+
+    async fn from_request(
+        request: &'r rocket::Request<'_>,
+    ) -> rocket::request::Outcome<Self, Self::Error> {
+        rocket::request::Outcome::Success(HttpsForward(forwarded_https(request)))
+    }
+}
+
 pub(crate) fn form_csrf_token(
     config: &crate::config::Config,
     cookies: Option<&rocket::http::CookieJar<'_>>,
+    secure: bool,
 ) -> String {
     if !config.security.csrf_protection_enabled {
         return String::new();
@@ -106,7 +128,7 @@ pub(crate) fn form_csrf_token(
     let (token, set_cookie) = token_for_form(existing.as_deref());
     if set_cookie {
         if let Some(jar) = cookies {
-            jar.add(csrf_cookie(&token));
+            jar.add(csrf_cookie(&token, secure));
         }
     }
     token
@@ -119,12 +141,12 @@ pub(crate) fn request_csrf_cookie(cookies: &rocket::http::CookieJar<'_>) -> Stri
         .unwrap_or_default()
 }
 
-fn csrf_cookie(token: &str) -> rocket::http::Cookie<'static> {
+fn csrf_cookie(token: &str, secure: bool) -> rocket::http::Cookie<'static> {
     rocket::http::Cookie::build((COOKIE_NAME, token.to_owned()))
         .http_only(true)
         .same_site(rocket::http::SameSite::Lax)
         .path("/")
-        .secure(false)
+        .secure(secure)
         .max_age(rocket::time::Duration::seconds(TOKEN_TTL_SECS as i64))
         .into()
 }

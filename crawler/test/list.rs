@@ -32,6 +32,19 @@ fn list_urls_returns_nothing_when_the_event_does_not_match() {
 }
 
 #[test]
+fn list_urls_keeps_the_first_twenty() {
+    let tags = (0..25)
+        .map(|index| format!(r#"["r","wss://list{index}.example"]"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let event = format!(r#"{{"kind":10002,"tags":[{tags}]}}"#);
+    let urls = list_urls(&event);
+    assert_eq!(urls.len(), MAX_LIST_URLS);
+    assert_eq!(urls[0], "wss://list0.example");
+    assert_eq!(urls[19], "wss://list19.example");
+}
+
+#[test]
 fn list_urls_reads_a_saved_10002_event() {
     let event = include_str!("fixtures/10002.json");
     assert_eq!(

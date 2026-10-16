@@ -348,6 +348,12 @@ fn already_connected(error: &std::io::Error) -> bool {
     }
 }
 
+pub(super) const CONNECT_LIMIT: Duration = Duration::from_secs(10);
+
+pub(super) fn connect_deadline(deadline: Instant) -> Instant {
+    deadline.min(Instant::now() + CONNECT_LIMIT)
+}
+
 pub(super) fn connect_tcp(
     address: SocketAddr,
     deadline: Instant,
@@ -512,6 +518,7 @@ pub(super) fn with_relay_tls<T>(
     if public_only && !public_relay_url(relay) {
         return Err("relay address is not public".to_string());
     }
+    let deadline = connect_deadline(deadline);
     wait_budget(deadline, cancel)?;
     let connector = tls_connector()?;
     if let Some(proxy) = proxy {
@@ -566,6 +573,7 @@ pub(super) fn connect_relay(
     let request = relay
         .into_client_request()
         .map_err(|error| error.to_string())?;
+    let deadline = connect_deadline(deadline);
     with_relay_tls(relay, deadline, cancel, public_only, socks, |tls| {
         websocket_handshake(request.clone(), tls, deadline, cancel)
     })
@@ -706,13 +714,14 @@ pub(super) fn open_relay_socket(
     public_only: bool,
     socks: RelaySocks,
 ) -> Result<RelaySocket, String> {
+    let connect_by = connect_deadline(deadline);
     if let Some(tls) = take_held(relay) {
         // A relay can close this parked handshake while Tor still lists its circuit.
         if let Ok(request) = relay.into_client_request() {
-            if let Ok(socket) = websocket_handshake(request, tls, deadline, None) {
+            if let Ok(socket) = websocket_handshake(request, tls, connect_by, None) {
                 return Ok(socket);
             }
         }
     }
-    connect_relay(relay, deadline, None, public_only, socks)
+    connect_relay(relay, connect_by, None, public_only, socks)
 }

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest;
 
 use super::transport::{
-    connect_tcp, reap_held_relays, socks5_connect, store_held, tls_connector, tls_handshake,
-    SOCKS_MISCONFIGURED,
+    connect_deadline, connect_tcp, reap_held_relays, socks5_connect, store_held, tls_connector,
+    tls_handshake, SOCKS_MISCONFIGURED,
 };
 #[cfg(test)]
 use super::{canonical_public_relay, same_public_relay, SendFailure};
@@ -31,6 +31,7 @@ pub(super) fn assign_relay(
     let host = uri.host().ok_or("relay url has no host")?.to_string();
     let port = uri.port_u16().unwrap_or(443);
     let connector = tls_connector()?;
+    let deadline = connect_deadline(deadline);
     let tcp = connect_tcp(proxy, deadline, None)?;
     socks5_connect(&tcp, &host, port, relay, deadline, None)?;
     let tls = tls_handshake(connector, &host, tcp, deadline, None)?;

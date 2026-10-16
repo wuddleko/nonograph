@@ -8,8 +8,8 @@ mod visit;
 
 pub use batch::{run_batch, VISIT_CAP};
 pub use deal::deal;
-pub use list::list_urls;
-pub use queue::Queue;
+pub use list::{list_urls, MAX_LIST_URLS};
+pub use queue::{Queue, MAX_POOL_ROWS};
 pub use relay_url::{blocked_relay_ip, canonical_public_relay, valid_relay_url};
 pub use schedule::{due, schedule};
 pub use visit::VisitHook;
@@ -67,6 +67,12 @@ pub fn load(path: &Path) -> Pool {
         return Pool { rows: Vec::new() };
     };
     serde_json::from_slice(&bytes).unwrap_or(Pool { rows: Vec::new() })
+}
+
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn pool_generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
 }
 
 pub fn read_pool(path: &Path) -> io::Result<Pool> {
@@ -132,6 +138,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         TEMPS.fetch_add(1, Ordering::Relaxed)
     ));
     let result = write_temp(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if result.is_ok() {
+        GENERATION.fetch_add(1, Ordering::Release);
+    }
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }

@@ -1293,6 +1293,61 @@ fn park_held_relay(relay: &str) {
 }
 
 #[test]
+fn a_parked_relay_upgrade_stops_at_the_connect_limit() {
+    use_invalid_test_certs();
+    let relay = "wss://stall-upgrade.example";
+    let identity = native_tls::Identity::from_pkcs12(include_bytes!("warm.p12"), "test").unwrap();
+    let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        if read_socks_connect(&mut stream).is_none() {
+            return;
+        }
+        let Ok(tls) = acceptor.accept(stream) else {
+            return;
+        };
+        let _ = ready_tx.send(());
+        let _ = release_rx.recv_timeout(Duration::from_secs(20));
+        drop(tls);
+    });
+    assign_relay(
+        relay,
+        Instant::now() + Duration::from_secs(2),
+        RelaySocks::Proxy(proxy),
+    )
+    .unwrap();
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("parked tls");
+
+    let started = Instant::now();
+    let error = open_relay_socket(
+        relay,
+        Instant::now() + Duration::from_secs(30),
+        true,
+        RelaySocks::Disabled,
+    )
+    .unwrap_err();
+    let elapsed = started.elapsed();
+    let _ = release_tx.send(());
+    assert_eq!(error, SOCKS_MISCONFIGURED);
+    assert!(
+        elapsed + Duration::from_secs(1) >= CONNECT_LIMIT,
+        "upgrade returned in {elapsed:?}"
+    );
+    assert!(
+        elapsed < CONNECT_LIMIT + Duration::from_secs(4),
+        "upgrade waited {elapsed:?}"
+    );
+}
+
+#[test]
 fn a_closed_held_relay_falls_back_to_a_fresh_connect() {
     let relay = "wss://closed.example";
     park_held_relay(relay);

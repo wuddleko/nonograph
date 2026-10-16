@@ -3,6 +3,8 @@ use std::collections::{HashSet, VecDeque};
 use crate::schedule::{is_due, schedule};
 use crate::{canonical_public_relay, Pool, Row, Visit, VisitHook};
 
+pub const MAX_POOL_ROWS: usize = 512;
+
 #[derive(Debug)]
 pub struct Queue {
     pool: Pool,
@@ -114,6 +116,9 @@ impl Queue {
     fn consider(&mut self, raw: &str, now: i64, force: bool) -> Option<String> {
         let url = canonical_public_relay(raw)?;
         if !self.pool.rows.iter().any(|row| row.url == url) {
+            if self.pool.rows.len() >= MAX_POOL_ROWS {
+                return None;
+            }
             self.pool.rows.push(Row {
                 url: url.clone(),
                 first_seen: now,

@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use crawler::{due, edit_pool, read_pool, run_batch, Queue, Row, Visit, VisitHook};
 use serde_json::Value;
@@ -218,9 +220,148 @@ impl<R: RelayRead> VisitHook for CrawlVisit<R> {
                 nip11,
                 probes,
             },
-            list.urls,
+            admit_discovered(url, list.urls),
         )
     }
+}
+
+const SIGHTING_CAP: usize = 4096;
+
+struct Sighting {
+    sources: Vec<String>,
+    seen_at: u64,
+}
+
+struct SightingBook {
+    next: u64,
+    rows: HashMap<String, Sighting>,
+}
+
+fn sightings() -> &'static Mutex<SightingBook> {
+    static SEEN: OnceLock<Mutex<SightingBook>> = OnceLock::new();
+    SEEN.get_or_init(|| {
+        Mutex::new(SightingBook {
+            next: 0,
+            rows: HashMap::new(),
+        })
+    })
+}
+
+#[cfg(test)]
+fn clear_sightings() {
+    let mut seen = sightings()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    seen.next = 0;
+    seen.rows.clear();
+}
+
+fn parent_source(url: &str) -> Option<String> {
+    let url = crawler::canonical_public_relay(url)?;
+    let rest = url.strip_prefix("wss://")?;
+    let host = rest.split(['/', ':']).next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+pub(crate) fn admit_discovered(from: &str, urls: Vec<String>) -> Vec<String> {
+    let Some(source) = parent_source(from) else {
+        return Vec::new();
+    };
+    let mut kept = Vec::new();
+    let mut seen = sightings()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    for url in urls {
+        let Some(url) = crawler::canonical_public_relay(&url) else {
+            continue;
+        };
+        if note_sighting(&mut seen, &url, &source) {
+            kept.push(url);
+        }
+    }
+    kept
+}
+
+fn note_sighting(book: &mut SightingBook, url: &str, source: &str) -> bool {
+    book.next = book.next.saturating_add(1);
+    let seen_at = book.next;
+    if let Some(row) = book.rows.get_mut(url) {
+        row.seen_at = seen_at;
+        if row.sources.len() < 2 && !row.sources.iter().any(|have| have == source) {
+            row.sources.push(source.to_string());
+        }
+        return row.sources.len() >= 2;
+    }
+    if book.rows.len() >= SIGHTING_CAP {
+        if let Some(oldest) = oldest_sighting(&book.rows) {
+            book.rows.remove(&oldest);
+        }
+    }
+    book.rows.insert(
+        url.to_string(),
+        Sighting {
+            sources: vec![source.to_string()],
+            seen_at,
+        },
+    );
+    false
+}
+
+fn oldest_sighting(rows: &HashMap<String, Sighting>) -> Option<String> {
+    rows.iter()
+        .min_by(|left, right| {
+            let left_single = left.1.sources.len() < 2;
+            let right_single = right.1.sources.len() < 2;
+            right_single
+                .cmp(&left_single)
+                .then(left.1.seen_at.cmp(&right.1.seen_at))
+        })
+        .map(|(url, _)| url.clone())
+}
+
+struct CachedPool {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    generation: u64,
+    rows: Vec<Row>,
+}
+
+fn pool_cache() -> &'static Mutex<Option<CachedPool>> {
+    static CACHE: OnceLock<Mutex<Option<CachedPool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn read_cached_rows(path: &Path) -> io::Result<Vec<Row>> {
+    let meta = std::fs::metadata(path).ok();
+    let modified = meta.as_ref().and_then(|meta| meta.modified().ok());
+    let len = meta.as_ref().map(|meta| meta.len()).unwrap_or(0);
+    let generation = crawler::pool_generation();
+    let mut slot = pool_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(hit) = slot.as_ref() {
+        if hit.path == path
+            && hit.modified == modified
+            && hit.len == len
+            && hit.generation == generation
+        {
+            return Ok(hit.rows.clone());
+        }
+    }
+    let rows = read_pool(path)?.rows;
+    *slot = Some(CachedPool {
+        path: path.to_path_buf(),
+        modified,
+        len,
+        generation,
+        rows: rows.clone(),
+    });
+    Ok(rows)
 }
 
 fn is_door(url: &str) -> bool {
@@ -240,8 +381,8 @@ fn nip11_document(body: Option<&str>) -> Option<Value> {
 }
 
 pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
-    let rows = match read_pool(path) {
-        Ok(pool) => pool.rows,
+    let rows = match read_cached_rows(path) {
+        Ok(rows) => rows,
         Err(error) => {
             eprintln!(
                 "Nonograph: relay pool {} was not read: {error}",
@@ -254,9 +395,8 @@ pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
 }
 
 pub(crate) fn candidates(path: &Path, configured: &[String]) -> Vec<String> {
-    match read_pool(path) {
-        Ok(pool) => pool
-            .rows
+    match read_cached_rows(path) {
+        Ok(rows) => rows
             .into_iter()
             .filter(row_is_usable)
             .take(CANDIDATE_CAP)

@@ -12,7 +12,7 @@ use crate::relay_set::{public_relays, push_public_relay, relay_timeout};
 use crate::render_options;
 use crate::template;
 
-use super::fetch_slot::PublicFetchSlot;
+use super::fetch_slot::PublicPublishSlot;
 
 fn home_content_field(
     nojs: bool,
@@ -111,6 +111,7 @@ pub(super) fn home_context(
             typed_relay: "",
         },
         cookies,
+        false,
     )
 }
 
@@ -120,6 +121,7 @@ fn home_form_context(
     error: Option<&str>,
     draft: HomeDraft<'_>,
     cookies: Option<&CookieJar<'_>>,
+    secure: bool,
 ) -> HashMap<String, String> {
     let mut context = HashMap::new();
     let max_length = config.limits.content_max_length.to_string();
@@ -162,7 +164,7 @@ fn home_form_context(
     } else {
         home_error_message(Some(relay_error))
     };
-    let csrf_token = csrf::form_csrf_token(config, cookies);
+    let csrf_token = csrf::form_csrf_token(config, cookies, secure);
     context.insert("csrf_token".to_string(), csrf_token.clone());
     context.insert(
         "form_action".to_string(),
@@ -197,6 +199,7 @@ fn home_form_context(
             &relay_message,
             draft.typed_relay,
             &config.nostr.relays,
+            secure,
         )
     } else {
         let (sidebar, section) = super::relays::landing_relay_blocks(&config.nostr.relays);
@@ -206,8 +209,11 @@ fn home_form_context(
     context.insert("relays_section".to_string(), relays_section);
     let publish_attrs = if nojs && nojs_relays == 0 {
         " class=\"no-relays\" disabled"
-    } else {
+    } else if nojs {
         ""
+    } else {
+        // The JS page enables Store only after home.js binds the submit handler.
+        " disabled"
     };
     context.insert("publish_attrs".to_string(), publish_attrs.to_string());
     let origin = config.normalized_public_origin().unwrap_or_default();
@@ -224,6 +230,7 @@ fn nojs_landing_relays(
     add_error: &str,
     typed: &str,
     configured: &[String],
+    secure: bool,
 ) -> (String, String, usize) {
     let saved = cookies.and_then(|jar| {
         jar.get(super::relays::RELAY_LIST_COOKIE)
@@ -233,7 +240,7 @@ fn nojs_landing_relays(
         super::relays::nojs_relay_state(&super::relays::relay_pool(), saved.as_deref(), configured);
     if state.write_cookie {
         if let Some(jar) = cookies {
-            super::relays::set_relay_list_cookie(jar, &state.cookie);
+            super::relays::set_relay_list_cookie(jar, &state.cookie, secure);
         }
     }
     let form = crate::relays::render_nojs_relay_form(
@@ -277,6 +284,7 @@ fn render_home(
     error: Option<&str>,
     cookies: &CookieJar<'_>,
     typed: &str,
+    secure: bool,
 ) -> content::RawHtml<String> {
     let context = home_form_context(
         config,
@@ -289,6 +297,7 @@ fn render_home(
             typed_relay: typed,
         },
         Some(cookies),
+        secure,
     );
     match template::shared().render("home", &context) {
         Ok(html) => content::RawHtml(html),
@@ -301,8 +310,9 @@ pub fn index(
     error: Option<&str>,
     config: &State<Config>,
     cookies: &CookieJar<'_>,
+    https: csrf::HttpsForward,
 ) -> content::RawHtml<String> {
-    render_home(config, false, error, cookies, "")
+    render_home(config, false, error, cookies, "", https.0)
 }
 
 #[get("/nojs?<error>&<typed>")]
@@ -311,12 +321,13 @@ pub fn nojs_index(
     typed: Option<&str>,
     config: &State<Config>,
     cookies: &CookieJar<'_>,
+    https: csrf::HttpsForward,
 ) -> content::RawHtml<String> {
     let typed = match error {
         Some("relay_invalid" | "relay_full") => typed.unwrap_or(""),
         _ => "",
     };
-    render_home(config, true, error, cookies, typed)
+    render_home(config, true, error, cookies, typed, https.0)
 }
 
 #[derive(Clone, FromForm)]
@@ -478,8 +489,8 @@ pub(super) fn nojs_publish_relays(saved: &[String]) -> Option<Vec<String>> {
     }
 }
 
-pub(super) fn nojs_publish_slot() -> Result<PublicFetchSlot, &'static str> {
-    PublicFetchSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
+pub(super) fn nojs_publish_slot() -> Result<PublicPublishSlot, &'static str> {
+    PublicPublishSlot::acquire().ok_or("/nojs?error=nostr_publish_failed")
 }
 
 fn render_nojs_form(
@@ -487,6 +498,7 @@ fn render_nojs_form(
     form: &NewPost,
     error: Option<&str>,
     cookies: Option<&CookieJar<'_>>,
+    secure: bool,
 ) -> content::RawHtml<String> {
     let context = home_form_context(
         config,
@@ -499,6 +511,7 @@ fn render_nojs_form(
             typed_relay: "",
         },
         cookies,
+        secure,
     );
     match template::shared().render("home", &context) {
         Ok(html) => content::RawHtml(html),
@@ -520,8 +533,9 @@ pub(super) fn nojs_publish_failure_page(
     form: &NewPost,
     error: &str,
     cookies: Option<&CookieJar<'_>>,
+    secure: bool,
 ) -> content::RawHtml<String> {
-    render_nojs_form(config, form, Some(error), cookies)
+    render_nojs_form(config, form, Some(error), cookies, secure)
 }
 
 #[post("/nojs/create", data = "<form>")]
@@ -529,7 +543,9 @@ pub async fn nojs_create_post(
     form: rocket::form::Form<NewPost>,
     config: &State<Config>,
     cookies: &CookieJar<'_>,
+    https: csrf::HttpsForward,
 ) -> rocket::Either<rocket::response::Redirect, content::RawHtml<String>> {
+    let secure = https.0;
     let form = form.into_inner();
     let config_owned = config.inner().clone();
     let moved = form.clone();
@@ -549,6 +565,7 @@ pub async fn nojs_create_post(
                 &form,
                 "nostr_publish_failed",
                 Some(cookies),
+                secure,
             ));
         }
     };
@@ -558,6 +575,7 @@ pub async fn nojs_create_post(
             &form,
             error,
             Some(cookies),
+            secure,
         ))
     } else {
         rocket::Either::Left(rocket::response::Redirect::to(location))
@@ -725,7 +743,7 @@ pub async fn nostr_publish(
     let config = config.inner().clone();
     let body = body.into_inner();
     let csrf_cookie = csrf::request_csrf_cookie(cookies);
-    let Some(_slot) = PublicFetchSlot::acquire() else {
+    let Some(_slot) = PublicPublishSlot::acquire() else {
         return Err(Status::ServiceUnavailable);
     };
     match rocket::tokio::task::spawn_blocking(move || {

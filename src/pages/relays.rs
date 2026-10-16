@@ -36,7 +36,12 @@ impl RelayCookie {
 
 fn parsed_relay_cookie(value: Option<&str>) -> Option<RelayCookie> {
     let value = value.map(str::trim).filter(|value| !value.is_empty())?;
-    serde_json::from_str(value).ok()
+    let mut cookie: RelayCookie = serde_json::from_str(value).ok()?;
+    cookie.pinned.truncate(RELAY_CAP);
+    cookie
+        .dealt
+        .truncate(RELAY_CAP.saturating_sub(cookie.pinned.len()));
+    Some(cookie)
 }
 
 pub(crate) fn read_relay_cookie(value: Option<&str>) -> RelayCookie {
@@ -134,8 +139,8 @@ fn nojs_relays_view(
     }
 }
 
-pub(super) fn set_relay_list_cookie(cookies: &CookieJar<'_>, list: &RelayCookie) {
-    cookies.add(relay_list_cookie(&write_relay_cookie(list)));
+pub(super) fn set_relay_list_cookie(cookies: &CookieJar<'_>, list: &RelayCookie, secure: bool) {
+    cookies.add(relay_list_cookie(&write_relay_cookie(list), secure));
 }
 
 fn relays_document(body: &str, relay_script: bool) -> String {
@@ -164,19 +169,23 @@ fn relays_document(body: &str, relay_script: bool) -> String {
     )
 }
 
-fn relay_list_cookie(value: &str) -> rocket::http::Cookie<'static> {
+fn relay_list_cookie(value: &str, secure: bool) -> rocket::http::Cookie<'static> {
     rocket::http::Cookie::build((RELAY_LIST_COOKIE, value.to_owned()))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
-        .secure(false)
+        .secure(secure)
         .max_age(rocket::time::Duration::seconds(60 * 60 * 24 * 365))
         .into()
 }
 
 #[get("/relays")]
-pub fn relays_page(cookies: &CookieJar<'_>, config: &State<Config>) -> content::RawHtml<String> {
-    let token = csrf::form_csrf_token(config, Some(cookies));
+pub fn relays_page(
+    cookies: &CookieJar<'_>,
+    config: &State<Config>,
+    https: csrf::HttpsForward,
+) -> content::RawHtml<String> {
+    let token = csrf::form_csrf_token(config, Some(cookies), https.0);
     content::RawHtml(relays_page_html_with_csrf(
         &pool_path(Path::new("content")),
         &token,
@@ -245,8 +254,9 @@ fn pin_relay(list: &RelayCookie, url: &str) -> Result<RelayCookie, &'static str>
 }
 
 fn bounded_count(pinned: usize, count: &str) -> usize {
-    let requested = count.trim().parse::<usize>().unwrap_or(pinned);
-    requested.clamp(pinned, RELAY_CAP)
+    let floor = pinned.min(RELAY_CAP);
+    let requested = count.trim().parse::<usize>().unwrap_or(floor);
+    requested.max(floor).min(RELAY_CAP)
 }
 
 fn set_relay_count(
@@ -256,7 +266,7 @@ fn set_relay_count(
     configured: &[String],
 ) -> RelayCookie {
     let total = bounded_count(list.pinned.len(), count);
-    let open = total - list.pinned.len();
+    let open = total.saturating_sub(list.pinned.len());
     let mut dealt: Vec<String> = list.dealt.iter().take(open).cloned().collect();
     if dealt.len() < open {
         let mut skip = list.pinned.clone();
@@ -281,7 +291,7 @@ fn reshuffle_relays(
     configured: &[String],
 ) -> RelayCookie {
     let total = bounded_count(list.pinned.len(), count);
-    let open = total - list.pinned.len();
+    let open = total.saturating_sub(list.pinned.len());
     RelayCookie {
         dealt: deal(
             &candidates(path, configured),
@@ -329,8 +339,8 @@ impl Drop for RelayContentGuard {
     }
 }
 
-fn save_relay_list(cookies: &CookieJar<'_>, list: &RelayCookie, config: &Config) {
-    cookies.add(relay_list_cookie(&write_relay_cookie(list)));
+fn save_relay_list(cookies: &CookieJar<'_>, list: &RelayCookie, config: &Config, secure: bool) {
+    cookies.add(relay_list_cookie(&write_relay_cookie(list), secure));
     let relays = list
         .pinned
         .iter()
@@ -348,8 +358,10 @@ fn save_relay_list(cookies: &CookieJar<'_>, list: &RelayCookie, config: &Config)
 pub fn nojs_relays_page(
     cookies: &CookieJar<'_>,
     config: &State<Config>,
+    https: csrf::HttpsForward,
 ) -> content::RawHtml<String> {
-    let token = csrf::form_csrf_token(config, Some(cookies));
+    let secure = https.0;
+    let token = csrf::form_csrf_token(config, Some(cookies), secure);
     let saved = cookies
         .get(RELAY_LIST_COOKIE)
         .map(|cookie| cookie.value().to_string());
@@ -360,7 +372,7 @@ pub fn nojs_relays_page(
         &config.nostr.relays,
     );
     if page.write_cookie {
-        set_relay_list_cookie(cookies, &page.cookie);
+        set_relay_list_cookie(cookies, &page.cookie, secure);
     }
     content::RawHtml(page.html)
 }
@@ -386,7 +398,9 @@ pub fn nojs_relays_update(
     form: Form<RelayForm>,
     cookies: &CookieJar<'_>,
     config: &State<Config>,
+    https: csrf::HttpsForward,
 ) -> rocket::response::Redirect {
+    let secure = https.0;
     let pool = relay_pool();
     let saved = cookies
         .get(RELAY_LIST_COOKIE)
@@ -401,15 +415,15 @@ pub fn nojs_relays_update(
     } else if !form.remove.is_empty() {
         let next = drop_relay(&list, &form.remove);
         if next != list {
-            save_relay_list(cookies, &next, config);
+            save_relay_list(cookies, &next, config, secure);
         }
     } else if form.action == "delete" {
-        save_relay_list(cookies, &RelayCookie::empty(), config);
+        save_relay_list(cookies, &RelayCookie::empty(), config, secure);
     } else if form.action == "add" {
         match pin_relay(&list, &form.relay) {
             Ok(next) => {
                 if next != list {
-                    save_relay_list(cookies, &next, config);
+                    save_relay_list(cookies, &next, config, secure);
                 }
             }
             Err(error) => add_error = error,
@@ -428,12 +442,12 @@ pub fn nojs_relays_update(
         };
         let next = set_relay_count(&pool, &list, &count, &config.nostr.relays);
         if next != list {
-            save_relay_list(cookies, &next, config);
+            save_relay_list(cookies, &next, config, secure);
         }
     } else if form.action == "reshuffle" {
         let next = reshuffle_relays(&pool, &list, &form.count, &config.nostr.relays);
         if next != list {
-            save_relay_list(cookies, &next, config);
+            save_relay_list(cookies, &next, config, secure);
         }
     }
     let typed = if matches!(

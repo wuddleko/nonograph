@@ -20,7 +20,8 @@ pub use assets::{
 };
 pub(crate) use assets::{post_scripts, PAGE_JS, PDF_JS};
 pub(crate) use fetch_slot::{
-    release_public_fetch, try_acquire_public_fetch, PublicFetchSlot, MAX_PUBLIC_FETCHES,
+    release_public_fetch, try_acquire_public_fetch, PublicFetchSlot, PublicPublishSlot,
+    MAX_PUBLIC_FETCHES, MAX_PUBLIC_PUBLISHES,
 };
 pub use home::{
     assign_tor_circuits, index, nojs_create_post, nojs_index, nostr_publish, tor_circuits,
