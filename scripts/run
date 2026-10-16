@@ -22,9 +22,10 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVICE_PORT=8009
 TOR_DATA_DIR="/var/lib/tor/nonograph"
 TORRC_PATH="/etc/tor/torrc"
-SERVICE_NAME="nonograph"
-LOG_FILE="$ROOT_DIR/nonograph.log"
+STATE_DIR="/var/lib/nonograph"
+ONION_BACKUP_DIR="/var/backups/nonograph"
 PID_FILE="$ROOT_DIR/nonograph.pid"
+BINARY="/usr/local/bin/nonograph"
 
 cd "$ROOT_DIR"
 
@@ -155,34 +156,30 @@ install_rust() {
     fi
 }
 
-# Check if Nonograph is already running
+# The pid file is the only process this script will signal.
+pid_is_nonograph() {
+    local pid="$1"
+    local exe
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    exe=${exe% \(deleted\)}
+    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nonograph" ]
+}
+
 check_existing_service() {
     local pid
 
-    # Check PID file
-    if [ -f "$PID_FILE" ]; then
-        pid=$(cat "$PID_FILE" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            if pgrep -f "$SERVICE_NAME" | grep -q "$pid"; then
-                log_info "Nonograph already running (PID: $pid)"
-                return 0
-            else
-                log_debug "Stale PID file found, removing..."
-                rm -f "$PID_FILE"
-            fi
-        else
-            rm -f "$PID_FILE"
-        fi
+    if [ ! -f "$PID_FILE" ]; then
+        return 1
     fi
-
-    # Check for running processes
-    pid=$(pgrep -f "$SERVICE_NAME" | head -1)
-    if [ -n "$pid" ]; then
-        echo "$pid" > "$PID_FILE"
-        log_info "Found running Nonograph process (PID: $pid)"
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if pid_is_nonograph "$pid"; then
+        log_info "Nonograph already running (PID: $pid)"
         return 0
     fi
-
+    log_debug "Stale PID file found, removing..."
+    rm -f "$PID_FILE"
     return 1
 }
 
@@ -190,24 +187,22 @@ check_existing_service() {
 stop_service() {
     log_info "Stopping existing Nonograph service..."
 
+    if systemctl cat nonograph >/dev/null 2>&1; then
+        sudo systemctl stop nonograph 2>/dev/null || true
+    fi
+
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        if pid_is_nonograph "$pid"; then
             kill "$pid"
             sleep 2
-
-            # Force kill if still running
-            if kill -0 "$pid" 2>/dev/null; then
+            if pid_is_nonograph "$pid"; then
                 kill -9 "$pid"
                 sleep 1
             fi
         fi
         rm -f "$PID_FILE"
     fi
-
-    # Kill any remaining processes
-    pkill -f "$SERVICE_NAME" 2>/dev/null || true
-    sleep 1
 
     log_success "Service stopped"
 }
@@ -251,8 +246,8 @@ backup_onion_keys() {
     if sudo test -d "$TOR_DATA_DIR" 2>/dev/null; then
         log_info "Backing up existing onion service keys..."
 
-        local backup_dir="$ROOT_DIR/onion_backup_$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "$backup_dir"
+        local backup_dir="$ONION_BACKUP_DIR/onion_$(date +%Y%m%d_%H%M%S)"
+        sudo mkdir -p "$backup_dir"
 
         # Copy keys with proper permissions
         sudo cp -r "$TOR_DATA_DIR"/* "$backup_dir/" 2>/dev/null || true
@@ -273,13 +268,22 @@ setup_tor() {
     sudo systemctl stop tor 2>/dev/null || true
 
     # Remove existing Nonograph configuration from torrc
-    sudo sed -i '/# Nonograph Hidden Service/,+2d' "$TORRC_PATH" 2>/dev/null || true
+    sudo awk '
+        /^# Nonograph Hidden Service$/ { skip=1; next }
+        skip && (/^HiddenService/ || /^# End Nonograph Hidden Service$/ || /^$/) { next }
+        skip { skip=0 }
+        { print }
+    ' "$TORRC_PATH" | sudo tee "$TORRC_PATH.tmp" >/dev/null && sudo mv "$TORRC_PATH.tmp" "$TORRC_PATH"
 
     # Add new configuration
     echo "" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "# Nonograph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServiceDir $TOR_DATA_DIR" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServicePort 80 127.0.0.1:$SERVICE_PORT" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "HiddenServiceEnableIntroDoSDefense 1" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "HiddenServiceEnableIntroDoSRatePerSec 25" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "HiddenServiceEnableIntroDoSBurstPerSec 200" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "# End Nonograph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
 
     # Create hidden service directory if it doesn't exist
     if ! sudo test -d "$TOR_DATA_DIR" 2>/dev/null; then
@@ -289,7 +293,7 @@ setup_tor() {
     fi
 
     # Restore backed up keys if we want to reuse the same onion address
-    local latest_backup=$(ls -t "$ROOT_DIR"/onion_backup_* 2>/dev/null | head -1)
+    local latest_backup=$(ls -td "$ONION_BACKUP_DIR"/onion_* 2>/dev/null | head -1)
     if [ -n "$latest_backup" ] && [ -d "$latest_backup" ]; then
         log_info "Restoring previous onion service keys..."
         sudo cp "$latest_backup"/* "$TOR_DATA_DIR/" 2>/dev/null || true
@@ -323,35 +327,54 @@ setup_tor() {
     fi
 }
 
+install_service() {
+    log_info "Installing the nonograph user and systemd unit..."
+
+    if ! id nonograph >/dev/null 2>&1; then
+        sudo useradd -r -s /usr/sbin/nologin -d "$STATE_DIR" nonograph
+    fi
+    sudo mkdir -p "$STATE_DIR/content"
+    sudo cp "$ROOT_DIR/target/release/nonograph" "$BINARY"
+    sudo chmod 755 "$BINARY"
+    sudo cp "$ROOT_DIR/Config.toml" "$STATE_DIR/Config.toml"
+    sudo rm -rf "$STATE_DIR/templates" "$STATE_DIR/pages"
+    sudo cp -a "$ROOT_DIR/templates" "$STATE_DIR/templates"
+    sudo cp -a "$ROOT_DIR/pages" "$STATE_DIR/pages"
+    sudo cp "$ROOT_DIR/scripts/nonograph.service" /etc/systemd/system/nonograph.service
+    sudo chown -R nonograph:nonograph "$STATE_DIR"
+    sudo systemctl daemon-reload
+    sudo systemctl enable nonograph
+}
+
 # Start Nonograph service
 start_service() {
     log_info "Starting Nonograph service..."
 
-    # Make sure we're in the right directory
-    cd "$ROOT_DIR"
+    install_service
+    sudo systemctl restart nonograph
 
-    # Start the service in background
-    nohup cargo run --release > "$LOG_FILE" 2>&1 &
-    local pid=$!
-
-    # Save PID
-    echo "$pid" > "$PID_FILE"
-
-    # Wait a moment and check if it's still running
-    sleep 3
-    if kill -0 "$pid" 2>/dev/null; then
-        log_success "Nonograph started successfully (PID: $pid)"
-
-        # Test if service is responding
-        if curl -s --max-time 5 "http://localhost:$SERVICE_PORT" > /dev/null 2>&1; then
-            log_success "Service is responding on port $SERVICE_PORT"
-        else
-            log_warn "Service started but not responding yet, may need a moment"
+    local pid=""
+    local attempts=0
+    while [ $attempts -lt 10 ]; do
+        pid=$(systemctl show -p MainPID --value nonograph 2>/dev/null || true)
+        if pid_is_nonograph "$pid"; then
+            break
         fi
-    else
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    if ! pid_is_nonograph "$pid"; then
         log_error "Failed to start Nonograph"
-        log_info "Check logs: tail -f $LOG_FILE"
+        log_info "Check logs: journalctl -u nonograph -n 50"
         exit 1
+    fi
+    echo "$pid" > "$PID_FILE"
+    log_success "Nonograph started successfully (PID: $pid)"
+
+    if curl -s --max-time 5 "http://localhost:$SERVICE_PORT" > /dev/null 2>&1; then
+        log_success "Service is responding on port $SERVICE_PORT"
+    else
+        log_warn "Service started but not responding yet, may need a moment"
     fi
 }
 
@@ -389,11 +412,9 @@ show_status() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     # Show recent logs
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${BLUE}📝 Recent logs:${NC}"
-        tail -5 "$LOG_FILE" | sed 's/^/   /'
-        echo
-    fi
+    echo -e "${BLUE}📝 Recent logs:${NC}"
+    journalctl -u nonograph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || true
+    echo
 
     # Show management commands
     echo -e "${CYAN}Management Commands:${NC}"
@@ -401,21 +422,17 @@ show_status() {
     echo "  ./scripts/run restart       - Restart the service"
     echo "  ./scripts/run logs          - View full logs"
     echo "  ./scripts/run status        - Show this status"
-    echo "  tail -f $LOG_FILE   - Follow logs in real-time"
+    echo "  journalctl -u nonograph -f   - Follow logs in real-time"
     echo
 }
 
 # Show logs
 show_logs() {
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${BLUE}📝 Nonograph Logs:${NC}"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        cat "$LOG_FILE"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "💡 Use 'tail -f $LOG_FILE' to follow logs in real-time"
-    else
-        log_warn "No log file found at $LOG_FILE"
-    fi
+    echo -e "${BLUE}📝 Nonograph Logs:${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    journalctl -u nonograph --no-pager 2>/dev/null || log_warn "No journal entries for nonograph"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "💡 Use 'journalctl -u nonograph -f' to follow logs in real-time"
 }
 
 # Health check and auto-fix issues
@@ -426,10 +443,7 @@ health_check() {
     # Check if ports are available
     if netstat -tuln 2>/dev/null | grep -q ":$SERVICE_PORT "; then
         if ! check_existing_service; then
-            log_warn "Port $SERVICE_PORT is in use but Nonograph not running"
-            log_info "Attempting to free port..."
-            sudo lsof -ti:$SERVICE_PORT | xargs sudo kill -9 2>/dev/null || true
-            sleep 2
+            log_warn "Port $SERVICE_PORT is in use and the pid file does not name Nonograph"
         fi
     fi
 
@@ -463,29 +477,6 @@ health_check() {
     return $issues_found
 }
 
-# Create a test post
-create_test_post() {
-    log_info "Creating test post to verify service..."
-
-    if ! curl -s --max-time 5 "http://localhost:$SERVICE_PORT" > /dev/null 2>&1; then
-        log_error "Service not accessible for testing"
-        return 1
-    fi
-
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local response=$(curl -s -w "%{http_code}" -X POST "http://localhost:$SERVICE_PORT/create" \
-        -d "title=Test Post - $timestamp" \
-        -d "content=This is an automated test post created by the run script at $timestamp. If you can see this, Nonograph is working correctly!" \
-        -H "Content-Type: application/x-www-form-urlencoded")
-
-    local http_code="${response: -3}"
-    if [ "$http_code" = "200" ] || [ "$http_code" = "302" ]; then
-        log_success "Test post created successfully"
-    else
-        log_warn "Test post creation returned code: $http_code"
-    fi
-}
-
 # Main execution function
 main() {
     local command="${1:-start}"
@@ -510,9 +501,6 @@ main() {
             ;;
         "logs")
             show_logs
-            ;;
-        "test")
-            create_test_post
             ;;
         "start"|*)
             show_banner
@@ -553,10 +541,6 @@ main() {
 
             # Start the service
             start_service
-
-            # Create test post
-            sleep 2
-            create_test_post
 
             # Show final status
             show_status

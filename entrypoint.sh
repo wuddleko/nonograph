@@ -5,6 +5,8 @@ mkdir -p /app/content
 chown -R nonograph:nonograph /app/content
 
 mkdir -p /var/lib/tor/hidden_service
+chown debian-tor:debian-tor /var/lib/tor
+chmod 700 /var/lib/tor
 chown -R debian-tor:debian-tor /var/lib/tor/hidden_service
 chmod 700 /var/lib/tor/hidden_service
 
@@ -17,15 +19,23 @@ mkdir -p /run/tor-control
 chown debian-tor:debian-tor /run/tor-control
 chmod 750 /run/tor-control
 rm -f /run/tor-control/cookie
-sudo -u debian-tor tor -f /etc/tor/torrc \
+# setpriv replaces itself, so this pid is Tor. The container has no CAP_KILL,
+# so kill cannot probe it. A zombie still has a status file; its state is Z.
+setpriv --reuid debian-tor --regid debian-tor --init-groups --inh-caps=-all -- \
+    tor -f /etc/tor/torrc \
     --Log "notice file ${TOR_LOG}" \
     --Log "notice stdout" &
 TOR_PID=$!
 
+tor_running() {
+    state=$(awk '/^State:/ { print $2 }' "/proc/${TOR_PID}/status" 2>/dev/null) || return 1
+    [ -n "$state" ] && [ "$state" != "Z" ]
+}
+
 COOKIE=/run/tor-control/cookie
 i=0
 while [ ! -f "$COOKIE" ]; do
-    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+    if ! tor_running; then
         echo "Tor exited before the control cookie was ready."
         break
     fi
@@ -42,7 +52,7 @@ echo "Waiting for Tor hidden service to be ready..."
 ONION_FILE="/var/lib/tor/hidden_service/hostname"
 i=0
 while [ ! -f "$ONION_FILE" ]; do
-    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+    if ! tor_running; then
         echo "Tor exited before the hidden service was ready, check logs above."
         break
     fi
@@ -80,7 +90,7 @@ fi
 echo "Waiting for Tor to bootstrap..."
 i=0
 while ! grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; do
-    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+    if ! tor_running; then
         echo "Tor exited before bootstrapping. Starting anyway; relay connections fail until it does."
         break
     fi
@@ -95,5 +105,6 @@ if grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; then
     echo "Tor is bootstrapped."
 fi
 
-# Drop to nonograph user and launch the app
-exec su -s /bin/sh -c 'ONION_URL="'"$ONION_URL"'" exec /app/nonograph' nonograph
+# Drop to nonograph user and launch the app. setpriv replaces this process,
+# so the app is pid 1 and does not keep the entrypoint's capabilities.
+exec setpriv --reuid nonograph --regid nonograph --init-groups --inh-caps=-all -- /app/nonograph

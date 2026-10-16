@@ -9,8 +9,11 @@ echo "╚═══════════════════════�
 echo
 
 # Check if Nonograph is running
-NONOGRAPH_PID=$(pgrep -f "nonograph" | head -1)
-if [ -n "$NONOGRAPH_PID" ]; then
+PID_FILE="$ROOT_DIR/nonograph.pid"
+NONOGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
+NONOGRAPH_EXE=$(readlink "/proc/$NONOGRAPH_PID/exe" 2>/dev/null || true)
+NONOGRAPH_EXE=${NONOGRAPH_EXE% \(deleted\)}
+if [ -n "$NONOGRAPH_PID" ] && kill -0 "$NONOGRAPH_PID" 2>/dev/null && { [ "$NONOGRAPH_EXE" = "/usr/local/bin/nonograph" ] || [ "$NONOGRAPH_EXE" = "$ROOT_DIR/target/release/nonograph" ]; }; then
     echo "✅ Nonograph Status: RUNNING (PID: $NONOGRAPH_PID)"
     echo "🌐 Local Access: http://localhost:8009"
 else
@@ -51,13 +54,7 @@ echo
 
 # Show recent log entries
 echo "📝 Recent Log Entries:"
-if [ -f "$ROOT_DIR/nonograph.log" ]; then
-    tail -5 "$ROOT_DIR/nonograph.log" | while read line; do
-        echo "   $line"
-    done
-else
-    echo "   No log file found"
-fi
+journalctl -u nonograph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || echo "   No journal entries found"
 
 echo
 
@@ -79,8 +76,8 @@ fi
 echo
 
 echo "Commands:"
-echo "  Start Nonograph: cargo run --release"
-echo "  Stop Nonograph:  pkill -f nonograph"
+echo "  Start Nonograph: sudo systemctl start nonograph"
+echo "  Stop Nonograph:  sudo systemctl stop nonograph"
 echo "  Start Tor:          sudo systemctl start tor"
 echo "  Stop Tor:           sudo systemctl stop tor"
 echo "  View logs:          tail -f $ROOT_DIR/nonograph.log"

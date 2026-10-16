@@ -14,7 +14,7 @@ content_max_length = 256_000
 # Server port (can be overridden by ROCKET_PORT environment variable)
 port = 8009
 
-# Server address
+# Server address (overridden by ROCKET_ADDRESS when that variable is set)
 address = "127.0.0.1"
 
 # Onion-Location header: advertise a Tor onion counterpart of this site.

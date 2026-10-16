@@ -332,15 +332,21 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
         }
     }
 
+    let rocket_address = std::env::var("ROCKET_ADDRESS").ok();
+    let address = match config.listen_address(rocket_address.as_deref()) {
+        Ok(address) => address,
+        Err(error) => {
+            eprintln!("Nonograph: {error}");
+            std::process::exit(1);
+        }
+    };
+    println!("Nonograph: listening on {address}:{}", config.server.port);
+
     let mut rocket = rocket::build()
         .configure(rocket::Config {
             limits,
             port: config.server.port,
-            address: config
-                .server
-                .address
-                .parse()
-                .unwrap_or("127.0.0.1".parse().unwrap()),
+            address,
             ..rocket::Config::default()
         })
         .attach(SecurityHeadersFairing)

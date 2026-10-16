@@ -29,7 +29,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     tor \
-    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Cookie auth is full Tor control (SETCONF, SIGNAL SHUTDOWN), not GETINFO
@@ -46,7 +45,13 @@ RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
     echo "ControlSocket 0" >> /etc/tor/torrc && \
     echo "" >> /etc/tor/torrc && \
     echo "HiddenServiceDir /var/lib/tor/hidden_service/" >> /etc/tor/torrc && \
-    echo "HiddenServicePort 80 127.0.0.1:8009" >> /etc/tor/torrc
+    echo "HiddenServicePort 80 127.0.0.1:8009" >> /etc/tor/torrc && \
+    echo "HiddenServiceEnableIntroDoSDefense 1" >> /etc/tor/torrc && \
+    echo "HiddenServiceEnableIntroDoSRatePerSec 25" >> /etc/tor/torrc && \
+    echo "HiddenServiceEnableIntroDoSBurstPerSec 200" >> /etc/tor/torrc && \
+    if tor --list-torrc-options 2>/dev/null | grep -q HiddenServicePoWDefensesEnabled; then \
+      echo "HiddenServicePoWDefensesEnabled 1" >> /etc/tor/torrc; \
+    fi
 
 RUN useradd -r -s /bin/false -u 1000 nonograph && \
     usermod -aG debian-tor nonograph
@@ -57,9 +62,7 @@ RUN mkdir -p /app/content /app/templates /var/lib/tor /run/tor-control && \
     chown -R nonograph:nonograph /app && \
     chown -R debian-tor:debian-tor /var/lib/tor && \
     chown debian-tor:debian-tor /run/tor-control && \
-    chmod 750 /run/tor-control && \
-    echo "nonograph ALL=(debian-tor) NOPASSWD: /usr/bin/tor" >> /etc/sudoers && \
-    echo "root ALL=(nonograph) NOPASSWD: /app/nonograph" >> /etc/sudoers
+    chmod 750 /run/tor-control
 
 COPY --from=builder /app/target/release/nonograph /app/nonograph
 COPY Config.toml /app/Config.toml

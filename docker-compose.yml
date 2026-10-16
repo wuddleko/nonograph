@@ -3,9 +3,24 @@ services:
     build: .
     container_name: nonograph_app
     ports:
-      - "8009:8009"
+      - "127.0.0.1:8009:8009"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /run
     volumes:
       - ${HOME}/nonograph/content:/app/content
+      - ${HOME}/nonograph/tor:/var/lib/tor
       - ${HOME}/nonograph/onion:/var/lib/tor/hidden_service
       - ./Config.toml:/app/Config.toml:ro
     environment:

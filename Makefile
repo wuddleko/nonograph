@@ -8,7 +8,7 @@ help:
 	@echo "  logs        - View logs"
 	@echo "  status      - Check status"
 	@echo "  onion       - Show .onion URL"
-	@echo "  clean       - Removes all nonograph containers and backups"
+	@echo "  clean       - Remove this project's containers, images, and volumes"
 	@echo ""
 	@echo "Docker Management:"
 	@echo "  check-docker     - Check if Docker is installed"
@@ -169,14 +169,9 @@ dev-logs: check-docker
 
 # Maintenance targets
 clean: check-docker
-	@echo "Cleaning up ALL Docker resources for Nonograph..."
-	sudo docker compose down -v --remove-orphans 2>/dev/null || true
-	sudo docker stop $$(sudo docker ps -aq) 2>/dev/null || true
-	sudo docker rm $$(sudo docker ps -aq) 2>/dev/null || true
-	sudo docker rmi $$(sudo docker images -q) 2>/dev/null || true
-	sudo docker system prune -a -f --volumes
-	sudo docker builder prune -a -f
-	@echo "Complete cleanup finished - all Docker containers, images, volumes, and cache removed!"
+	@echo "Removing this project's containers, images, and volumes..."
+	sudo docker compose down -v --rmi local --remove-orphans
+	@echo "Nonograph containers, images, and volumes removed."
 
 # Show .onion address
 onion: check-docker

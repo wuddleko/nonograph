@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +249,17 @@ impl Config {
             .saturating_add(self.limits.alias_max_length);
         let bytes = text.saturating_mul(4).saturating_add(4096);
         u32::try_from(bytes).unwrap_or(u32::MAX)
+    }
+
+    pub fn listen_address(&self, override_addr: Option<&str>) -> Result<IpAddr, String> {
+        let configured = self.server.address.trim();
+        let chosen = override_addr
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(configured);
+        chosen
+            .parse()
+            .map_err(|_| format!("listen address is not an IP address ({chosen})"))
     }
 
     /// `Ok(None)` connects directly. `Err` means `socks` was set but is not a socket address.

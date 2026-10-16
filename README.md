@@ -50,27 +50,34 @@ These are run by other people, with their own rules. Use one you trust, or host 
 
 ## Deploy
 
-`~/nonograph/content` holds optional copies of the four site pages (about, legal, api, markup) and the crawled relay pool, `relay-pool.json`. Published notes are not stored there. Tor keys live in `~/nonograph/onion`. Outbound relay traffic uses `[nostr].socks` in `Config.toml` (Docker Tor is `127.0.0.1:9050`). `[nostr].relays` names the relays left off the share link.
+`~/nonograph/content` holds optional copies of the four site pages (about, legal, api, markup) and the crawled relay pool, `relay-pool.json`. Published notes are not stored there. Tor keys live in `~/nonograph/onion`. Tor state, including the entry guard, lives in `~/nonograph/tor`. Outbound relay traffic uses `[nostr].socks` in `Config.toml` (Docker Tor is `127.0.0.1:9050`). `[nostr].relays` names the relays left off the share link.
 
 ### Docker image (quick)
 
 ```bash
-mkdir -p ~/nonograph/content ~/nonograph/onion
+mkdir -p ~/nonograph/content ~/nonograph/tor ~/nonograph/onion
 curl -fsSL -o ~/nonograph/Config.toml \
   https://raw.githubusercontent.com/wuddleko/nonograph/main/Config.toml
 # edit ~/nonograph/Config.toml — [nostr].socks should be the local Tor port
 
 sudo docker run -d \
   --name nonograph \
-  -p 8009:8009 \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add SETUID --cap-add SETGID --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --security-opt no-new-privileges:true \
+  --tmpfs /tmp --tmpfs /run \
+  -p 127.0.0.1:8009:8009 \
   -v ~/nonograph/content:/app/content \
+  -v ~/nonograph/tor:/var/lib/tor \
   -v ~/nonograph/onion:/var/lib/tor/hidden_service \
   -v ~/nonograph/Config.toml:/app/Config.toml:ro \
   --restart unless-stopped \
   ghcr.io/wuddleko/nonograph:latest
 ```
 
-Clearnet: `http://localhost:8009` (put a reverse proxy in front for HTTPS in production).
+Clearnet: `http://localhost:8009` (put a reverse proxy in front for HTTPS in production). The published port listens on the host loopback only.
 
 Onion address:
 
@@ -93,7 +100,7 @@ make up
 
 ### Without Docker
 
-On Debian-style systems: `./scripts/run` (build and run natively). Service helpers: `./scripts/nonograph.sh`, `./scripts/status.sh`.
+On Debian-style systems: `./scripts/run` builds the binary and installs a systemd service that runs as the `nonograph` user. Service helpers: `./scripts/nonograph.sh`, `./scripts/status.sh`.
 
 More detail: [DOCKER.md](DOCKER.md).
 

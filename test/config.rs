@@ -76,6 +76,31 @@ syntax_highlighting = "base16-ocean.dark"
 }
 
 #[test]
+fn rocket_address_overrides_the_config_file() {
+    let mut config = Config::default();
+    config.server.address = "127.0.0.1".to_string();
+    assert_eq!(
+        config.listen_address(None).unwrap().to_string(),
+        "127.0.0.1"
+    );
+    assert_eq!(
+        config.listen_address(Some("")).unwrap().to_string(),
+        "127.0.0.1"
+    );
+    assert_eq!(
+        config.listen_address(Some("   ")).unwrap().to_string(),
+        "127.0.0.1"
+    );
+    assert_eq!(
+        config.listen_address(Some("0.0.0.0")).unwrap().to_string(),
+        "0.0.0.0"
+    );
+    assert!(config.listen_address(Some("everywhere")).is_err());
+    config.server.address = "not-an-ip".to_string();
+    assert!(config.listen_address(None).is_err());
+}
+
+#[test]
 fn test_form_data_limit_bytes() {
     let config = Config::default();
     assert_eq!(

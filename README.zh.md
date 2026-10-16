@@ -56,27 +56,34 @@ https://github.com/user-attachments/assets/d662c9a2-f0ed-4266-bf55-e2c1f024269e
 
 ## 部署
 
-`~/nonograph/content` 只用来放关于、法律、接口、标记这四个站点页面的可选副本，已发布的笔记不写在这里。Tor 密钥目录为 `~/nonograph/onion`。默认 relay 由服务器上的 `Config.toml` 中 `[nostr].relays` 决定（访客可在浏览器中添加更多 relay，仅保存在其本机）。
+`~/nonograph/content` 只用来放关于、法律、接口、标记这四个站点页面的可选副本，已发布的笔记不写在这里。Tor 密钥目录为 `~/nonograph/onion`。Tor 状态（含入口守卫）目录为 `~/nonograph/tor`。默认 relay 由服务器上的 `Config.toml` 中 `[nostr].relays` 决定（访客可在浏览器中添加更多 relay，仅保存在其本机）。
 
 ### Docker 镜像（快速）
 
 ```bash
-mkdir -p ~/nonograph/content ~/nonograph/onion
+mkdir -p ~/nonograph/content ~/nonograph/tor ~/nonograph/onion
 curl -fsSL -o ~/nonograph/Config.toml \
   https://raw.githubusercontent.com/wuddleko/nonograph/main/Config.toml
 # 编辑 ~/nonograph/Config.toml — 尤其是 [nostr].relays
 
 sudo docker run -d \
   --name nonograph \
-  -p 8009:8009 \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add SETUID --cap-add SETGID --cap-add CHOWN \
+  --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --security-opt no-new-privileges:true \
+  --tmpfs /tmp --tmpfs /run \
+  -p 127.0.0.1:8009:8009 \
   -v ~/nonograph/content:/app/content \
+  -v ~/nonograph/tor:/var/lib/tor \
   -v ~/nonograph/onion:/var/lib/tor/hidden_service \
   -v ~/nonograph/Config.toml:/app/Config.toml:ro \
   --restart unless-stopped \
   ghcr.io/wuddleko/nonograph:latest
 ```
 
-公网访问：`http://localhost:8009`（生产环境请在前面加反向代理以提供 HTTPS）。
+公网访问：`http://localhost:8009`（生产环境请在前面加反向代理以提供 HTTPS）。发布端口只监听主机回环地址。
 
 查看 onion 地址：
 

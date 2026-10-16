@@ -5,7 +5,19 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PID_FILE="$ROOT_DIR/nonograph.pid"
+BINARY="/usr/local/bin/nonograph"
 cd "$ROOT_DIR"
+
+pid_is_nonograph() {
+    local pid="$1"
+    local exe
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    exe=${exe% \(deleted\)}
+    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nonograph" ]
+}
 
 show_header() {
     echo "╔══════════════════════════════════════╗"
@@ -26,7 +38,6 @@ show_help() {
     echo "  status      Show service status"
     echo "  logs        Show recent logs"
     echo "  onion       Show onion address"
-    echo "  test        Create a test post"
     echo "  build       Build the project"
     echo "  clean       Clean build artifacts"
     echo "  tor-start   Start Tor service"
@@ -39,51 +50,60 @@ show_help() {
 start_service() {
     echo "🚀 Starting Nonograph..."
 
-    # Check if already running
-    if pgrep -f "nonograph" > /dev/null; then
-        echo "⚠️  Nonograph is already running"
+    if ! systemctl cat nonograph >/dev/null 2>&1; then
+        echo "❌ The systemd unit is not installed"
+        echo "💡 Install it with: ./scripts/run"
         return 1
     fi
 
-    # Start in background
-    nohup cargo run --release > nonograph.log 2>&1 &
-
-    # Wait a moment and check if it started
-    sleep 3
-    if pgrep -f "nonograph" > /dev/null; then
-        echo "✅ Nonograph started successfully"
-        echo "🌐 Local access: http://localhost:8009"
-    else
+    sudo systemctl start nonograph
+    local pid=""
+    local attempts=0
+    while [ $attempts -lt 10 ]; do
+        pid=$(systemctl show -p MainPID --value nonograph 2>/dev/null || true)
+        if pid_is_nonograph "$pid"; then
+            break
+        fi
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    if ! pid_is_nonograph "$pid"; then
         echo "❌ Failed to start Nonograph"
-        echo "📝 Check logs: tail -f nonograph.log"
+        echo "📝 Check logs: journalctl -u nonograph -n 50"
         return 1
     fi
+    echo "$pid" > "$PID_FILE"
+    echo "✅ Nonograph started successfully"
+    echo "🌐 Local access: http://localhost:8009"
 }
 
 stop_service() {
     echo "🛑 Stopping Nonograph..."
 
-    if ! pgrep -f "nonograph" > /dev/null; then
+    local pid=""
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+    fi
+    if ! pid_is_nonograph "$pid" && ! systemctl is-active --quiet nonograph 2>/dev/null; then
         echo "⚠️  Nonograph is not running"
+        rm -f "$PID_FILE"
         return 1
     fi
 
-    pkill -f "nonograph"
-    sleep 2
-
-    if ! pgrep -f "nonograph" > /dev/null; then
-        echo "✅ Nonograph stopped successfully"
-    else
-        echo "⚠️  Force killing Nonograph..."
-        pkill -9 -f "nonograph"
-        sleep 1
-        if ! pgrep -f "nonograph" > /dev/null; then
-            echo "✅ Nonograph force stopped"
-        else
-            echo "❌ Failed to stop Nonograph"
-            return 1
+    sudo systemctl stop nonograph 2>/dev/null || true
+    if pid_is_nonograph "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        sleep 2
+        if pid_is_nonograph "$pid"; then
+            kill -9 "$pid" 2>/dev/null || true
         fi
     fi
+    rm -f "$PID_FILE"
+    if pid_is_nonograph "$pid"; then
+        echo "❌ Failed to stop Nonograph"
+        return 1
+    fi
+    echo "✅ Nonograph stopped successfully"
 }
 
 restart_service() {
@@ -100,8 +120,8 @@ show_status() {
         show_header
 
         # Check Nonograph status
-        NONOGRAPH_PID=$(pgrep -f "nonograph" | head -1)
-        if [ -n "$NONOGRAPH_PID" ]; then
+        NONOGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
+        if pid_is_nonograph "$NONOGRAPH_PID"; then
             echo "✅ Nonograph Status: RUNNING (PID: $NONOGRAPH_PID)"
         else
             echo "❌ Nonograph Status: NOT RUNNING"
@@ -122,13 +142,9 @@ show_status() {
 show_logs() {
     echo "📝 Recent Nonograph logs:"
     echo "────────────────────────────────────"
-    if [ -f "nonograph.log" ]; then
-        tail -20 nonograph.log
-    else
-        echo "No log file found"
-    fi
+    journalctl -u nonograph -n 20 --no-pager 2>/dev/null || echo "No journal entries found"
     echo "────────────────────────────────────"
-    echo "💡 Use 'tail -f nonograph.log' to follow logs in real-time"
+    echo "💡 Use 'journalctl -u nonograph -f' to follow logs in real-time"
 }
 
 show_onion() {
@@ -151,32 +167,6 @@ show_onion() {
     else
         echo "❌ Hidden service not configured or not accessible"
         echo "💡 Make sure Tor is running and the hidden service is set up"
-    fi
-}
-
-create_test() {
-    echo "🧪 Creating test post..."
-
-    # Check if service is running
-    if ! curl -s --max-time 5 http://localhost:8009 > /dev/null 2>&1; then
-        echo "❌ Nonograph is not accessible"
-        echo "💡 Make sure the service is running with: $0 start"
-        return 1
-    fi
-
-    # Create test post
-    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-    curl -s -X POST http://localhost:8009/create \
-        -d "title=Test Post - $TIMESTAMP" \
-        -d "content=This is a test post created at $TIMESTAMP to verify Nonograph is working correctly as a Tor hidden service." \
-        -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
-
-    if [ $? -eq 0 ]; then
-        echo "✅ Test post created successfully"
-        echo "🌐 Check at: http://localhost:8009"
-    else
-        echo "❌ Failed to create test post"
-        return 1
     fi
 }
 
@@ -254,9 +244,6 @@ case "${1:-help}" in
         ;;
     "onion")
         show_onion
-        ;;
-    "test")
-        create_test
         ;;
     "build")
         build_project
