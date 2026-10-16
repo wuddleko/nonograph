@@ -282,6 +282,28 @@ function paintSavedRelayLists(doc, storage) {
                 }
                 paintRelayCircuits();
             }
+            function relayGuardIcon() {
+                const svg = "http://www.w3.org/2000/svg";
+                const icon = document.createElementNS(svg, "svg");
+                icon.setAttribute("class", "relay-guard-icon");
+                icon.setAttribute("viewBox", "0 0 16 16");
+                icon.setAttribute("width", "12");
+                icon.setAttribute("height", "12");
+                icon.setAttribute("aria-hidden", "true");
+                icon.setAttribute("focusable", "false");
+                const shape = document.createElementNS(svg, "path");
+                shape.setAttribute("fill", "none");
+                shape.setAttribute("stroke", "currentColor");
+                shape.setAttribute("stroke-width", "1.6");
+                shape.setAttribute("stroke-linejoin", "round");
+                shape.setAttribute(
+                    "d",
+                    "M8 1.75 13 3.6v4.1c0 3.1-2.1 5.2-5 6.55C5.1 12.9 3 10.8 3 7.7V3.6Z",
+                );
+                icon.append(shape);
+                return icon;
+            }
+
             function paintRelayCircuits() {
                 document.querySelectorAll(".relay-list li[data-relay]").forEach((row) => {
                     const path = circuitsTracked
@@ -300,7 +322,21 @@ function paintSavedRelayLists(doc, storage) {
                     }
                     if (path) {
                         line.classList.remove("relay-circuit-wait");
-                        line.textContent = path;
+                        const guard = document.createElement("span");
+                        guard.className = "relay-guard";
+                        guard.title = "Entry guard";
+                        const label = document.createElement("span");
+                        label.className = "relay-guard-label";
+                        label.textContent = "guard";
+                        guard.append(relayGuardIcon(), label);
+                        const arrow = document.createElement("span");
+                        arrow.className = "relay-circuit-arrow";
+                        arrow.setAttribute("aria-hidden", "true");
+                        arrow.textContent = " → ";
+                        const hops = document.createElement("span");
+                        hops.className = "relay-circuit-hops";
+                        hops.textContent = path;
+                        line.append(guard, arrow, hops);
                         return;
                     }
                     line.classList.add("relay-circuit-wait");

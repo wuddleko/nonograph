@@ -430,12 +430,25 @@
 
             .relay-circuit {
                 display: flex;
+                flex-wrap: wrap;
                 align-items: center;
                 min-height: 14px;
                 margin-top: 2px;
                 color: var(--quiet);
                 font-size: 11px;
                 line-height: 1.35;
+            }
+
+            .relay-guard {
+                display: inline-flex;
+                align-items: center;
+                gap: 3px;
+                flex: none;
+            }
+
+            .relay-guard-icon {
+                display: block;
+                flex: none;
             }
 
             .relay-circuit:empty {
