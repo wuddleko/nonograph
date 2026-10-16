@@ -32,11 +32,8 @@ pub(crate) use home::{
 };
 pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
 pub use relays::{nojs_relays_page, nojs_relays_update, relays_page};
-pub(crate) use sealed::{
-    fetch_sealed_by_id, nojs_open_fetched, nojs_opened_page, nojs_query_secret,
-    nojs_sealed_response, sealed_shell,
-};
-pub use sealed::{nojs_sealed_view, sealed_open, sealed_view};
+pub(crate) use sealed::{fetch_sealed_by_id, sealed_shell};
+pub use sealed::{nojs_sealed_view, sealed_view};
 pub use static_pages::{about_page, api_page, legal_page, markup_page, nojs_static_page};
 pub(crate) use static_pages::{build_static_page, BuiltPage};
 

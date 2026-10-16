@@ -101,6 +101,9 @@
             #CONTENT {
                 text-align: left;
             }
+            html body:has(#CONTENT:empty) #sealed-title {
+                text-align: center;
+            }
             html body {
                 color: var(--ink);
             }
@@ -1044,6 +1047,9 @@
                 word-break: break-all;
             }
             .footer a.nostr-id:empty {
+                display: none;
+            }
+            .run-locally {
                 display: none;
             }
             @media (max-width: 768px) {

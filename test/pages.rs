@@ -937,11 +937,10 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
     assert!(post_nojs.contains("class=\"theme-toggle\""));
     assert!(!post_nojs.contains("<script"));
 
-    let event_id = "ab".repeat(32);
-    let opened = sealed_shell("{}", "0123456789abcdef0123", &event_id, &[], "", &config);
+    let opened = sealed_shell("{}", &config);
     assert!(opened.contains("<script src=\"/theme.js?v="));
     assert!(!opened.contains("</script><script"));
-    let locked = sealed_shell("", "0123456789abcdef0123", &event_id, &[], "", &config);
+    let locked = sealed_shell("", &config);
     assert!(locked.contains("class=\"theme-toggle\""));
     assert!(!locked.contains("<script"));
 }
@@ -991,8 +990,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     config.theme.syntax_highlighting = "ocean\"dark".to_string();
     config.security.max_url_length = 4096;
     config.security.external_link_security = false;
-    let event_id = "ab".repeat(32);
-    let html = sealed_shell(&event, "0123456789abcdef0123", &event_id, &[], "", &config);
+    let html = sealed_shell(&event, &config);
     assert!(html.contains("<title>Sealed note</title>"));
     assert!(html.contains("property=\"og:title\" content=\"Sealed note\""));
     assert!(html.contains("property=\"og:description\" content=\"A note sealed in the browser.\""));
@@ -1014,9 +1012,13 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(html.contains("id=\"sealed-copy\">Copy link</button>"));
     assert!(html.contains("id=\"sealed-open\""));
     assert!(html.contains("id=\"sealed-key\""));
-    assert!(html.contains(">Open</button>"));
+    assert!(html.contains("type=\"button\">Open</button>"));
     assert!(html.contains("The key is the part of the address after #."));
-    assert!(html.contains(&format!("action=\"/s/0123456789abcdef0123/{event_id}\"")));
+    assert!(html.contains("Run locally to read the note."));
+    assert!(html.contains("https://github.com/wuddleko/nonograph"));
+    assert!(!html.contains("name=\"k\""));
+    assert!(!html.contains("method=\"post\""));
+    assert!(!html.contains("action="));
     assert!(!html.contains("/nojs/s/"));
     assert!(!html.contains("?k="));
     assert!(html.contains(">legal</a>"));
@@ -1113,161 +1115,13 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
         .unwrap();
     assert!(hidden < opened);
     assert!(load_body.contains("form.hidden = false"));
+    assert!(load_body.contains("openButton.addEventListener(\"click\", openNote)"));
     assert!(load_body.contains("event.preventDefault()"));
     assert!(load_body.contains("openEmbeddedSeal(sealedEvent.textContent)"));
+    assert!(!load_body.contains("form.addEventListener(\"submit\""));
     assert!(!load_body.contains("linkNojsFromHash"));
     assert!(!nostr.contains("?k="));
     assert!(!nostr.contains("/nojs/s/"));
-}
-
-#[test]
-fn nojs_sealed_page_says_the_note_opens_in_the_browser() {
-    let locator = "0123456789abcdef0123";
-    let event_id = "ab".repeat(32);
-    let key = "KkKeyValue99";
-    let config = crate::config::Config::default();
-    let html = wait(nojs_sealed_response(
-        locator,
-        &event_id,
-        Some(key),
-        &[],
-        &config,
-    ))
-    .unwrap()
-    .0;
-    assert!(html.contains("id=\"sealed-open\""));
-    assert!(html.contains("The key does not open this note."));
-    assert!(html.contains(&format!("action=\"/s/{locator}/{event_id}\"")));
-    assert!(!html.contains(key));
-    assert!(!html.contains("<script"));
-    assert!(!html.contains("sealed-event"));
-    assert!(!html.contains("nostr.js"));
-    assert!(!html.contains("render_markdown"));
-    assert!(
-        wait(nojs_sealed_response(locator, &event_id, None, &[], &config))
-            .unwrap()
-            .0
-            .contains("The key does not open this note.")
-    );
-    match wait(nojs_sealed_response(
-        "not-a-locator",
-        &event_id,
-        Some(key),
-        &[],
-        &config,
-    )) {
-        Err((status, rocket::Either::Right(page))) if status == Status::NotFound => {
-            assert_eq!(page.0, not_found_html());
-            assert!(!page.0.contains(key));
-            assert!(!page.0.contains("does not decrypt"));
-        }
-        Ok(_) => panic!("a bad locator returned a page"),
-        Err((status, _)) => panic!("a bad locator returned {status}"),
-    }
-    match wait(nojs_sealed_response(
-        "0123456789ABCDEF0123",
-        &event_id,
-        Some(key),
-        &[],
-        &config,
-    )) {
-        Err((status, _)) if status == Status::NotFound => {}
-        Ok(_) => panic!("an uppercase locator returned a page"),
-        Err((status, _)) => panic!("an uppercase locator returned {status}"),
-    }
-}
-
-#[test]
-fn nojs_query_secret_matches_secret_from_fragment_and_a_failed_open_is_refused() {
-    assert!(nojs_query_secret(None).is_none());
-    assert!(nojs_query_secret(Some("")).is_none());
-    assert!(nojs_query_secret(Some("AA")).is_none());
-    assert!(nojs_query_secret(Some(&"A".repeat(42))).is_none());
-    assert!(nojs_query_secret(Some(&"A".repeat(44))).is_none());
-    assert!(nojs_query_secret(Some(&format!("{}=", "A".repeat(43)))).is_none());
-    assert!(nojs_query_secret(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+")).is_none());
-    assert!(nojs_query_secret(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/")).is_none());
-    assert!(nojs_query_secret(Some("#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")).is_none());
-    assert_eq!(
-        nojs_query_secret(Some(&"A".repeat(43))).unwrap(),
-        [0u8; nonograph_nip44::SECRET_LEN]
-    );
-
-    let sealed = crate::seal::seal_and_sign(
-        "unique title text",
-        "Ada",
-        "unique body text",
-        128,
-        32,
-        256_000,
-    )
-    .unwrap();
-    let event_id = sealed.note.id_hex();
-    let event = sealed.note.event_json.clone();
-    let payload = serde_json::from_str::<serde_json::Value>(&event).unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let zeros = "A".repeat(43);
-    let config = crate::config::Config::default();
-    let refused = nojs_opened_page(
-        &sealed.locator,
-        &event_id,
-        &nojs_query_secret(Some(&zeros)).unwrap(),
-        &event,
-        &zeros,
-        &[],
-        &config,
-    );
-    assert!(refused.contains("This page does not decrypt it."));
-    assert!(!refused.contains("unique title text"));
-    assert!(!refused.contains("unique body text"));
-    assert!(!refused.contains(&zeros));
-    assert!(!refused.contains(&sealed.k));
-    assert!(!refused.contains(&payload));
-
-    let opened = nojs_opened_page(
-        &sealed.locator,
-        &event_id,
-        &nojs_query_secret(Some(&sealed.k)).unwrap(),
-        &event,
-        &sealed.k,
-        &[],
-        &config,
-    );
-    assert!(opened.contains("<h1>unique title text</h1>"));
-    assert!(opened.contains("unique body text"));
-    assert!(!opened.contains("This page does not decrypt it."));
-    assert!(!opened.contains(&payload));
-
-    let missing = wait(nojs_sealed_response(
-        &sealed.locator,
-        &event_id,
-        None,
-        &[],
-        &config,
-    ))
-    .unwrap()
-    .0;
-    assert!(missing.contains("The key does not open this note."));
-    assert!(missing.contains("id=\"sealed-open\""));
-    assert!(!missing.contains("unique body text"));
-    assert!(!missing.contains(&payload));
-    match wait(nojs_sealed_response(
-        "not-a-locator",
-        &event_id,
-        Some(&sealed.k),
-        &[],
-        &config,
-    )) {
-        Err((status, rocket::Either::Right(page))) if status == Status::NotFound => {
-            assert!(!page.0.contains("unique body text"));
-            assert!(!page.0.contains(&payload));
-            assert!(!page.0.contains(&sealed.k));
-        }
-        Ok(_) => panic!("a bad locator returned a page"),
-        Err((status, _)) => panic!("a bad locator returned {status}"),
-    }
 }
 
 fn sealed_route_headers(response: &rocket::local::blocking::LocalResponse<'_>) {
@@ -1301,19 +1155,22 @@ fn nojs_sealed_route_sets_no_referrer_and_no_store() {
     assert!(!missing_body.contains("<style"));
     assert!(!missing_body.contains("secret"));
 
-    let refused = client
-        .get(format!("/nojs/s/0123456789abcdef0123/{event_id}"))
+    let local = client
+        .get(format!(
+            "/nojs/s/0123456789abcdef0123/{event_id}?k=LOGSECRETVALUE"
+        ))
         .dispatch();
-    assert_eq!(refused.status(), Status::SeeOther);
-    sealed_route_headers(&refused);
-    let location = format!("/s/0123456789abcdef0123/{event_id}");
-    assert_eq!(
-        refused.headers().get_one("Location"),
-        Some(location.as_str())
-    );
-    let refused_body = refused.into_string().unwrap_or_default();
-    assert!(!refused_body.contains("?k="));
-    assert!(!refused_body.contains("does not decrypt"));
+    assert_eq!(local.status(), Status::Ok);
+    sealed_route_headers(&local);
+    assert!(local.headers().get_one("Location").is_none());
+    let body = local.into_string().unwrap();
+    assert!(body.contains("<h1>Run locally to read the note</h1>"));
+    assert!(body.contains("https://github.com/wuddleko/nonograph"));
+    assert!(body.contains("http-equiv=\"refresh\""));
+    assert!(body.contains("name=\"referrer\" content=\"no-referrer\""));
+    assert!(!body.contains("LOGSECRETVALUE"));
+    assert!(!body.contains("?k="));
+    assert!(!body.contains("id=\"sealed-open\""));
 }
 
 #[get("/seal-fragment")]
@@ -1338,7 +1195,7 @@ fn publish_redirect_keeps_the_key_fragment() {
 }
 
 #[test]
-fn nojs_sealed_address_redirects_to_the_one_link() {
+fn nojs_sealed_address_says_to_run_locally() {
     let client = rocket::local::blocking::Client::tracked(
         rocket::build()
             .manage(crate::config::Config::default())
@@ -1348,195 +1205,73 @@ fn nojs_sealed_address_redirects_to_the_one_link() {
     let locator = "0123456789abcdef0123";
     let event_id = "ab".repeat(32);
     let key = "A".repeat(43);
-    let with_key = format!("/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example#{key}");
-    let moved = client
+    let page = client
         .get(format!(
             "/nojs/s/{locator}/{event_id}?k={key}&r=wss://hint.example"
         ))
         .dispatch();
-    assert_eq!(moved.status(), Status::SeeOther);
-    assert_eq!(moved.headers().get_one("Location"), Some(with_key.as_str()));
-    let without_key = format!("/s/{locator}/{event_id}");
+    assert_eq!(page.status(), Status::Ok);
+    let body = page.into_string().unwrap();
+    assert!(body.contains("<h1>Run locally to read the note</h1>"));
+    assert!(body.contains(
+        "http-equiv=\"refresh\" content=\"0; url=https://github.com/wuddleko/nonograph\""
+    ));
+    assert!(body.contains("<a href=\"https://github.com/wuddleko/nonograph\">source code</a>"));
+    assert!(!body.contains(&key));
+    assert!(!body.contains("hint.example"));
+    assert!(!body.contains(&format!("/s/{locator}/{event_id}")));
     let plain = client
         .get(format!("/nojs/s/{locator}/{event_id}?k=not-a-secret"))
         .dispatch();
-    assert_eq!(plain.status(), Status::SeeOther);
-    assert_eq!(
-        plain.headers().get_one("Location"),
-        Some(without_key.as_str())
-    );
+    assert_eq!(plain.status(), Status::Ok);
+    let plain_body = plain.into_string().unwrap();
+    assert!(plain_body.contains("Run locally to read the note"));
+    assert!(!plain_body.contains("not-a-secret"));
     let missing = client
         .get(format!("/nojs/s/not-a-locator/{event_id}?k={key}"))
         .dispatch();
     assert_eq!(missing.status(), Status::NotFound);
     assert!(missing.headers().get_one("Location").is_none());
-}
-
-fn wait<T>(future: impl std::future::Future<Output = T>) -> T {
-    rocket::tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(future)
+    assert!(!missing.into_string().unwrap().contains(&key));
 }
 
 #[test]
 #[serial(nojs_sealed_fetch)]
-fn nojs_sealed_fetch_uses_a_slot_and_a_missing_event_is_not_found() {
+fn sealed_view_uses_a_slot_and_a_missing_event_is_not_found() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+        }
+    }
+    let _clear = ClearFetch;
+
     let locator = "0123456789abcdef0123";
     let event_id = "ab".repeat(32);
-    let key = "A".repeat(43);
-    let mut config = crate::config::Config::default();
-    config.nostr.timeout_secs = 1;
-    config.nostr.relays = vec!["wss://nojs-seal.invalid".to_string()];
+    set_nojs_test_fetch(NojsTestFetch::Missing);
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount("/", routes![super::sealed_view]),
+    )
+    .unwrap();
 
     let mut held = Vec::new();
     for _ in 0..MAX_PUBLIC_FETCHES {
         held.push(PublicFetchSlot::acquire().expect("public fetch slot"));
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let refused = wait(nojs_sealed_response(
-            locator,
-            &event_id,
-            Some("AA"),
-            &[],
-            &config,
-        ))
-        .unwrap();
-        assert!(refused.0.contains("The key does not open this note."));
-        assert!(refused.0.contains("id=\"sealed-open\""));
-        assert!(!refused.0.contains("AA"));
-
-        match wait(nojs_sealed_response(
-            locator,
-            &event_id,
-            Some(&key),
-            &[],
-            &config,
-        )) {
-            Err((status, rocket::Either::Left(page))) if status == Status::ServiceUnavailable => {
-                assert_eq!(page.0, "Service unavailable");
-                assert!(!page.0.contains(&key));
-            }
-            Ok(_) => panic!("a full gate fetched the note"),
-            Err((status, _)) => panic!("a full gate returned {status}"),
-        }
+        let busy = client.get(format!("/s/{locator}/{event_id}")).dispatch();
+        assert_eq!(busy.status(), Status::ServiceUnavailable);
+        assert_eq!(busy.into_string().unwrap(), "Service unavailable");
 
         held.pop();
-        match wait(nojs_sealed_response(
-            locator,
-            &event_id,
-            Some(&key),
-            &[],
-            &config,
-        )) {
-            Err((status, rocket::Either::Right(page))) if status == Status::NotFound => {
-                assert_eq!(page.0, not_found_html());
-                assert!(!page.0.contains(&key));
-                assert!(!page.0.contains("does not decrypt"));
-            }
-            Ok(page) => panic!("a missing event was shown: {}", page.0),
-            Err((status, _)) => panic!("a missing event returned {status}"),
-        }
+        let missing = client.get(format!("/s/{locator}/{event_id}")).dispatch();
+        assert_eq!(missing.status(), Status::NotFound);
+        assert_eq!(missing.into_string().unwrap(), not_found_html());
     }));
     drop(held);
     result.unwrap();
-}
-
-#[test]
-fn nojs_open_fetched_opens_the_ciphertext_with_the_secret_and_d_tag() {
-    let title = "unique <script>alert(1)</script> title";
-    let sealed =
-        crate::seal::seal_and_sign(title, "Ada", "**unique body text**", 128, 32, 256_000).unwrap();
-    let event_id = sealed.note.id_hex();
-    let event = sealed.note.event_json;
-    let secret = nojs_query_secret(Some(&sealed.k)).unwrap();
-    let note = nojs_open_fetched(&secret, &event, &sealed.locator, &event_id).unwrap();
-    assert_eq!(note.title, title);
-    assert_eq!(note.author, "Ada");
-    assert_eq!(note.content, "**unique body text**");
-    assert_eq!(note.locator, sealed.locator);
-
-    let config = crate::config::Config::default();
-    let page = nojs_opened_page(
-        &sealed.locator,
-        &event_id,
-        &secret,
-        &event,
-        &sealed.k,
-        &[],
-        &config,
-    );
-    let created = serde_json::from_str::<serde_json::Value>(&event).unwrap()["created_at"]
-        .as_i64()
-        .unwrap();
-    let date = chrono::DateTime::from_timestamp(created, 0)
-        .unwrap()
-        .format("%B %d, %Y")
-        .to_string();
-    assert!(page.contains("<h1>unique &lt;script&gt;alert(1)&lt;/script&gt; title</h1>"));
-    assert!(page.contains(&format!("Ada · {date}")));
-    assert!(page.contains("<strong>unique body text</strong>"));
-    assert!(page.contains("article-content"));
-    assert!(page.contains("post.css"));
-    assert!(page.contains("post-noscript.css"));
-    assert!(!page.contains("<script"));
-    assert!(!page.contains("post.js"));
-    assert!(page.contains(&format!(
-        "href=\"/s/{}/{}#{}\" target=\"_blank\">link</a>",
-        sealed.locator, event_id, sealed.k
-    )));
-    assert!(page.contains(&format!(
-        "property=\"og:url\" content=\"/s/{}/{}\"",
-        sealed.locator, event_id
-    )));
-    assert!(!page.contains(&format!("href=\"/{}\"", sealed.locator)));
-    assert!(!page.contains("http-equiv"));
-    assert!(!page.contains("location."));
-    assert_eq!(page.matches(&sealed.k).count(), 1);
-    assert!(!page.contains("does not decrypt"));
-    let payload = serde_json::from_str::<serde_json::Value>(&event).unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(!page.contains(&payload));
-    assert!(!page.contains(&event));
-
-    let zeros = nojs_query_secret(Some(&"A".repeat(43))).unwrap();
-    assert!(nojs_open_fetched(&zeros, &event, &sealed.locator, &event_id).is_none());
-    let refused = nojs_opened_page(
-        &sealed.locator,
-        &event_id,
-        &zeros,
-        &event,
-        &sealed.k,
-        &[],
-        &config,
-    );
-    assert!(refused.contains("This page does not decrypt it."));
-    assert!(!refused.contains("unique body text"));
-    assert!(!refused.contains("<strong>"));
-    assert!(!refused.contains(&sealed.k));
-    assert!(!refused.contains(&payload));
-    assert!(!refused.contains("<script"));
-
-    let mut moved: serde_json::Value = serde_json::from_str(&event).unwrap();
-    let tags = moved.get_mut("tags").unwrap().as_array_mut().unwrap();
-    let d = tags
-        .iter_mut()
-        .find(|tag| tag[0].as_str() == Some("d"))
-        .unwrap();
-    d[1] = serde_json::json!("00000000000000000000");
-    assert!(nojs_open_fetched(&secret, &moved.to_string(), &sealed.locator, &event_id).is_none());
-    moved.as_object_mut().unwrap().remove("content");
-    assert!(nojs_open_fetched(&secret, &moved.to_string(), &sealed.locator, &event_id).is_none());
-    moved.as_object_mut().unwrap().remove("tags");
-    assert!(nojs_open_fetched(&secret, &moved.to_string(), &sealed.locator, &event_id).is_none());
-    let mut other_id: serde_json::Value = serde_json::from_str(&event).unwrap();
-    other_id["id"] = serde_json::json!("ab".repeat(32));
-    assert!(
-        nojs_open_fetched(&secret, &other_id.to_string(), &sealed.locator, &event_id).is_none()
-    );
 }
 
 #[test]
@@ -1865,7 +1600,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
     assert!(query.is_empty(), "{href}");
     assert!(crate::nostr::sealed_locator(&locator), "{href}");
     assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
-    assert!(nojs_query_secret(Some(&key)).is_some(), "{href}");
+    assert!(is_seal_key(&key), "{href}");
     assert!(href.contains(&locator) && href.contains(&event_id) && href.contains(&key));
     set_nojs_test_accepted(None);
 
@@ -1896,14 +1631,14 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert!(crate::nostr::sealed_locator(&locator), "{href}");
     assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
-    assert!(nojs_query_secret(Some(&key)).is_some(), "{href}");
+    assert!(is_seal_key(&key), "{href}");
     assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
     assert!(!href.contains("nostr_publish_failed"), "{href}");
 }
 
 #[test]
 #[serial(nojs_sealed_fetch)]
-fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
+fn opening_a_sealed_note_stays_in_the_browser() {
     struct ClearFetch;
     impl Drop for ClearFetch {
         fn drop(&mut self) {
@@ -1935,7 +1670,7 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
     let client = rocket::local::blocking::Client::tracked(
         rocket::build()
             .manage(config)
-            .mount("/", routes![super::sealed_view, super::sealed_open]),
+            .mount("/", routes![super::sealed_view, super::nojs_sealed_view]),
     )
     .unwrap();
 
@@ -1945,48 +1680,39 @@ fn opening_the_nojs_redirect_renders_the_note_or_refuses() {
     let shell_body = shell.into_string().unwrap();
     assert!(shell_body.contains("id=\"sealed-open\""));
     assert!(shell_body.contains("id=\"sealed-event\""));
+    assert!(shell_body.contains("Run locally to read the note."));
+    assert!(!shell_body.contains("name=\"k\""));
     assert!(!shell_body.contains("Redirect title"));
     assert!(!shell_body.contains("opened note body"));
 
-    let opened = post_open(&client, &path, &format!("k={key}"));
-    assert_eq!(opened.0, Status::Ok);
-    assert!(opened.1.contains("<h1>Redirect title</h1>"));
-    assert!(opened.1.contains("opened note body"));
-    assert!(!opened.1.contains("<script"));
-    assert!(opened
-        .1
-        .contains(&format!("href=\"/s/{locator}/{event_id}#{key}\"")));
-    assert!(!opened.1.contains("does not decrypt"));
+    let posted = client
+        .post(&path)
+        .header(ContentType::Form)
+        .body(format!("k={key}"))
+        .dispatch();
+    assert_ne!(posted.status(), Status::Ok);
+    let posted_body = posted.into_string().unwrap_or_default();
+    assert!(!posted_body.contains("Redirect title"));
+    assert!(!posted_body.contains("opened note body"));
+    assert!(!posted_body.contains(&key));
 
-    let mut bad_key = key.clone();
-    bad_key.replace_range(0..1, if key.starts_with('A') { "B" } else { "A" });
-    let refused = post_open(&client, &path, &format!("k={bad_key}"));
-    assert_eq!(refused.0, Status::Ok);
-    assert!(refused.1.contains("The key does not open this note."));
-    assert!(refused.1.contains("id=\"sealed-open\""));
-    assert!(!refused.1.contains("Redirect title"));
-    assert!(!refused.1.contains("opened note body"));
-    assert!(!refused.1.contains(&key));
+    let local = client
+        .get(format!("/nojs/s/{locator}/{event_id}?k={key}"))
+        .dispatch();
+    assert_eq!(local.status(), Status::Ok);
+    sealed_route_headers(&local);
+    let local_body = local.into_string().unwrap();
+    assert!(local_body.contains("Run locally to read the note"));
+    assert!(!local_body.contains(&key));
+    assert!(!local_body.contains("Redirect title"));
+    assert!(!local_body.contains("opened note body"));
+}
 
-    let missing_locator = post_open(
-        &client,
-        &format!("/s/not-a-locator/{event_id}"),
-        &format!("k={key}"),
-    );
-    assert_eq!(missing_locator.0, Status::NotFound);
-    assert_eq!(missing_locator.1, not_found_html());
-    assert!(!missing_locator.1.contains("Redirect title"));
-    assert!(!missing_locator.1.contains(&key));
-    assert!(!missing_locator.1.contains("does not decrypt"));
-
-    set_nojs_test_fetch(NojsTestFetch::Missing);
-    let missing_event = post_open(&client, &path, &format!("k={key}"));
-    assert_eq!(missing_event.0, Status::NotFound);
-    assert_eq!(missing_event.1, not_found_html());
-    assert!(!missing_event.1.contains("Redirect title"));
-    assert!(!missing_event.1.contains("opened note body"));
-    assert!(!missing_event.1.contains(&key));
-    assert!(!missing_event.1.contains("does not decrypt"));
+fn is_seal_key(key: &str) -> bool {
+    key.len() == 43
+        && key
+            .bytes()
+            .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
 }
 
 fn seal_link_parts(href: &str) -> (String, String, String, String) {
@@ -2001,17 +1727,6 @@ fn seal_link_parts(href: &str) -> (String, String, String, String) {
         key.to_string(),
         query.to_string(),
     )
-}
-
-fn post_open(client: &rocket::local::blocking::Client, path: &str, body: &str) -> (Status, String) {
-    let response = client
-        .post(path)
-        .header(ContentType::Form)
-        .body(body)
-        .dispatch();
-    let status = response.status();
-    sealed_route_headers(&response);
-    (status, response.into_string().unwrap())
 }
 
 #[test]
@@ -2050,31 +1765,15 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     let (locator, event_id, key, query) = seal_link_parts(&href);
     assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
-    assert!(nojs_query_secret(Some(&key)).is_some(), "{href}");
-    let js_href = format!("/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example#{key}");
+    assert!(is_seal_key(&key), "{href}");
 
     NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
     let client = rocket::local::blocking::Client::tracked(
         rocket::build()
             .manage(config)
-            .mount("/", routes![super::sealed_view, super::sealed_open]),
+            .mount("/", routes![super::sealed_view]),
     )
     .unwrap();
-
-    let opened = post_open(
-        &client,
-        &format!("/s/{locator}/{event_id}"),
-        &format!("k={key}&r=wss://hint.example"),
-    );
-    assert_eq!(opened.0, Status::Ok);
-    assert!(opened.1.contains("<h1>Added relay title</h1>"));
-    assert!(opened.1.contains("added relay body"));
-    assert!(opened.1.contains(&js_href));
-    assert!(!opened.1.contains("Publishing failed"));
-    assert_eq!(
-        nojs_fetch_hints_seen(),
-        vec!["wss://hint.example".to_string()]
-    );
 
     let bare = client.get("/s/not-a-locator").dispatch();
     assert_eq!(bare.status(), Status::NotFound);

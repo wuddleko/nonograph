@@ -16,10 +16,10 @@ There are no accounts. Anyone with the link, including the key in it, can open t
 With JavaScript, your browser seals the note and this host sends the ciphertext to relays. Without JavaScript, this host seals it and then sends the ciphertext. Either way the host does not keep the writing, the title, or the alias. The key stays in the link. We do not use cookies for tracking or run analytics. We do not store images, videos, or other media you link to.
 
 **For People Who Read Content:**
-Opening a note asks relays for the ciphertext. The host does not keep that ciphertext. The process can write a request log. A seal key that appears in a logged URL is redacted. The four site pages (about, legal, api, markup) are cached in memory. That cache is not a copy of published notes.
+Opening a note asks relays for the ciphertext. The host does not decrypt that ciphertext and does not keep it. The process can write a request log. A seal key that appears in a logged URL is redacted. The four site pages (about, legal, api, markup) are cached in memory. That cache is not a copy of published notes.
 
 **JavaScript-free Option:**
-The home page without scripts is `/nojs`. The four site pages are `/nojs/about`, `/nojs/legal`, `/nojs/api`, and `/nojs/markup`. A sealed note without scripts is `/nojs/s/...`. Those pages are rendered without client-side JavaScript.
+The home page without scripts is `/nojs`. The four site pages are `/nojs/about`, `/nojs/legal`, `/nojs/api`, and `/nojs/markup`. Those pages are rendered without client-side JavaScript. A sealed note opens in the browser. `/nojs/s/...` says to run locally and redirects to the source code.
 
 ## Important: Service Privacy Is Not Anonymity
 This service protects your privacy from us, but cannot protect your anonymity from others. Your writing creates a unique "fingerprint" through topics, style, word choices, idioms, sentence patterns, cultural references, and experiences. Additionally, metadata from files or websites you link to may contain identifying information. The service is not a magic bullet for anonymity - you are responsible for your own operational security.

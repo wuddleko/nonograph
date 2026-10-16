@@ -113,9 +113,7 @@ fn seal_and_sign_round_trips_through_open() {
     let (parsed, locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, signed.note.id);
     assert_eq!(locator, signed.locator);
-    let secret = crate::pages::nojs_query_secret(Some(&signed.k)).unwrap();
-    assert_eq!(secret, signed.secret);
-    let opened = nonograph_nip44::open(content, &secret, &locator).unwrap();
+    let opened = nonograph_nip44::open(content, &signed.secret, &locator).unwrap();
     assert_eq!(opened.title, "Title");
     assert_eq!(opened.author, "Ada");
     assert_eq!(opened.content, "hello");

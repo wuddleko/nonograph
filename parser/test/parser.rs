@@ -2855,3 +2855,12 @@ fn test_dividers() {
     assert!(multiple_result.contains("<hr class=\"divider-thin\">"));
     assert!(multiple_result.contains("<hr class=\"divider-double\">"));
 }
+
+#[test]
+fn a_note_full_of_fences_stops_at_the_block_cap() {
+    let note = "```\nx\n```\n".repeat(MAX_BLOCKS * 4);
+    let html = render_markdown(&note);
+    assert_eq!(html.matches("<pre").count(), MAX_BLOCKS);
+    assert!(html.len() <= MAX_HTML_BYTES);
+    assert!(html.contains("```"));
+}

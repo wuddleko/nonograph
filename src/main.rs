@@ -354,7 +354,6 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::tor_circuits,
                 pages::assign_tor_circuits,
                 pages::sealed_view,
-                pages::sealed_open,
                 pages::markup_page,
                 pages::legal_page,
                 pages::about_page,

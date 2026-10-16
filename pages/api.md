@@ -75,10 +75,8 @@ The browser seals the note, then posts the sealed event.
 | `503` | The publish slot is busy, or the publish task failed |
 
 ## Reading
-`GET /s/{locator}/{event-id}` opens a sealed note with the key in the fragment. The host fetches the ciphertext from relays and does not keep it.
+`GET /s/{locator}/{event-id}` opens a sealed note with the key in the fragment. The host fetches the ciphertext from relays and does not decrypt it or keep it. The browser opens the note.
 
-`GET /nojs/s/{locator}/{event-id}` redirects. A valid `?k=` secret returns **303** to `/s/{locator}/{event-id}#key`. Any other `k` returns **303** to `/s/{locator}/{event-id}` with no fragment. A bad locator or event id is **404**.
-
-The no-JS note is `POST /s/{locator}/{event-id}` with the key in the form field `k`. Extra relays are repeated form fields named `r`.
+`GET /nojs/s/{locator}/{event-id}` does not open the note. The page says to run locally and redirects to the source code. A bad locator or event id is **404**.
 
 The site pages `/about`, `/legal`, `/api`, and `/markup` are the only pages stored here. Their no-JS addresses are `/nojs/about` and the same for the other three.

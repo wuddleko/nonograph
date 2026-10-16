@@ -250,7 +250,10 @@ fn note_pdf_reads_the_html_and_draws_it() {
         (72_000, 733_754)
     );
 
-    assert_eq!(note_bytes("", "", "<p>Hello</p>"), render(&[prose("Hello")]));
+    assert_eq!(
+        note_bytes("", "", "<p>Hello</p>"),
+        render(&[prose("Hello")])
+    );
     assert_eq!(note_bytes("", "", ""), render(&[]));
 }
 

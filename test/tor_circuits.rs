@@ -77,7 +77,9 @@ fn a_built_circuit_names_its_relay_without_a_stream() {
         paths.get("wss://relay.snort.social").map(String::as_str),
         Some("Valhalla → DFRI125")
     );
-    assert!(!paths.values().any(|path| path.contains("prsv") || path.contains("datboit")));
+    assert!(!paths
+        .values()
+        .any(|path| path.contains("prsv") || path.contains("datboit")));
     assert!(!paths.keys().any(|relay| relay.contains("exit")));
 }
 

@@ -7,6 +7,9 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use url::Url;
 
+const MAX_BLOCKS: usize = 512;
+const MAX_HTML_BYTES: usize = 4 * 1024 * 1024;
+
 fn is_ip_blocked(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -164,19 +167,17 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
 
     working_content = apply_emphasis(&working_content);
 
-    working_content = restore_media_syntax(&working_content, &media_blocks);
-    working_content = restore_link_syntax(&working_content, &link_blocks);
+    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks);
     working_content = process_images_and_links(&working_content, config);
     working_content = process_tables(&working_content);
     working_content = process_lists(&working_content);
     working_content = process_dividers(&working_content);
     working_content = format_paragraphs_with_headers(&working_content);
     working_content =
-        restore_fenced_code_blocks_with_config(&working_content, &fenced_blocks, config);
-    working_content = restore_code_blocks(&working_content, &code_blocks);
+        restore_rendered_blocks(&working_content, &fenced_blocks, &code_blocks, config);
     working_content = restore_footnotes(&working_content);
 
-    sanitize_html(working_content)
+    finish_html(content, working_content)
 }
 
 pub fn render_inline(content: &str) -> String {
@@ -189,11 +190,10 @@ pub fn render_inline_with_config(content: &str, config: &RenderOptions) -> Strin
     let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content);
     let (working_content_no_links, link_blocks) = extract_link_syntax(&working_content_no_media);
     let mut working_content = apply_emphasis(&working_content_no_links);
-    working_content = restore_media_syntax(&working_content, &media_blocks);
-    working_content = restore_link_syntax(&working_content, &link_blocks);
+    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks);
     working_content = process_images_and_links(&working_content, config);
     working_content = restore_code_blocks(&working_content, &code_blocks);
-    sanitize_html(working_content)
+    finish_html(content, working_content)
 }
 
 fn apply_emphasis(text: &str) -> String {
@@ -624,32 +624,33 @@ fn extract_fenced_code_blocks(text: &str) -> (String, Vec<(String, String, u32)>
         let line = lines[i];
 
         // Check if this line starts a fenced code block
-        if let Some(end) = fenced_block_end(&lines, i) {
-            let fence_length = line.chars().take_while(|&c| c == '`').count();
-            let language = sanitize_language(line[fence_length..].trim());
-            let code_content = lines[(i + 1)..end].join("\n");
-            // Count lines in code content (minimum 1, maximum 999)
-            let line_count = if code_content.is_empty() {
-                1
-            } else {
-                let count = code_content.lines().count() as u32;
-                count.clamp(1, 999)
-            };
-            let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", fenced_blocks.len());
-            fenced_blocks.push((language, code_content, line_count));
-            result.push_str(&placeholder);
-            if i < lines.len() - 1 || text.ends_with('\n') {
-                result.push('\n');
+        if fenced_blocks.len() < MAX_BLOCKS {
+            if let Some(end) = fenced_block_end(&lines, i) {
+                let fence_length = line.chars().take_while(|&c| c == '`').count();
+                let language = sanitize_language(line[fence_length..].trim());
+                let code_content = lines[(i + 1)..end].join("\n");
+                // Count lines in code content (minimum 1, maximum 999)
+                let line_count = if code_content.is_empty() {
+                    1
+                } else {
+                    let count = code_content.lines().count() as u32;
+                    count.clamp(1, 999)
+                };
+                let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", fenced_blocks.len());
+                fenced_blocks.push((language, code_content, line_count));
+                result.push_str(&placeholder);
+                if i < lines.len() - 1 || text.ends_with('\n') {
+                    result.push('\n');
+                }
+                i = end + 1;
+                continue;
             }
-            i = end + 1;
-        } else {
-            // Regular line
-            result.push_str(line);
-            if i < lines.len() - 1 {
-                result.push('\n');
-            }
-            i += 1;
         }
+        result.push_str(line);
+        if i < lines.len() - 1 {
+            result.push('\n');
+        }
+        i += 1;
     }
 
     (result, fenced_blocks)
@@ -1036,30 +1037,131 @@ fn render_list_tree(items: &[ListItem]) -> String {
     }
 }
 
-fn restore_fenced_code_blocks_with_config(
+fn restore_rendered_blocks(
     text: &str,
     fenced_blocks: &[(String, String, u32)],
+    code_blocks: &[String],
     config: &RenderOptions,
 ) -> String {
-    let mut result = text.to_string();
+    let (syntax_set, themes) = syntax_and_themes();
+    let theme = theme_for(themes, &config.syntax_theme);
+    expand_indexed(
+        text,
+        &[("{{FENCEDBLOCK", "}}"), ("{{CODEBLOCK", "}}")],
+        |prefix, index| match prefix {
+            "{{FENCEDBLOCK" => fenced_blocks
+                .get(index)
+                .map(|(language, code, line_count)| {
+                    render_code_block(syntax_set, theme, language, code, *line_count)
+                }),
+            "{{CODEBLOCK" => code_blocks
+                .get(index)
+                .map(|code| format!("<code>{}</code>", html_escape(code))),
+            _ => None,
+        },
+    )
+}
 
-    let (ps, ts) = syntax_and_themes();
-
-    let theme = ts.themes.get(&config.syntax_theme).unwrap_or_else(|| {
-        eprintln!(
-            "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
-            config.syntax_theme
-        );
-        &ts.themes["base16-ocean.dark"]
-    });
-
-    for (index, (language, code_content, line_count)) in fenced_blocks.iter().enumerate() {
-        let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", index);
-        let replacement = render_code_block(&ps, theme, language, code_content, *line_count);
-
-        result = result.replace(&placeholder, &replacement);
+fn finish_html(source: &str, html: String) -> String {
+    if html.len() <= MAX_HTML_BYTES {
+        return sanitize_html(html);
     }
+    let end = source
+        .char_indices()
+        .nth(16_000)
+        .map(|(index, _)| index)
+        .unwrap_or(source.len());
+    sanitize_html(format!("<p>{}</p>", html_escape(&source[..end])))
+}
 
+fn expand_indexed(
+    text: &str,
+    markers: &[(&str, &str)],
+    mut replace: impl FnMut(&str, usize) -> Option<String>,
+) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < text.len() {
+        if result.len() >= MAX_HTML_BYTES {
+            result.push_str(&text[index..]);
+            break;
+        }
+        let mut found: Option<(usize, &str, &str)> = None;
+        for (prefix, suffix) in markers {
+            if let Some(relative) = text[index..].find(prefix) {
+                let at = index + relative;
+                if found.map(|(pos, _, _)| at < pos).unwrap_or(true) {
+                    found = Some((at, prefix, suffix));
+                }
+            }
+        }
+        let Some((at, prefix, suffix)) = found else {
+            result.push_str(&text[index..]);
+            break;
+        };
+        result.push_str(&text[index..at]);
+        let after = at + prefix.len();
+        if let Some((number, consumed)) = numbered_suffix(&text[after..], suffix) {
+            if let Some(replacement) = replace(prefix, number) {
+                result.push_str(&replacement);
+                index = after + consumed;
+                continue;
+            }
+            result.push_str(&text[at..after + consumed]);
+            index = after + consumed;
+            continue;
+        }
+        result.push_str(prefix);
+        index = after;
+    }
+    result
+}
+
+fn numbered_suffix(text: &str, suffix: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    if !bytes.first().is_some_and(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mut number = 0usize;
+    let mut length = 0usize;
+    for byte in bytes {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        if length == 6 {
+            return None;
+        }
+        number = number
+            .checked_mul(10)?
+            .checked_add((byte - b'0') as usize)?;
+        length += 1;
+    }
+    text[length..]
+        .starts_with(suffix)
+        .then_some((number, length + suffix.len()))
+}
+
+fn replace_literals(text: &str, pairs: &[(&str, &str)]) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < text.len() {
+        let mut found: Option<(usize, usize, &str)> = None;
+        for (key, replacement) in pairs {
+            if let Some(relative) = text[index..].find(key) {
+                let at = index + relative;
+                if found.map(|(pos, _, _)| at < pos).unwrap_or(true) {
+                    found = Some((at, key.len(), replacement));
+                }
+            }
+        }
+        let Some((at, key_len, replacement)) = found else {
+            result.push_str(&text[index..]);
+            break;
+        };
+        result.push_str(&text[index..at]);
+        result.push_str(replacement);
+        index = at + key_len;
+    }
     result
 }
 
@@ -1560,7 +1662,11 @@ fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+        if media_blocks.len() < MAX_BLOCKS
+            && bytes[i] == b'!'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'['
+        {
             if let Some(end) = delimited_span(bytes, i + 2) {
                 let placeholder = format!("{{{{MEDIASYNTAX{}}}}}", media_blocks.len());
                 media_blocks.push(text[i..end].to_string());
@@ -1580,13 +1686,16 @@ fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
     (result, media_blocks)
 }
 
-fn restore_media_syntax(text: &str, media_blocks: &[String]) -> String {
-    let mut result = text.to_string();
-    for (index, raw) in media_blocks.iter().enumerate() {
-        let placeholder = format!("{{{{MEDIASYNTAX{}}}}}", index);
-        result = result.replace(&placeholder, raw);
-    }
-    result
+fn restore_media_and_links(text: &str, media_blocks: &[String], link_blocks: &[String]) -> String {
+    expand_indexed(
+        text,
+        &[("{{MEDIASYNTAX", "}}"), ("{{LINKSYNTAX", "}}")],
+        |prefix, index| match prefix {
+            "{{MEDIASYNTAX" => media_blocks.get(index).cloned(),
+            "{{LINKSYNTAX" => link_blocks.get(index).cloned(),
+            _ => None,
+        },
+    )
 }
 
 fn extract_link_syntax(text: &str) -> (String, Vec<String>) {
@@ -1596,7 +1705,7 @@ fn extract_link_syntax(text: &str) -> (String, Vec<String>) {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'[' && !(i > 0 && bytes[i - 1] == b'!') {
+        if link_blocks.len() < MAX_BLOCKS && bytes[i] == b'[' && !(i > 0 && bytes[i - 1] == b'!') {
             if let Some(end) = link_syntax_end(text, i) {
                 let placeholder = format!("{{{{LINKSYNTAX{}}}}}", link_blocks.len());
                 link_blocks.push(text[i..end].to_string());
@@ -1637,15 +1746,6 @@ fn link_syntax_end(text: &str, i: usize) -> Option<usize> {
     None
 }
 
-fn restore_link_syntax(text: &str, link_blocks: &[String]) -> String {
-    let mut result = text.to_string();
-    for (index, raw) in link_blocks.iter().enumerate() {
-        let placeholder = format!("{{{{LINKSYNTAX{}}}}}", index);
-        result = result.replace(&placeholder, raw);
-    }
-    result
-}
-
 fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
     let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
@@ -1653,7 +1753,7 @@ fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'`' {
+        if code_blocks.len() < MAX_BLOCKS && bytes[i] == b'`' {
             if let Some(offset) = bytes[i + 1..].iter().position(|&byte| byte == b'`') {
                 let end = i + 1 + offset;
                 let code_content = &text[i + 1..end];
@@ -1678,16 +1778,11 @@ fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
 }
 
 fn restore_code_blocks(text: &str, code_blocks: &[String]) -> String {
-    let mut result = text.to_string();
-
-    for (index, code_content) in code_blocks.iter().enumerate() {
-        let placeholder = format!("{{{{CODEBLOCK{}}}}}", index);
-        let escaped_content = html_escape(code_content);
-        let replacement = format!("<code>{}</code>", escaped_content);
-        result = result.replace(&placeholder, &replacement);
-    }
-
-    result
+    expand_indexed(text, &[("{{CODEBLOCK", "}}")], |_, index| {
+        code_blocks
+            .get(index)
+            .map(|code| format!("<code>{}</code>", html_escape(code)))
+    })
 }
 
 fn is_comment_line(line: &str) -> bool {
@@ -1754,23 +1849,37 @@ fn process_footnotes(content: &str) -> String {
 
     // Second pass: process footnote references and inline footnotes
     while i < bytes.len() {
-        if i + 2 < bytes.len() && bytes[i] == b'^' && bytes[i + 1] == b'[' {
+        if (inline_footnote_counter as usize) < MAX_BLOCKS
+            && i + 2 < bytes.len()
+            && bytes[i] == b'^'
+            && bytes[i + 1] == b'['
+        {
             if let Some(end_pos) = matching_bracket(bytes, i + 1) {
                 inline_footnote_counter += 1;
                 let footnote_text = content_text[i + 2..end_pos].to_string();
                 let footnote_id = format!("ifn{}", inline_footnote_counter);
                 inline_footnotes.push((footnote_id, footnote_text));
-                result.push_str(&format!("XFOOTNOTEINLINEX{}XENDX", inline_footnote_counter));
+                result.push_str(&format!(
+                    "<sup><a href=\"XHASHXifn{}\" id=\"ifn{}ref\">{}</a></sup>",
+                    inline_footnote_counter, inline_footnote_counter, inline_footnote_counter
+                ));
                 i = end_pos + 1;
                 continue;
             }
-        } else if i + 3 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'^' {
+        } else if (footnote_counter as usize) < MAX_BLOCKS
+            && i + 3 < bytes.len()
+            && bytes[i] == b'['
+            && bytes[i + 1] == b'^'
+        {
             if let Some(end_pos) = find_ascii_until_newline(bytes, i + 2, b']') {
                 let footnote_id = &content_text[i + 2..end_pos];
                 if footnote_definitions.contains_key(footnote_id) {
                     footnote_counter += 1;
                     footnote_references.push((footnote_id.to_string(), footnote_counter));
-                    result.push_str(&format!("XFOOTNOTEREFX{}XENDX", footnote_counter));
+                    result.push_str(&format!(
+                        "<sup><a href=\"XHASHXFN{}\" id=\"fnref{}\">{}</a></sup>",
+                        footnote_counter, footnote_counter, footnote_counter
+                    ));
                     i = end_pos + 1;
                     continue;
                 }
@@ -1785,25 +1894,6 @@ fn process_footnotes(content: &str) -> String {
             result.push_str(&content_text[i..next]);
             i = next;
         }
-    }
-
-    // Replace placeholders with actual HTML
-    for i in 1..=footnote_counter {
-        let placeholder = format!("XFOOTNOTEREFX{}XENDX", i);
-        let replacement = format!(
-            "<sup><a href=\"XHASHXFN{}\" id=\"fnref{}\">{}</a></sup>",
-            i, i, i
-        );
-        result = result.replace(&placeholder, &replacement);
-    }
-
-    for i in 1..=inline_footnote_counter {
-        let placeholder = format!("XFOOTNOTEINLINEX{}XENDX", i);
-        let replacement = format!(
-            "<sup><a href=\"XHASHXifn{}\" id=\"ifn{}ref\">{}</a></sup>",
-            i, i, i
-        );
-        result = result.replace(&placeholder, &replacement);
     }
 
     // Add footnotes section at the end if there are any footnotes
@@ -1835,19 +1925,17 @@ fn process_footnotes(content: &str) -> String {
 }
 
 fn restore_footnotes(text: &str) -> String {
-    let mut result = text.to_string();
-
-    // Replace footnote section placeholders
-    result = result.replace(
-        "XFOOTNOTESECTIONSTARTX",
-        "<div class=\"footnotes\">\n<ol>\n",
-    );
-    result = result.replace("XFOOTNOTESECTIONENDX", "</ol>\n</div>");
-
-    // Replace hash placeholders
-    result = result.replace("XHASHX", "#");
-
-    result
+    replace_literals(
+        text,
+        &[
+            (
+                "XFOOTNOTESECTIONSTARTX",
+                "<div class=\"footnotes\">\n<ol>\n",
+            ),
+            ("XFOOTNOTESECTIONENDX", "</ol>\n</div>"),
+            ("XHASHX", "#"),
+        ],
+    )
 }
 
 fn matching_bracket(bytes: &[u8], open: usize) -> Option<usize> {

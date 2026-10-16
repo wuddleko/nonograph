@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use crate::encode;
 #[cfg(test)]
 use crate::font;
-use crate::place::{PAGE_HEIGHT_U, PAGE_WIDTH_U};
 #[cfg(test)]
 use crate::font::Face;
+use crate::place::{PAGE_HEIGHT_U, PAGE_WIDTH_U};
 
 #[cfg(test)]
 pub(crate) fn line_pdf(line: &str) -> Vec<u8> {

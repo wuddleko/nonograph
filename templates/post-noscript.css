@@ -23,3 +23,9 @@
 .code-controls {
     display: none;
 }
+.run-locally {
+    display: block;
+}
+#sealed-open {
+    display: none;
+}

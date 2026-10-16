@@ -119,7 +119,9 @@ fn source(face: Face) -> &'static Source {
         Face::Helvetica => load!(SANS, "../fonts/DejaVuSans.ttf"),
         Face::HelveticaBold => load!(SANS_BOLD, "../fonts/DejaVuSans-Bold.ttf"),
         Face::HelveticaOblique => load!(SANS_ITALIC, "../fonts/DejaVuSans-Oblique.ttf"),
-        Face::HelveticaBoldOblique => load!(SANS_BOLD_ITALIC, "../fonts/DejaVuSans-BoldOblique.ttf"),
+        Face::HelveticaBoldOblique => {
+            load!(SANS_BOLD_ITALIC, "../fonts/DejaVuSans-BoldOblique.ttf")
+        }
         Face::Courier => load!(MONO, "../fonts/DejaVuSansMono.ttf"),
         Face::CourierBold => load!(MONO_BOLD, "../fonts/DejaVuSansMono-Bold.ttf"),
         Face::CourierOblique => load!(MONO_ITALIC, "../fonts/DejaVuSansMono-Oblique.ttf"),

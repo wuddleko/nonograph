@@ -881,10 +881,20 @@ if (typeof document !== "undefined") {
                 }
             });
         };
-        form.addEventListener("submit", (event) => {
-            event.preventDefault();
-            openNote();
-        });
+        const openButton = form.querySelector("button");
+        if (openButton) {
+            openButton.addEventListener("click", openNote);
+        }
+        const field = document.getElementById("sealed-key");
+        if (field) {
+            field.addEventListener("keydown", (event) => {
+                if (event.key !== "Enter") {
+                    return;
+                }
+                event.preventDefault();
+                openNote();
+            });
+        }
         if (form.hidden) {
             openNote();
         }
