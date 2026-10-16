@@ -1,6 +1,7 @@
 use super::*;
 use secp256k1::{Secp256k1, XOnlyPublicKey};
 use serial_test::serial;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
 

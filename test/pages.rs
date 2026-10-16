@@ -14,6 +14,7 @@ fn static_assets_are_cacheable_and_html_is_not() {
         POST_NOSCRIPT_CSS_PATH,
         HOME_NOSCRIPT_CSS_PATH,
         WRITEMARK_JS_PATH,
+        WRITEMARK_LIVE_JS_PATH,
         WRITEMARK_CSS_PATH,
         NOTICE_CSS_PATH,
         THEME_JS_PATH,

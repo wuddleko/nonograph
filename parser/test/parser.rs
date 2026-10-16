@@ -2088,8 +2088,27 @@ fn json_string(value: &str) -> String {
     out
 }
 
+fn writemark_live_script() -> &'static str {
+    let source = include_str!("../../templates/writemark-live.js");
+    let end = source
+        .rfind("\n// Tests eval everything above this line as a script.\nexport {")
+        .expect("live module export");
+    &source[..end]
+}
+
+fn writemark_render_prefix() -> String {
+    let editor = include_str!("../../templates/writemark.js");
+    let start = editor
+        .find("\nlet pageModule = null;")
+        .expect("page module");
+    let end = editor
+        .find("\nfunction textFromMarkdown")
+        .expect("textFromMarkdown");
+    format!("{}{}", writemark_live_script(), &editor[start..end])
+}
+
 fn editor_inline_json(samples: &[&str]) -> String {
-    let source = include_str!("../../templates/writemark.js");
+    let source = include_str!("../../templates/writemark-live.js");
     let start = source
         .find("const NONOGRAPH_INLINE_RULES")
         .expect("editor inline rules");
@@ -2111,7 +2130,7 @@ fn editor_inline_json(samples: &[&str]) -> String {
 
 #[test]
 fn inline_markers_edit_like_brackets() {
-    let source = include_str!("../../templates/writemark.js");
+    let source = include_str!("../../templates/writemark-live.js");
     let start = source
         .find("const NONOGRAPH_INLINE_RULES")
         .expect("editor inline rules");
@@ -2271,10 +2290,7 @@ fn live_paint_sample(name: &str) -> bool {
 }
 
 fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, i64)]) -> Vec<i64> {
-    let source = include_str!("../../templates/writemark.js");
-    let end = source
-        .find("\nfunction textFromMarkdown")
-        .expect("cursorAfterLineInput ends before textFromMarkdown");
+    let source = writemark_live_script();
     let listed = cases
         .iter()
         .map(|(display, mapped, source, fallback, _)| {
@@ -2294,7 +2310,7 @@ fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, 
         .join(",");
     let program = format!(
         "{slice}\nconst rendered = JSON.stringify([{listed}]);\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
-        slice = &source[..end],
+        slice = source,
         listed = listed,
     );
     let text = run_javascript("nonograph-line-cursor", &program);
@@ -2324,10 +2340,7 @@ fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, 
 }
 
 fn writemark_editor_line_html(html: &[String]) -> Vec<String> {
-    let source = include_str!("../../templates/writemark.js");
-    let end = source
-        .find("\nfunction textFromMarkdown")
-        .expect("singleParagraphHtml ends before textFromMarkdown");
+    let source = writemark_render_prefix();
     let listed = html
         .iter()
         .map(|sample| json_string(sample))
@@ -2335,7 +2348,7 @@ fn writemark_editor_line_html(html: &[String]) -> Vec<String> {
         .join(",");
     let program = format!(
         "{slice}\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => singleParagraphHtml(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
-        slice = &source[..end],
+        slice = source,
         listed = listed,
     );
     parse_json_string_array(&run_javascript("nonograph-line-html", &program))
@@ -2409,10 +2422,7 @@ fn writemark_fixture_columns(
     samples: &[&str],
     rust_html: &[String],
 ) -> Vec<(String, String)> {
-    let source = include_str!("../../templates/writemark.js");
-    let end = source
-        .find("\nfunction textFromMarkdown")
-        .expect("renderMarkdown ends before textFromMarkdown");
+    let source = writemark_render_prefix();
     let listed = samples
         .iter()
         .map(|sample| json_string(sample))
@@ -2463,7 +2473,7 @@ fn writemark_fixture_columns(
         .join(",");
     let program = format!(
         "{slice}\nconst table = new Map([{pairs}]);\nconst inlineTable = new Map([{inline_pairs}]);\nconst highlightTable = new Map([{highlight_pairs}]);\npageModule = {{ render_markdown(markdown, theme, maxUrl, external) {{ if (theme !== \"base16-ocean.dark\" || maxUrl !== 4096 || external !== true) return \"renderer-options-mismatch\"; const html = table.get(markdown); return html == null ? \"renderer-sample-mismatch\" : html; }}, render_inline(markdown, maxUrl, external) {{ if (maxUrl !== 4096 || external !== true) return \"renderer-inline-options-mismatch\"; const html = inlineTable.get(markdown); return html == null ? \"renderer-inline-mismatch:\" + markdown : html; }}, highlight_code_lines(language, code, theme) {{ if (theme !== \"base16-ocean.dark\") return [\"highlight-options-mismatch\"]; const html = highlightTable.get(language + \"\\n\" + code); return html == null ? [\"highlight-missing:\" + language + \":\" + code] : html; }} }};\nconst samples = [{listed}];\nconst names = [{listed_names}];\nconst liveNames = new Set([\"heading\", \"list\", \"fence\", \"image\", \"comment\"]);\nconst rendered = JSON.stringify(samples.flatMap((sample, index) => [renderMarkdown(sample), liveNames.has(names[index]) ? liveDocumentHtml(sample, {{ syntaxTheme: \"base16-ocean.dark\", maxUrl: 4096, external: true, markdownFlavor: \"gfm\", spellcheck: \"true\", editable: \"true\", indentString: \"  \" }}) : \"\"]));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
-        slice = &source[..end],
+        slice = source,
         pairs = pairs,
         inline_pairs = inline_pairs,
         highlight_pairs = highlight_pairs,

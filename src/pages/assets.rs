@@ -20,6 +20,7 @@ pub const POST_JS_PATH: &str = "/post.js";
 pub const POST_NOSCRIPT_CSS_PATH: &str = "/post-noscript.css";
 pub const HOME_NOSCRIPT_CSS_PATH: &str = "/home-noscript.css";
 pub const WRITEMARK_JS_PATH: &str = "/writemark.js";
+pub const WRITEMARK_LIVE_JS_PATH: &str = "/writemark-live.js";
 pub const WRITEMARK_CSS_PATH: &str = "/writemark.css";
 pub const NOTICE_CSS_PATH: &str = "/notice.css";
 pub const THEME_JS_PATH: &str = "/theme.js";
@@ -52,6 +53,7 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         | POST_NOSCRIPT_CSS_PATH
         | HOME_NOSCRIPT_CSS_PATH
         | WRITEMARK_JS_PATH
+        | WRITEMARK_LIVE_JS_PATH
         | WRITEMARK_CSS_PATH
         | NOTICE_CSS_PATH
         | THEME_JS_PATH
@@ -128,6 +130,7 @@ struct Assets {
     post_noscript_css: String,
     home_noscript_css: String,
     writemark_js: String,
+    writemark_live_js: String,
     writemark_css: String,
     notice_css: String,
     theme_js: String,
@@ -160,7 +163,8 @@ fn assets() -> &'static Assets {
         let post_js = read("post.js");
         let post_noscript_css = read("post-noscript.css");
         let home_noscript_css = read("home-noscript.css");
-        let writemark_js = read("writemark.js");
+        let writemark_live_js = read("writemark-live.js");
+        let writemark_source = read("writemark.js");
         let writemark_css = read("writemark.css");
         let notice_css = read("notice.css");
         let theme_js = read("theme.js");
@@ -175,13 +179,22 @@ fn assets() -> &'static Assets {
             &post_js,
             &post_noscript_css,
             &home_noscript_css,
-            &writemark_js,
+            &writemark_source,
+            &writemark_live_js,
             &writemark_css,
             &notice_css,
             &theme_js,
             &editor_mode_js,
             &relays_js,
         ]);
+        let writemark_js = writemark_source.replacen(
+            "from \"./writemark-live.js\"",
+            &format!("from \"./writemark-live.js?v={version}\""),
+            1,
+        );
+        if writemark_js == writemark_source {
+            panic!("Nonograph: writemark.js does not import writemark-live.js");
+        }
         Assets {
             version,
             home_css,
@@ -193,6 +206,7 @@ fn assets() -> &'static Assets {
             post_noscript_css,
             home_noscript_css,
             writemark_js,
+            writemark_live_js,
             writemark_css,
             notice_css,
             theme_js,
@@ -292,6 +306,11 @@ pub fn home_noscript_css() -> (ContentType, &'static str) {
 #[get("/writemark.js")]
 pub fn writemark_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, assets().writemark_js.as_str())
+}
+
+#[get("/writemark-live.js")]
+pub fn writemark_live_js() -> (ContentType, &'static str) {
+    (ContentType::JavaScript, assets().writemark_live_js.as_str())
 }
 
 #[get("/writemark.css")]
