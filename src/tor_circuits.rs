@@ -185,6 +185,7 @@ pub(crate) fn relay_key(url: &str) -> Option<String> {
 
 fn hop_names(hops: &str) -> String {
     hops.split(',')
+        .skip(1)
         .filter_map(|hop| hop.split('~').nth(1))
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>()

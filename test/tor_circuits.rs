@@ -71,13 +71,35 @@ fn a_built_circuit_names_its_relay_without_a_stream() {
     let paths = paths_by_relay(SAMPLE);
     assert_eq!(
         paths.get("wss://relay.primal.net").map(String::as_str),
-        Some("prsv → 888 → Quintex391")
+        Some("888 → Quintex391")
     );
     assert_eq!(
         paths.get("wss://relay.snort.social").map(String::as_str),
-        Some("datboit → Valhalla → DFRI125")
+        Some("Valhalla → DFRI125")
     );
+    assert!(!paths.values().any(|path| path.contains("prsv") || path.contains("datboit")));
     assert!(!paths.keys().any(|relay| relay.contains("exit")));
+}
+
+#[test]
+fn a_path_leaves_out_the_entry_guard() {
+    let reply = "\
+250+circuit-status=\r\n\
+1 BUILT $AA~onlyguard BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL SOCKS_USERNAME=\"wss://solo.example\"\r\n\
+2 BUILT $BB~guard,$CC~exit BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL SOCKS_USERNAME=\"wss://pair.example\"\r\n\
+3 BUILT $DD~guard,$EE,$FF~exit BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL SOCKS_USERNAME=\"wss://unnamed.example\"\r\n\
+.\r\n";
+    let paths = paths_by_relay(reply);
+    assert!(paths.get("wss://solo.example").is_none());
+    assert_eq!(
+        paths.get("wss://pair.example").map(String::as_str),
+        Some("exit")
+    );
+    assert_eq!(
+        paths.get("wss://unnamed.example").map(String::as_str),
+        Some("exit")
+    );
+    assert!(!paths.values().any(|path| path.contains("guard")));
 }
 
 #[test]
@@ -92,11 +114,11 @@ fn same_host_paths_stay_apart_and_host_case_does_not() {
     let paths = paths_by_relay(reply);
     assert_eq!(
         paths.get("wss://damus.io").map(String::as_str),
-        Some("guard → middle → exit")
+        Some("middle → exit")
     );
     assert_eq!(
         paths.get("wss://damus.io/path").map(String::as_str),
-        Some("other → mid → out")
+        Some("mid → out")
     );
     assert_eq!(paths.len(), 2);
 }
@@ -113,7 +135,7 @@ fn a_gone_circuit_drops_its_path() {
     let paths = remember(reply);
     assert_eq!(
         paths.get("wss://relay.snort.social").map(String::as_str),
-        Some("datboit → Valhalla → DFRI125")
+        Some("Valhalla → DFRI125")
     );
     assert!(!paths.contains_key("wss://relay.primal.net"));
 }
@@ -134,5 +156,5 @@ fn a_new_circuit_keeps_the_shown_path() {
         paths.get("wss://relay.primal.net").map(String::as_str),
         Some(shown.as_str())
     );
-    assert_ne!(shown, "newguard → newmid → newexit");
+    assert_ne!(shown, "newmid → newexit");
 }
