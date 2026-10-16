@@ -1,6 +1,8 @@
 # Rust build artifacts
 /target/
-Cargo.lock
+
+# Local Tor directory cache. The daemon writes this at runtime.
+/tor-data/
 
 # Cached page bundle. build.rs copies it into OUT_DIR and rebuilds it when sources change.
 /page/pkg/

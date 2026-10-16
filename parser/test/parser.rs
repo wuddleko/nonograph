@@ -2874,3 +2874,18 @@ fn a_note_full_of_fences_stops_at_the_block_cap() {
     assert!(html.len() <= MAX_HTML_BYTES);
     assert!(html.contains("```"));
 }
+
+#[test]
+#[ignore]
+fn a_full_size_fence_note_renders_within_a_second() {
+    let note = "```\nx\n```\n".repeat(25_600);
+    assert_eq!(note.chars().count(), 256_000);
+    let started = std::time::Instant::now();
+    let html = render_markdown(&note);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "256000-character fence note took {elapsed:?}"
+    );
+    assert!(html.len() <= MAX_HTML_BYTES);
+}

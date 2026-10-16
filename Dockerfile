@@ -1,4 +1,4 @@
-FROM rust:latest AS builder
+FROM rust:latest@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -9,7 +9,7 @@ RUN rustup target add wasm32-unknown-unknown
 
 WORKDIR /app
 
-COPY Cargo.toml build.rs robots.txt ./
+COPY Cargo.toml Cargo.lock build.rs robots.txt ./
 COPY parser ./parser
 COPY page ./page
 COPY nip44 ./nip44
@@ -17,9 +17,9 @@ COPY crawler ./crawler
 COPY pdf ./pdf
 COPY src ./src
 
-RUN cargo build --release
+RUN cargo build --release --locked
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
 LABEL org.opencontainers.image.source=https://github.com/wuddleko/nonograph
 LABEL org.opencontainers.image.description="Anonymous publishing for the privacy-conscious web"

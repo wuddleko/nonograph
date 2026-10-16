@@ -172,7 +172,7 @@ show_onion() {
 
 build_project() {
     echo "🔨 Building Nonograph..."
-    cargo build --release
+    cargo build --release --locked
     if [ $? -eq 0 ]; then
         echo "✅ Build completed successfully"
     else

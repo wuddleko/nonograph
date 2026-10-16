@@ -217,7 +217,7 @@ build_service() {
     fi
 
     # Build in release mode
-    cargo build --release || {
+    cargo build --release --locked || {
         log_error "Failed to build Nonograph"
         exit 1
     }
