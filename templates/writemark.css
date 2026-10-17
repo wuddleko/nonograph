@@ -69,6 +69,10 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
 .live-placeholder { color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
 .md-empty-placeholder::before { content: attr(data-placeholder); position: absolute; color: var(--md-editor-placeholder, var(--md-editor-muted)); pointer-events: none; }
 .md-virtual-spacer { display: block; pointer-events: none; user-select: none; inline-size: 1px; min-block-size: 0; }
+.live-editor.md-virtual > :not(.md-virtual-spacer):not(.md-caret-block) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--md-virtual-size, 1.45em);
+}
 .md-line { position: relative; min-block-size: calc(var(--md-editor-line-height, 1.55) * 1em); line-height: var(--md-editor-line-height, 1.55); white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; padding: 0; outline: none; transition: background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease); }
 .md-source-form { white-space: pre-wrap; }
 .md-line p { display: inline; margin: 0; }

@@ -148,6 +148,7 @@ function liveInlineHtml(markdown, opts) {
   return text ? escapeHtml(text) : "<br>";
 }
 function codeFenceBlockHtml(block, opts = {}) {
+  if (opts.lineWindow) return codeFenceWindowHtml(block, opts);
   const editable = opts.editable || "true";
   const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
   const language = String(block.language || "").trim();
@@ -166,6 +167,53 @@ function codeFenceBlockHtml(block, opts = {}) {
     ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${spellcheck}" aria-label="After code block"><br></div>`
     : "";
   return `<div class="md-code-block" part="code-block" data-kind="code-fence" data-language="${escapeAttribute(language)}" contenteditable="false">${fenceLine(block.opening, "open")}<div class="md-code-lines">${lines}</div>${fenceLine(block.closing, "close")}</div>${afterAnchor}`;
+}
+function codeFenceWindowHtml(block, opts) {
+  const editable = opts.editable || "true";
+  const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
+  const language = String(block.language || "").trim();
+  const ranges = codeLineRanges(block);
+  const rows = [];
+  if (block.opening) rows.push({ role: "open", line: block.opening });
+  ranges.forEach(range => rows.push({ role: "code", range }));
+  if (block.closing) rows.push({ role: "close", line: block.closing });
+  const requested = opts.lineWindow;
+  const start = clamp(requested.start, 0, rows.length);
+  const end = clamp(requested.end, start, rows.length);
+  const visible = rows.slice(start, end);
+  const codeRows = visible.filter(row => row.role === "code");
+  const highlighted = codeRows.length ? highlightCodeLines(language, codeRows.map(row => row.range.text).join("\n"), opts) || [] : [];
+  let codeIndex = 0;
+  const fenceLine = (line, role) => {
+    if (!line) return "";
+    const text = line.text ? escapeHtml(line.text) : "<br>";
+    return `<div class="md-code-fence-line" part="code-fence" data-editable="line" data-kind="code-fence" data-fence-role="${role}" data-from="${line.start}" data-to="${line.end}" data-source-form="true" contenteditable="${editable}" spellcheck="false">${text}</div>`;
+  };
+  const codeLines = [];
+  const parts = [];
+  for (const row of visible) {
+    if (row.role === "code") {
+      const body = codeLineHtml(highlighted[codeIndex] ?? (row.range.text ? escapeHtml(row.range.text) : ""));
+      codeIndex += 1;
+      codeLines.push(`<div class="md-code-line" part="code-line" data-editable="line" data-kind="code-fence" data-from="${row.range.from}" data-to="${row.range.to}" data-source-form="true" contenteditable="${editable}" spellcheck="false">${body}</div>`);
+      continue;
+    }
+    if (codeLines.length) {
+      parts.push(`<div class="md-code-lines">${codeLines.join("")}</div>`);
+      codeLines.length = 0;
+    }
+    parts.push(fenceLine(row.line, row.role));
+  }
+  if (codeLines.length) parts.push(`<div class="md-code-lines">${codeLines.join("")}</div>`);
+  const lineHeight = Math.max(1, requested.lineHeight || 20);
+  const topGap = start > 0 ? Math.round(start * lineHeight) : 0;
+  const bottomGap = end < rows.length ? Math.round((rows.length - end) * lineHeight) : 0;
+  const topSpacer = topGap > 0 ? `<div class="md-virtual-spacer" style="block-size:${topGap}px"></div>` : "";
+  const bottomSpacer = bottomGap > 0 ? `<div class="md-virtual-spacer" style="block-size:${bottomGap}px"></div>` : "";
+  const afterAnchor = block.closing && block.newlineEnd === block.to
+    ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${spellcheck}" aria-label="After code block"><br></div>`
+    : "";
+  return `<div class="md-code-block" part="code-block" data-kind="code-fence" data-language="${escapeAttribute(language)}" contenteditable="false">${topSpacer}${parts.join("")}${bottomSpacer}</div>${afterAnchor}`;
 }
 function taskLineHtml(block, opts = {}, sourceForm = false) {
   const editable = opts.editable || "true";
@@ -376,7 +424,9 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveIndexDirty = true;
     this._validationVisible = false;
     this._completionUpdateFrame = 0;
-    this._virtualState = { active: false, start: 0, end: 0, total: 0, lineHeight: 24 };
+    this._virtualState = { active: false, start: 0, end: 0, total: 0, lineHeight: 24, slices: new Map(), sliceKey: "" };
+    this._blockHeights = new Map();
+    this._virtualPainting = 0;
     this._virtualScrollFrame = 0;
     this._paintFrame = 0;
     this._deferredPaint = null;
@@ -421,6 +471,7 @@ class WritemarkEditorElement extends HTMLElement {
       this._updateFormValue();
       this._updateValidity();
     } else {
+      this._bindDocumentScroll();
       this._syncAttributesToControls();
       this._renderAll({ restoreSelection: true });
       this._updateFormValue();
@@ -432,6 +483,10 @@ class WritemarkEditorElement extends HTMLElement {
     if (this._completionUpdateFrame) cancelAnimationFrame(this._completionUpdateFrame);
     if (this._virtualScrollFrame) cancelAnimationFrame(this._virtualScrollFrame);
     if (this._paintFrame) cancelAnimationFrame(this._paintFrame);
+    if (this._boundDocumentScroll) {
+      this.ownerDocument?.removeEventListener("scroll", this._boundDocumentScroll, true);
+      this.ownerDocument?.defaultView?.removeEventListener("scroll", this._boundDocumentScroll, true);
+    }
     if (this._compositionEndTimer) clearTimeout(this._compositionEndTimer);
     this._compositionEndTimer = 0;
     this._completionUpdateFrame = 0;
@@ -624,6 +679,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveEditor.addEventListener("mousedown", event => this._onLiveMouseDown(event));
     this._liveEditor.addEventListener("mouseup", () => this._onSelectionChanged());
     this._liveEditor.addEventListener("scroll", () => this._onLiveScroll());
+    this._bindDocumentScroll();
     this._liveEditor.addEventListener("copy", event => this._onLiveCopy(event));
     this._liveEditor.addEventListener("cut", event => this._onLiveCut(event));
     this._liveEditor.addEventListener("paste", event => this._onPaste(event));
@@ -1011,11 +1067,12 @@ class WritemarkEditorElement extends HTMLElement {
     const previousBlocks = this._liveBlocks || [];
     const blocks = this._blocksForRender(previousValue, changes);
     if (this._shouldVirtualize(blocks)) {
-      let painted = this._renderLiveVirtual(blocks, { anchorOffset: this._selection.start, force });
+      const focus = this._selectionFocusOffset();
+      let painted = this._renderLiveVirtual(blocks, { anchorOffset: focus, force });
       // The caret moved while this window was waiting. Paint it so the line
       // entered is source and the line left is formatted.
       if (!painted && deferredFrame && caretMoved) {
-        painted = this._renderLiveVirtual(blocks, { anchorOffset: this._selection.start, force: true });
+        painted = this._renderLiveVirtual(blocks, { anchorOffset: focus, force: true });
       }
       if (!painted) this._syncVirtualWindow(blocks, changes);
       this._liveBlocks = blocks;
@@ -1023,6 +1080,7 @@ class WritemarkEditorElement extends HTMLElement {
       if (painted) this._sourceFormKeyShown = this._sourceFormKey();
       return;
     }
+    this._liveEditor.classList.remove("md-virtual");
     this._virtualState = { ...this._virtualState, active: false, start: 0, end: blocks.length, total: blocks.length };
     if (deferredFrame && this._paintDeferredSourceFrame(previousBlocks, blocks, changes, previousValue, caretMoved)) {
       this._liveBlocks = blocks;
@@ -1305,15 +1363,155 @@ class WritemarkEditorElement extends HTMLElement {
     if (block.rows) shifted.rows = block.rows.map(row => this._shiftLineOffsets(row, delta));
     return shifted;
   }
+  _bindDocumentScroll() {
+    this._boundDocumentScroll ??= () => this._onLiveScroll();
+    const doc = this.ownerDocument;
+    const view = doc?.defaultView;
+    if (!doc) return;
+    doc.removeEventListener("scroll", this._boundDocumentScroll, true);
+    view?.removeEventListener("scroll", this._boundDocumentScroll, true);
+    doc.addEventListener("scroll", this._boundDocumentScroll, true);
+    view?.addEventListener("scroll", this._boundDocumentScroll, true);
+  }
+  _selectionFocusOffset() {
+    const sel = this._selection;
+    if (!sel) return 0;
+    return sel.direction === "backward" ? sel.start : sel.end;
+  }
+  _metrics() {
+    const editor = this._liveEditor;
+    const width = editor?.clientWidth || 0;
+    if (this._metricsCache && this._metricsWidth === width) return this._metricsCache;
+    if (this._metricsWidth != null && width && this._metricsWidth !== width) {
+      this._blockHeights?.clear();
+      this._heightTops = null;
+    }
+    const style = globalThis.getComputedStyle?.(editor || this);
+    const fontSize = Number.parseFloat(style?.fontSize || "") || 16;
+    const gap = style?.getPropertyValue?.("--md-editor-paragraph-gap")?.trim?.() || "";
+    let blank = fontSize * 1.1;
+    if (gap.endsWith("px")) blank = Number.parseFloat(gap) || blank;
+    else if (gap.endsWith("em")) blank = (Number.parseFloat(gap) || 1.1) * fontSize;
+    const pad = (Number.parseFloat(style?.paddingLeft || "") || 0) + (Number.parseFloat(style?.paddingRight || "") || 0);
+    this._metricsWidth = width;
+    this._metricsCache = {
+      fontSize,
+      blank,
+      line: Math.max(18, this._computedLineHeight(editor || this)),
+      chars: Math.max(8, Math.floor(((width || 640) - pad) / Math.max(1, fontSize * 0.5))),
+      fenceLine: 20,
+      fenceLead: 20,
+      fenceChrome: 52,
+      tableRow: fontSize * 1.35 + 14,
+      tableChrome: fontSize,
+    };
+    return this._metricsCache;
+  }
+  _visibleExtent() {
+    const editor = this._liveEditor;
+    const line = this._metrics().line;
+    const viewport = globalThis.innerHeight || 800;
+    if (!editor) return { y: 0, height: viewport };
+    const pad = Number.parseFloat(globalThis.getComputedStyle?.(editor)?.paddingTop || "") || 0;
+    const box = editor.clientHeight || 0;
+    if (box > 0 && editor.scrollHeight > box + 2) return { y: editor.scrollTop || 0, height: Math.max(line * 8, box) };
+    // The writing page grows with the note and the document scrolls. The
+    // editor's own box is the whole note, so the visible slice is the viewport.
+    const rect = editor.getBoundingClientRect();
+    return { y: Math.max(0, -rect.top - pad), height: Math.max(line * 8, viewport) };
+  }
+  _virtualMargin() {
+    return this._metrics().line * 18;
+  }
   _shouldVirtualize(blocks) {
-    return blocks.length > 2500 || this._value.length > DEFAULTS.largeDocChars * 2;
+    if (!blocks?.length) return false;
+    const factor = this._virtualState.active ? 1.5 : 2;
+    return (this._blockTops(blocks)[blocks.length] || 0) > this._visibleExtent().height * factor;
   }
   _virtualLineHeight() {
-    return Math.max(18, this._computedLineHeight(this._liveEditor || this));
+    return this._metrics().line;
   }
-  _virtualWindowSize(lineHeight = this._virtualLineHeight()) {
-    const viewportRows = Math.ceil((this._liveEditor.clientHeight || 600) / lineHeight);
-    return clamp(viewportRows + 180, 220, 520);
+  _blockHeightKey(block) {
+    const extra = block.type === "code-fence"
+      ? (block.codeLines?.length || 0)
+      : block.type === "table"
+        ? (block.rows?.length || 0)
+        : (block.line?.text?.length || 0);
+    return `${block.type}:${block.from}:${block.to}:${extra}`;
+  }
+  _blockHeight(block) {
+    const cached = this._blockHeights?.get(this._blockHeightKey(block));
+    return cached || this._estimateBlockHeight(block);
+  }
+  _storeBlockHeight(block, height) {
+    if (!block || !(height > 0)) return false;
+    if (!this._blockHeights) this._blockHeights = new Map();
+    if (this._blockHeights.size > 20000) this._blockHeights.clear();
+    const key = this._blockHeightKey(block);
+    const prev = this._blockHeights.get(key);
+    if (prev != null && Math.abs(prev - height) < 1) return false;
+    this._blockHeights.set(key, height);
+    this._heightTops = null;
+    return true;
+  }
+  _hasAfterAnchor(block) {
+    if (!block) return false;
+    if (block.type === "code-fence") return Boolean(block.closing) && block.newlineEnd === block.to;
+    if (block.type === "table") return block.newlineEnd === block.to;
+    if (block.type === "heading") return Boolean(block.setext) && block.newlineEnd === block.to;
+    return false;
+  }
+  _estimateBlockHeight(block) {
+    const metrics = this._metrics();
+    if (!block) return metrics.line;
+    const anchor = this._hasAfterAnchor(block) ? metrics.blank : 0;
+    if (block.type === "blank") return metrics.blank;
+    if (block.type === "heading") {
+      const level = Number(block.heading?.level) || 1;
+      const scale = [1, 2, 1.6, 1.35, 1.18, 1.1, 1][level] || 1;
+      return metrics.fontSize * scale * 1.18 + metrics.fontSize * 0.44 + anchor;
+    }
+    if (block.type === "horizontal-rule") return metrics.fontSize * 1.35;
+    if (block.type === "code-fence") return metrics.fenceChrome + this._fenceRows(block).length * metrics.fenceLine + anchor;
+    if (block.type === "table") {
+      const body = Math.max(block.rows?.length || 0, 1);
+      return metrics.tableChrome + (1 + body) * metrics.tableRow + anchor;
+    }
+    return metrics.line * this._textLineCount(block.line?.text ?? "");
+  }
+  _textLineCount(text) {
+    const chars = this._metrics().chars;
+    let lines = 0;
+    for (const part of String(text ?? "").split("\n")) lines += Math.max(1, Math.ceil((part.length || 1) / chars));
+    return Math.max(1, lines);
+  }
+  _fenceRows(block) {
+    const rows = [];
+    if (block?.opening) rows.push(block.opening);
+    for (const line of block?.codeLines || []) rows.push(line);
+    if (block?.closing) rows.push(block.closing);
+    return rows;
+  }
+  _blockTops(blocks) {
+    if (this._heightBlocks === blocks && this._heightTops) return this._heightTops;
+    const tops = new Float64Array(blocks.length + 1);
+    for (let i = 0; i < blocks.length; i += 1) tops[i + 1] = tops[i] + this._blockHeight(blocks[i]);
+    this._heightBlocks = blocks;
+    this._heightTops = tops;
+    return tops;
+  }
+  _indexAtContentY(tops, y) {
+    const last = tops.length - 2;
+    if (last < 0) return 0;
+    let low = 0;
+    let high = last;
+    let best = 0;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (tops[mid] <= y) { best = mid; low = mid + 1; }
+      else high = mid - 1;
+    }
+    return best;
   }
   _blockIndexForOffset(blocks, offset) {
     const last = blocks[blocks.length - 1];
@@ -1336,23 +1534,235 @@ class WritemarkEditorElement extends HTMLElement {
     }
     return clamp(best, 0, Math.max(0, blocks.length - 1));
   }
-  _renderLiveVirtual(blocks, { anchorOffset = this._selection.start, force = false, fromScroll = false } = {}) {
+  _virtualSpan(blocks, opts) {
+    const tops = this._blockTops(blocks);
+    const extent = this._visibleExtent();
+    const margin = this._virtualMargin();
+    let y0 = extent.y - margin;
+    let y1 = extent.y + extent.height + margin;
+    if (!opts.fromScroll && opts.anchorOffset != null) {
+      const index = opts.anchorIndex ?? this._blockIndexForOffset(blocks, opts.anchorOffset);
+      const mid = ((tops[index] || 0) + (tops[Math.min(index + 1, tops.length - 1)] || 0)) / 2;
+      const inView = mid >= extent.y - margin && mid <= extent.y + extent.height + margin;
+      if (!inView) {
+        y0 = mid - extent.height / 2 - margin;
+        y1 = mid + extent.height / 2 + margin;
+      }
+    }
+    let start = this._indexAtContentY(tops, Math.max(0, y0));
+    let end = this._indexAtContentY(tops, Math.max(0, y1)) + 1;
+    for (const index of [opts.coverIndex, opts.coverIndex2]) {
+      if (index == null) continue;
+      start = Math.min(start, index);
+      end = Math.max(end, index + 1);
+    }
+    end = clamp(end, 0, blocks.length);
+    start = clamp(start, 0, end);
+    if (start === end && blocks.length) end = Math.min(blocks.length, start + 1);
+    return { start, end, tops, y0, y1 };
+  }
+  _sliceView(opts, y0, y1) {
+    return { y0, y1, pinSelection: !opts.fromScroll, focusOffset: opts.fromScroll ? null : opts.anchorOffset };
+  }
+  _rowWindow(rows, top, lead, line, view) {
+    const total = rows.length;
+    if (!total) return { start: 0, end: 0, total: 0, lineHeight: line };
+    const height = Math.max(1, line);
+    const rowAt = y => clamp(Math.floor((y - top - lead) / height), 0, total);
+    let start = rowAt(view.y0);
+    let end = Math.min(total, rowAt(view.y1) + 1);
+    const pins = [];
+    if (view.pinSelection && this._selection) pins.push(this._selection.start, this._selection.end);
+    if (view.focusOffset != null) pins.push(view.focusOffset);
+    for (const offset of pins) {
+      const row = rows.findIndex(item => offset >= item.start && offset <= item.end);
+      if (row >= 0) {
+        start = Math.min(start, row);
+        end = Math.max(end, row + 1);
+      }
+    }
+    const budget = Math.max(8, Math.ceil((view.y1 - view.y0) / height));
+    if (end - start > budget) {
+      const focus = view.focusOffset ?? this._selectionFocusOffset();
+      let center = rows.findIndex(item => focus >= item.start && focus <= item.end);
+      if (center < 0) center = start;
+      start = clamp(center - Math.floor(budget / 2), 0, total);
+      end = clamp(start + budget, 0, total);
+    }
+    if (end <= start) end = Math.min(total, start + 1);
+    return { start, end, total, lineHeight: height };
+  }
+  _fenceLineWindow(block, top, view) {
+    const rows = this._fenceRows(block);
+    const metrics = this._metrics();
+    const budget = this._visibleExtent().height + this._virtualMargin() * 2;
+    if (rows.length < 2 || this._blockHeight(block) <= budget) return null;
+    const window = this._rowWindow(rows, top, metrics.fenceLead, metrics.fenceLine, view);
+    if (window.start <= 0 && window.end >= rows.length) return null;
+    const rendered = rows.slice(window.start, window.end);
+    return { ...window, sourceFrom: rendered[0]?.start ?? block.from, sourceTo: rendered.at(-1)?.end ?? block.to };
+  }
+  _tableRowWindow(block, top, view) {
+    const rows = block.rows || [];
+    const metrics = this._metrics();
+    const budget = this._visibleExtent().height + this._virtualMargin() * 2;
+    if (rows.length < 2 || this._blockHeight(block) <= budget) return null;
+    const window = this._rowWindow(rows, top, metrics.tableRow, metrics.tableRow, view);
+    if (window.start <= 0 && window.end >= rows.length) return null;
+    const rendered = rows.slice(window.start, window.end);
+    return {
+      ...window,
+      headerFrom: block.header?.start ?? block.from,
+      headerTo: block.header?.end ?? block.from,
+      sourceFrom: rendered[0]?.start ?? block.from,
+      sourceTo: rendered.at(-1)?.end ?? block.to,
+    };
+  }
+  _sliceSignature(blocks, start, end, tops, view) {
+    const parts = [];
+    for (let index = start; index < end; index += 1) {
+      const block = blocks[index];
+      const window = block?.type === "code-fence"
+        ? this._fenceLineWindow(block, tops[index] || 0, view)
+        : block?.type === "table"
+          ? this._tableRowWindow(block, tops[index] || 0, view)
+          : null;
+      if (window) parts.push(`${index}:${window.start}:${window.end}`);
+    }
+    return parts.join(",");
+  }
+  _htmlForVirtualBlock(block, index, tops, view, slices) {
+    let html;
+    if (block.type === "code-fence") {
+      const window = this._fenceLineWindow(block, tops[index] || 0, view);
+      if (window) {
+        slices.set(index, window);
+        html = codeFenceBlockHtml(block, { ...this._livePaintOptions(), lineWindow: window });
+      } else html = this._renderLiveBlock(block);
+    } else if (block.type === "table") {
+      const window = this._tableRowWindow(block, tops[index] || 0, view);
+      if (window) {
+        slices.set(index, window);
+        html = this._renderTable(block, window);
+      } else html = this._renderLiveBlock(block);
+    } else html = this._renderLiveBlock(block);
+    return this._stampVirtualBlock(html, index, block);
+  }
+  _stampVirtualBlock(html, index, block) {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const nodes = [...template.content.children];
+    const blank = this._metrics().blank;
+    const total = this._blockHeight(block);
+    const tail = nodes.length > 1 ? blank : 0;
+    nodes.forEach((node, i) => {
+      node.dataset.virtualBlock = String(index);
+      const size = tail && i === nodes.length - 1 ? tail : Math.max(1, total - tail);
+      node.style.setProperty("--md-virtual-size", `${Math.round(size)}px`);
+    });
+    return template.innerHTML;
+  }
+  _renderLiveVirtual(blocks, opts = {}) {
+    const paintOpts = { ...opts, anchorOffset: opts.anchorOffset ?? this._selectionFocusOffset() };
+    const { start, end, tops, y0, y1 } = this._virtualSpan(blocks, paintOpts);
+    const view = this._sliceView(paintOpts, y0, y1);
+    const sliceKey = this._sliceSignature(blocks, start, end, tops, view);
     const total = blocks.length;
-    const lineHeight = this._virtualLineHeight();
-    const windowSize = this._virtualWindowSize(lineHeight);
-    const scrollIndex = Math.floor((this._liveEditor.scrollTop || 0) / lineHeight);
-    const anchorIndex = fromScroll ? scrollIndex : this._blockIndexForOffset(blocks, anchorOffset);
-    let start = clamp(anchorIndex - Math.floor(windowSize / 2), 0, Math.max(0, total - windowSize));
-    let end = clamp(start + windowSize, start, total);
-    if (end - start < windowSize && start > 0) start = Math.max(0, end - windowSize);
-    if (!force && this._virtualState.active && start === this._virtualState.start && end === this._virtualState.end && total === this._virtualState.total) return false;
-    const topHeight = Math.round(start * lineHeight);
-    const bottomHeight = Math.round((total - end) * lineHeight);
-    this._liveEditor.innerHTML = blocks.slice(start, end).map(block => this._renderLiveBlock(block)).join("");
-    this._liveEditor.prepend(this._virtualSpacer(topHeight));
-    this._liveEditor.append(this._virtualSpacer(bottomHeight));
-    this._virtualState = { active: true, start, end, total, lineHeight };
+    if (!paintOpts.force && this._virtualState.active && start === this._virtualState.start && end === this._virtualState.end && total === this._virtualState.total && sliceKey === this._virtualState.sliceKey) return false;
+    const slices = new Map();
+    const html = [];
+    for (let index = start; index < end; index += 1) html.push(this._htmlForVirtualBlock(blocks[index], index, tops, view, slices));
+    this._beginVirtualPaint();
+    try {
+      this._clearOffsetMap();
+      this._liveEditor.innerHTML = html.join("");
+      this._liveEditor.prepend(this._virtualSpacer(Math.max(0, Math.round(tops[start] || 0))));
+      this._liveEditor.append(this._virtualSpacer(Math.max(0, Math.round((tops[total] || 0) - (tops[end] || 0)))));
+      this._virtualState = { active: true, start, end, total, lineHeight: this._metrics().line, slices, sliceKey };
+      this._markVirtualCaret(blocks);
+      if (this._measureVirtualBlocks(blocks) && !paintOpts.reflow && !this._virtualWindowCovers(blocks)) {
+        return this._renderLiveVirtual(blocks, { ...paintOpts, force: true, reflow: true });
+      }
+    } finally {
+      this._endVirtualPaint();
+    }
     return true;
+  }
+  _beginVirtualPaint() { this._virtualPainting = (this._virtualPainting || 0) + 1; }
+  _endVirtualPaint() { this._virtualPainting = Math.max(0, (this._virtualPainting || 0) - 1); }
+  _virtualWindowCovers(blocks) {
+    if (!this._virtualState.active) return false;
+    const { start, end } = this._virtualState;
+    const tops = this._blockTops(blocks);
+    const extent = this._visibleExtent();
+    const slack = this._metrics().line * 8;
+    const topOk = start === 0 ? extent.y <= slack : (tops[start] || 0) <= Math.max(0, extent.y - slack);
+    const bottomOk = end === blocks.length ? true : (tops[end] || 0) >= extent.y + extent.height + slack;
+    if (!topOk || !bottomOk) return false;
+    const view = this._sliceView({ fromScroll: true }, extent.y - this._virtualMargin(), extent.y + extent.height + this._virtualMargin());
+    return this._sliceSignature(blocks, start, end, tops, view) === this._virtualState.sliceKey;
+  }
+  _measureVirtualBlocks(blocks) {
+    const editor = this._liveEditor;
+    if (!editor) return false;
+    const extent = this._visibleExtent();
+    const tops = this._blockTops(blocks);
+    const groups = new Map();
+    for (const node of editor.children) {
+      if (node.classList.contains("md-virtual-spacer")) continue;
+      const index = Number(node.dataset.virtualBlock);
+      if (!Number.isFinite(index)) continue;
+      const group = groups.get(index) || [];
+      group.push(node);
+      groups.set(index, group);
+    }
+    let changed = false;
+    for (const [index, nodes] of groups) {
+      if (this._virtualState.slices?.has(index)) continue;
+      const top = tops[index] || 0;
+      const bottom = tops[index + 1] || top;
+      const caret = nodes.some(node => node.classList.contains("md-caret-block"));
+      if (!caret && (bottom <= extent.y || top >= extent.y + extent.height)) continue;
+      let height = 0;
+      for (const node of nodes) {
+        const style = globalThis.getComputedStyle?.(node);
+        const margin = (Number.parseFloat(style?.marginTop || "") || 0) + (Number.parseFloat(style?.marginBottom || "") || 0);
+        height += node.offsetHeight + margin;
+      }
+      if (this._storeBlockHeight(blocks[index], height)) changed = true;
+    }
+    if (this._calibrateCodeLine()) changed = true;
+    return changed;
+  }
+  _calibrateCodeLine() {
+    const line = this._liveEditor?.querySelector(".md-code-line, .md-code-fence-line");
+    if (!line) return false;
+    const height = line.getBoundingClientRect().height;
+    const metrics = this._metrics();
+    if (!(height > 8) || Math.abs(height - metrics.fenceLine) < 0.5) return false;
+    metrics.fenceLine = height;
+    this._heightTops = null;
+    return true;
+  }
+  _markVirtualCaret(blocks = this._liveBlocks) {
+    const editor = this._liveEditor;
+    if (!editor) return;
+    if (!this._virtualState.active || !blocks?.length) {
+      editor.classList.remove("md-virtual");
+      return;
+    }
+    editor.classList.add("md-virtual");
+    const sel = this._selection || { start: 0, end: 0, direction: "none" };
+    const focus = sel.direction === "backward" ? sel.start : sel.end;
+    const anchor = sel.direction === "backward" ? sel.end : sel.start;
+    const indexes = new Set([
+      this._blockIndexForOffset(blocks, focus),
+      this._blockIndexForOffset(blocks, anchor),
+    ]);
+    for (const node of editor.children) {
+      if (node.classList?.contains("md-virtual-spacer")) continue;
+      node.classList.toggle("md-caret-block", indexes.has(Number(node.dataset.virtualBlock)));
+    }
   }
   _syncVirtualWindow(blocks, changes) {
     const { start, end } = this._virtualState;
@@ -1371,14 +1781,9 @@ class WritemarkEditorElement extends HTMLElement {
       const blockEnd = Math.max(block.newlineEnd ?? block.to ?? block.from ?? 0, block.to ?? block.from ?? 0, block.from ?? 0);
       if (changes?.length && blockEnd < touchFrom) continue;
       const edited = spans && block.from < spans.newEnd && blockEnd > spans.newStart;
-      if (edited && block.type === "code-fence") {
-        const fresh = Array.from(this._liveFragmentForBlocks([block]).children);
-        if (fresh.length !== 1) {
-          this._renderLiveVirtual(blocks, { force: true });
-          return;
-        }
-        children[i].replaceWith(fresh[0]);
-        continue;
+      if (edited && (block.type === "code-fence" || block.type === "table")) {
+        this._renderLiveVirtual(blocks, { anchorOffset: this._selectionFocusOffset(), force: true });
+        return;
       }
       if (!this._syncLiveBlockNodeMetadata(children[i], block)) {
         this._renderLiveVirtual(blocks, { force: true });
@@ -1394,23 +1799,33 @@ class WritemarkEditorElement extends HTMLElement {
     spacer.style.blockSize = `${height}px`;
     return spacer;
   }
+  _sliceCovers(slice, offset) {
+    if (!slice) return true;
+    if (offset >= slice.sourceFrom && offset <= slice.sourceTo) return true;
+    return slice.headerFrom != null && offset >= slice.headerFrom && offset <= slice.headerTo;
+  }
   _isSourceOffsetRendered(offset) {
     if (!this._virtualState.active) return true;
     const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
     const index = this._blockIndexForOffset(blocks, offset);
-    return index >= this._virtualState.start && index < this._virtualState.end;
+    if (index < this._virtualState.start || index >= this._virtualState.end) return false;
+    return this._sliceCovers(this._virtualState.slices?.get(index), offset);
   }
   _ensureVirtualSelectionVisible(selection) {
     if (!this._virtualState.active) return true;
     const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
-    const startIndex = this._blockIndexForOffset(blocks, Math.min(selection.start, selection.end));
-    const endIndex = this._blockIndexForOffset(blocks, Math.max(selection.start, selection.end));
-    if (startIndex >= this._virtualState.start && endIndex < this._virtualState.end) return true;
-    if ((endIndex - startIndex + 1) > this._virtualWindowSize()) return false;
+    const startOff = Math.min(selection.start, selection.end);
+    const endOff = Math.max(selection.start, selection.end);
+    if (this._isSourceOffsetRendered(startOff) && this._isSourceOffsetRendered(endOff)) return true;
+    const tops = this._blockTops(blocks);
+    const startIndex = this._blockIndexForOffset(blocks, startOff);
+    const endIndex = this._blockIndexForOffset(blocks, endOff);
+    const span = (tops[endIndex + 1] || 0) - (tops[startIndex] || 0);
+    if (span > this._visibleExtent().height + this._virtualMargin() * 2) return false;
     const focus = selection.direction === "backward" ? selection.start : selection.end;
-    this._renderLiveVirtual(blocks, { anchorOffset: focus, force: true });
+    this._renderLiveVirtual(blocks, { anchorOffset: focus, coverIndex: startIndex, coverIndex2: endIndex, force: true });
     this._rebuildLiveIndex();
-    return startIndex >= this._virtualState.start && endIndex < this._virtualState.end;
+    return this._isSourceOffsetRendered(startOff) && this._isSourceOffsetRendered(endOff);
   }
   _onLiveScroll() {
     if (this._selectionToolbar && !this._selectionToolbar.hidden) this._positionSelectionToolbar();
@@ -1419,11 +1834,40 @@ class WritemarkEditorElement extends HTMLElement {
       this._virtualScrollFrame = 0;
       if (!this._virtualState.active || !this._liveEditor) return;
       const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
-      const nextStart = Math.floor((this._liveEditor.scrollTop || 0) / Math.max(1, this._virtualState.lineHeight));
-      if (Math.abs(nextStart - this._virtualState.start) < 60) return;
-      this._renderLiveVirtual(blocks, { fromScroll: true, force: true });
-      this._rebuildLiveIndex();
+      if (this._virtualWindowCovers(blocks)) return;
+      this._beginVirtualPaint();
+      try {
+        this._renderLiveVirtual(blocks, { fromScroll: true, force: true });
+        this._rebuildLiveIndex();
+        const sel = this._selection;
+        if (sel && this._isSourceOffsetRendered(sel.start) && this._isSourceOffsetRendered(sel.end)) this._restoreLiveSelection(sel);
+      } finally {
+        this._endVirtualPaint();
+      }
     });
+  }
+  _contentYFromClient(clientY) {
+    const editor = this._liveEditor;
+    if (!editor) return 0;
+    const rect = editor.getBoundingClientRect();
+    const pad = Number.parseFloat(globalThis.getComputedStyle?.(editor)?.paddingTop || "") || 0;
+    return clientY - rect.top + (editor.scrollTop || 0) - pad;
+  }
+  _offsetForContentY(blocks, index, tops, y) {
+    const block = blocks[index];
+    if (!block) return 0;
+    const metrics = this._metrics();
+    if (block.type === "code-fence") {
+      const rows = this._fenceRows(block);
+      const row = clamp(Math.floor((y - (tops[index] || 0) - metrics.fenceLead) / metrics.fenceLine), 0, Math.max(0, rows.length - 1));
+      return rows[row]?.start ?? block.from ?? 0;
+    }
+    if (block.type === "table") {
+      const rows = block.rows || [];
+      const row = clamp(Math.floor((y - (tops[index] || 0) - metrics.tableRow) / metrics.tableRow), 0, Math.max(0, rows.length - 1));
+      return rows[row]?.cells?.[0]?.from ?? rows[row]?.start ?? block.from ?? 0;
+    }
+    return block.line?.start ?? block.from ?? 0;
   }
   _sourceTextHtml(from, to) {
     const text = this._value.slice(from, to);
@@ -1722,7 +2166,7 @@ class WritemarkEditorElement extends HTMLElement {
     return liveBlockHtml(block, this._livePaintOptions());
   }
   _lineEditable() { return (!this.disabled && !this.readonly) ? "true" : "false"; }
-  _renderTable(block) {
+  _renderTable(block, rowWindow = null) {
     const cols = Math.max(block.header.cells.length, ...block.rows.map(r => r.cells.length), 1);
     const alignments = Array.from({ length: cols }, (_, i) => tableAlignmentFromDelimiter(block.delimiter.cells[i]?.text));
     // Hover controls (add/remove rows and columns), rendered inline so they are
@@ -1754,8 +2198,19 @@ class WritemarkEditorElement extends HTMLElement {
     };
     const header = `<thead><tr>${Array.from({ length: cols }, (_, i) => renderCell(block.header.cells[i] ?? { text: "", from: block.header.end, to: block.header.end }, "th", -1, i, `${delColBtn(i)}${i === lastCol ? addColBtn : ""}`)).join("")}</tr></thead>`;
     const hasRealRows = block.rows.length > 0;
-    const bodyRows = hasRealRows ? block.rows : [{ cells: Array.from({ length: cols }, () => ({ text: "", from: block.delimiter.end, to: block.delimiter.end })) }];
-    const body = `<tbody>${bodyRows.map((row, r) => `<tr>${Array.from({ length: cols }, (_, i) => renderCell(row.cells[i] ?? { text: "", from: row.end, to: row.end }, "td", r, i, i === lastCol && hasRealRows ? delRowBtn(r) : "")).join("")}</tr>`).join("")}</tbody>`;
+    const sourceRows = hasRealRows ? block.rows : [{ cells: Array.from({ length: cols }, () => ({ text: "", from: block.delimiter.end, to: block.delimiter.end })) }];
+    let indexed = sourceRows.map((row, r) => ({ row, r }));
+    let topGap = "";
+    let bottomGap = "";
+    if (rowWindow && hasRealRows) {
+      const start = clamp(rowWindow.start, 0, sourceRows.length);
+      const end = clamp(rowWindow.end, start, sourceRows.length);
+      const line = Math.max(1, rowWindow.lineHeight || this._metrics().tableRow);
+      if (start > 0) topGap = `<tr class="md-virtual-spacer"><td colspan="${cols}"><div class="md-virtual-spacer" style="block-size:${Math.round(start * line)}px"></div></td></tr>`;
+      if (end < sourceRows.length) bottomGap = `<tr class="md-virtual-spacer"><td colspan="${cols}"><div class="md-virtual-spacer" style="block-size:${Math.round((sourceRows.length - end) * line)}px"></div></td></tr>`;
+      indexed = sourceRows.slice(start, end).map((row, i) => ({ row, r: start + i }));
+    }
+    const body = `<tbody>${topGap}${indexed.map(({ row, r }) => `<tr>${Array.from({ length: cols }, (_, i) => renderCell(row.cells[i] ?? { text: "", from: row.end, to: row.end }, "td", r, i, i === lastCol && hasRealRows ? delRowBtn(r) : "")).join("")}</tr>`).join("")}${bottomGap}</tbody>`;
     const afterAnchor = block.newlineEnd === block.to
       ? `<div class="md-line md-table-after" part="line" data-editable="virtual-table-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="false" aria-label="After table"><br></div>`
       : "";
@@ -2372,11 +2827,13 @@ class WritemarkEditorElement extends HTMLElement {
     if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
     if (direction < 0 && offset <= from) {
       const previous = this._adjacentLiveEditable(editable, -1);
-      return previous ? this._liveTo(previous) : null;
+      if (previous) return this._liveTo(previous);
+      return this._virtualState.active ? this._sourceNeighborOffset(offset, -1) : null;
     }
     if (direction > 0 && offset >= to) {
       const next = this._adjacentLiveEditable(editable, 1);
-      return next ? this._liveFrom(next) : null;
+      if (next) return this._liveFrom(next);
+      return this._virtualState.active ? this._sourceNeighborOffset(offset, 1) : null;
     }
     return null;
   }
@@ -2407,10 +2864,45 @@ class WritemarkEditorElement extends HTMLElement {
     return this._nearestSourceOffsetInEditable(editable, clientX, clientY);
   }
 
+  _sourceNeighborOffset(offset, direction) {
+    const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
+    const index = this._blockIndexForOffset(blocks, offset);
+    const block = blocks[index];
+    if (!block) return null;
+    if (block.type === "code-fence") {
+      const rows = this._fenceRows(block);
+      let row = rows.findIndex(line => offset >= line.start && offset <= line.end);
+      if (row < 0) row = direction > 0 ? -1 : rows.length;
+      const next = rows[row + direction];
+      if (next) return direction < 0 ? next.end : next.start;
+    }
+    const neighbor = blocks[index + direction];
+    if (!neighbor) return null;
+    if (direction < 0) return neighbor.line?.end ?? neighbor.to ?? neighbor.from ?? 0;
+    return neighbor.line?.start ?? neighbor.from ?? 0;
+  }
+  _virtualVerticalNeighbor(editable, offset, direction) {
+    if (!this._virtualState.active) return null;
+    const neighbor = this._sourceNeighborOffset(offset, direction);
+    if (neighbor == null) return null;
+    const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
+    if (!this._isSourceOffsetRendered(neighbor)) {
+      this._renderLiveVirtual(blocks, { anchorOffset: neighbor, force: true });
+      this._rebuildLiveIndex();
+    }
+    const target = this._domPositionFromSource(neighbor)?.editable;
+    if (!target) return neighbor;
+    if (this._isSingleVisualRow(editable) && this._isSingleVisualRow(target)) {
+      const sourceColumn = clamp(offset - this._liveFrom(editable), 0, this._plainText(editable).length);
+      return this._liveFrom(target) + Math.min(sourceColumn, this._plainText(target).length);
+    }
+    const caret = this._caretRectForSourceOffset(offset, editable);
+    return this._sourceOffsetInEditableAtX(target, caret?.left ?? target.getBoundingClientRect().left, direction);
+  }
   _verticalArrowTarget(editable, offset, direction) {
     if (!this._isCaretOnVisualBoundary(editable, offset, direction)) return null;
     const targetEditable = this._adjacentLiveEditable(editable, direction);
-    if (!targetEditable) return null;
+    if (!targetEditable) return this._virtualVerticalNeighbor(editable, offset, direction);
     if (this._isSingleVisualRow(editable) && this._isSingleVisualRow(targetEditable)) {
       const sourceColumn = clamp(offset - this._liveFrom(editable), 0, this._plainText(editable).length);
       return this._liveFrom(targetEditable) + Math.min(sourceColumn, this._plainText(targetEditable).length);
@@ -2541,15 +3033,13 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _sourceOffsetForClientPoint(clientX, clientY) {
+    if (this._virtualState.active) {
+      const virtual = this._sourceOffsetForVirtualPoint(clientX, clientY);
+      if (virtual != null) return virtual;
+    }
     const editable = this._liveEditableFromPoint(clientX, clientY);
     if (!editable) return null;
-    const rect = editable.getBoundingClientRect();
-    if (!rect || rect.width === 0 || rect.height === 0) return this._liveFrom(editable);
-    const x = clamp(clientX, rect.left + 1, rect.right - 1);
-    const y = clamp(clientY, rect.top + 1, rect.bottom - 1);
-    const fromPoint = this._sourceOffsetFromPoint(editable, x, y);
-    if (fromPoint != null) return clamp(fromPoint, this._liveFrom(editable), this._liveTo(editable));
-    return this._nearestSourceOffsetInEditable(editable, x, y);
+    return this._sourceOffsetForEditablePoint(editable, clientX, clientY);
   }
 
   _nearestSourceOffsetInEditable(editable, clientX, clientY) {
@@ -2569,8 +3059,53 @@ class WritemarkEditorElement extends HTMLElement {
     }
     return this._sourceOffsetFromDisplayOffset(editable, bestOffset) ?? from;
   }
+  _sourceOffsetForEditablePoint(editable, clientX, clientY) {
+    if (!editable) return null;
+    const rect = editable.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return this._liveFrom(editable);
+    const x = clamp(clientX, rect.left + 1, rect.right - 1);
+    const y = clamp(clientY, rect.top + 1, rect.bottom - 1);
+    const fromPoint = this._sourceOffsetFromPoint(editable, x, y);
+    if (fromPoint != null) return clamp(fromPoint, this._liveFrom(editable), this._liveTo(editable));
+    return this._nearestSourceOffsetInEditable(editable, x, y);
+  }
+  _sourceOffsetForVirtualPoint(clientX, clientY) {
+    const editor = this._liveEditor;
+    const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
+    if (!editor || !blocks?.length) return null;
+    const direct = this._shadow.elementFromPoint?.(clientX, clientY);
+    if (this._closestEditable(direct)) return null;
+    if (direct && direct !== editor && !editor.contains(direct)) return null;
+    const y = this._contentYFromClient(clientY);
+    const tops = this._blockTops(blocks);
+    const index = this._indexAtContentY(tops, Math.max(0, y));
+    const offset = this._offsetForContentY(blocks, index, tops, y);
+    if (!this._isSourceOffsetRendered(offset)) {
+      this._renderLiveVirtual(blocks, { anchorOffset: offset, anchorIndex: index, force: true });
+      this._liveBlocks = blocks;
+      this._rebuildLiveIndex();
+    }
+    const hit = this._closestEditable(this._shadow.elementFromPoint?.(clientX, clientY));
+    if (hit) return this._sourceOffsetForEditablePoint(hit, clientX, clientY);
+    const nodes = [...editor.querySelectorAll(`[data-virtual-block="${index}"] [data-editable], [data-virtual-block="${index}"][data-editable]`)];
+    if (!nodes.length) return blocks[index]?.line?.start ?? blocks[index]?.from ?? 0;
+    let best = nodes[0];
+    let bestDist = Infinity;
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      const dist = Math.abs(((rect.top + rect.bottom) / 2) - clientY);
+      if (dist < bestDist) { bestDist = dist; best = node; }
+    }
+    const rect = best.getBoundingClientRect();
+    return this._sourceOffsetForEditablePoint(
+      best,
+      clamp(clientX, rect.left + 1, Math.max(rect.left + 1, rect.right - 1)),
+      clamp(clientY, rect.top + 1, Math.max(rect.top + 1, rect.bottom - 1)),
+    );
+  }
 
   _onSelectionChanged() {
+    if (this._virtualPainting) return;
     if (this._sourceFormLock) {
       if (this._ignoreSelectionChangeCount > 0) this._ignoreSelectionChangeCount -= 1;
       return;
@@ -2595,6 +3130,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (!this._isComposing) this._scheduleCompletionUpdate();
     this._updateSelectionToolbar();
     this._armSpellcheck();
+    if (this._virtualState.active) this._markVirtualCaret();
   }
 
   _hideSelectionToolbar() {
@@ -3339,6 +3875,8 @@ class WritemarkEditorElement extends HTMLElement {
       const previous = cells[cells.indexOf(cell) - 1];
       if (previous) return { offset: this._liveTo(previous) };
       const info = this._tableInfoForCell(cell);
+      const model = info && this._virtualState.active ? this._adjacentTableCell(info, -1) : null;
+      if (model) return { offset: model.to };
       return info?.block ? { exit: "before", offset: info.block.from } : null;
     }
     if (direction > 0 && offset >= range.to) {
@@ -3346,6 +3884,8 @@ class WritemarkEditorElement extends HTMLElement {
       const next = cells[cells.indexOf(cell) + 1];
       if (next) return { offset: this._liveFrom(next) };
       const info = this._tableInfoForCell(cell);
+      const model = info && this._virtualState.active ? this._adjacentTableCell(info, 1) : null;
+      if (model) return { offset: model.from };
       return info?.block ? { exit: "after", offset: info.block.to } : null;
     }
     return null;
@@ -3358,10 +3898,27 @@ class WritemarkEditorElement extends HTMLElement {
     if (nextRow < -1) return { exit: "before", offset: info.block.from };
     if (nextRow >= info.block.rows.length) return { exit: "after", offset: info.block.to };
     const targetCell = this._tableCellElement(info.block, nextRow, info.col);
-    if (!targetCell) return null;
     const displayOffset = this._displayOffsetFromSourceOffset(cell, offset);
+    if (!targetCell) {
+      const line = nextRow < 0 ? info.block.header : info.block.rows[nextRow];
+      const sourceCell = line?.cells?.[info.col];
+      if (!sourceCell) return null;
+      const raw = sourceCell.text ?? "";
+      const within = Math.min(Math.max(0, displayOffset || 0), unescapeTableCellText(raw).length);
+      return { offset: sourceCell.from + sourceIndexForUnescapedOffset(raw, within) };
+    }
     const targetDisplayOffset = Math.min(displayOffset, this._plainText(targetCell).length);
     return { offset: this._sourceOffsetFromDisplayOffset(targetCell, targetDisplayOffset) ?? this._liveFrom(targetCell) };
+  }
+  _adjacentTableCell(info, direction) {
+    const cols = info.cols;
+    let row = info.row;
+    let col = info.col + direction;
+    if (col >= cols) { col = 0; row += 1; }
+    if (col < 0) { col = cols - 1; row -= 1; }
+    if (row < -1 || row >= info.block.rows.length) return null;
+    const line = row < 0 ? info.block.header : info.block.rows[row];
+    return line?.cells?.[col] || null;
   }
 
   _maybeExitTableWithArrow(cell, direction) {
