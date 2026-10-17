@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -9,6 +10,49 @@ use url::Url;
 
 const MAX_BLOCKS: usize = 512;
 const MAX_HTML_BYTES: usize = 4 * 1024 * 1024;
+const ID_PREFIX: &str = "ng-";
+const CODE_CONTROLS: &str = concat!(
+    "<button class=\"wrap-button\"><svg class=\"btn-icon\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+    "<line x1=\"2\" y1=\"4\" x2=\"14\" y2=\"4\"></line><line x1=\"2\" y1=\"8\" x2=\"11\" y2=\"8\"></line><line x1=\"2\" y1=\"12\" x2=\"9\" y2=\"12\"></line>",
+    "</svg><span class=\"btn-label\">Wrap</span></button>",
+    "<button class=\"collapse-button\"><svg class=\"btn-icon\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+    "<polyline points=\"14,11 8,5 2,11\"></polyline></svg>",
+    "<svg class=\"btn-icon btn-icon-alt\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+    "<polyline points=\"2,5 8,11 14,5\"></polyline></svg><span class=\"btn-label\">Collapse</span></button>",
+    "<button class=\"copy-button\"><svg class=\"btn-icon\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+    "<rect x=\"3\" y=\"2\" width=\"10\" height=\"13\" rx=\"1\"></rect><rect x=\"6\" y=\"1\" width=\"4\" height=\"3\" rx=\"0.5\"></rect></svg>",
+    "<svg class=\"btn-icon btn-icon-alt\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">",
+    "<polyline points=\"2,8 6,12 14,4\"></polyline></svg><span class=\"btn-label\">Copy</span></button>",
+);
+const TASK_OPEN: &str = "<input type=\"checkbox\"> ";
+const TASK_DONE: &str = "<input type=\"checkbox\" checked=\"\"> ";
+
+struct Marks {
+    stamp: String,
+}
+
+impl Marks {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let salt = &NEXT as *const AtomicU64 as usize;
+        Self {
+            stamp: format!("ngm{n:x}{salt:x}q"),
+        }
+    }
+
+    fn slot(&self, kind: char, index: usize) -> String {
+        format!("{}{kind}{index}z", self.stamp)
+    }
+
+    fn prefix(&self, kind: char) -> String {
+        format!("{}{kind}", self.stamp)
+    }
+
+    fn marker(&self, kind: char) -> String {
+        format!("{}{kind}z", self.stamp)
+    }
+}
 
 fn is_ip_blocked(ip: IpAddr) -> bool {
     match ip {
@@ -109,12 +153,12 @@ fn is_safe_url(url: &str) -> bool {
         }
         url::Host::Domain(domain) => {
             let ascii_domain = deunicode::deunicode(domain).to_lowercase();
+            let lookup = ascii_domain.trim_end_matches('.');
 
-            if ascii_domain == "localhost" {
+            if lookup == "localhost" {
                 return false;
             }
 
-            let lookup = ascii_domain.trim_end_matches('.');
             if let Ok(ip) = lookup.parse::<IpAddr>() {
                 if is_ip_blocked(ip) {
                     return false;
@@ -148,36 +192,37 @@ pub fn render_markdown(content: &str) -> String {
 }
 
 pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> String {
+    let marks = Marks::new();
     let cleaned_content = remove_standalone_list_tags(content);
 
-    let (protected_content, fenced_blocks) = extract_fenced_code_blocks(&cleaned_content);
-    let (mut working_content, code_blocks) = extract_code_blocks(&protected_content);
+    let (protected_content, fenced_blocks) = extract_fenced_code_blocks(&cleaned_content, &marks);
+    let (mut working_content, code_blocks) = extract_code_blocks(&protected_content, &marks);
 
     // Process comments before other formatting to remove them from HTML output
     working_content = process_comments(&working_content);
 
-    let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content);
+    let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content, &marks);
     working_content = working_content_no_media;
 
-    let (working_content_no_links, link_blocks) = extract_link_syntax(&working_content);
+    let (working_content_no_links, link_blocks) = extract_link_syntax(&working_content, &marks);
     working_content = working_content_no_links;
 
     // Process footnotes before text formatting to avoid conflicts with ^ and []
-    working_content = process_footnotes(&working_content);
+    working_content = process_footnotes(&working_content, &marks);
 
     working_content = apply_emphasis(&working_content);
 
-    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks);
+    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks, &marks);
     working_content = process_images_and_links(&working_content, config);
     working_content = process_tables(&working_content);
-    working_content = process_lists(&working_content);
+    working_content = process_lists(&working_content, &marks);
     working_content = process_dividers(&working_content);
-    working_content = format_paragraphs_with_headers(&working_content);
+    working_content = format_paragraphs_with_headers(&working_content, &marks);
     working_content =
-        restore_rendered_blocks(&working_content, &fenced_blocks, &code_blocks, config);
-    working_content = restore_footnotes(&working_content);
+        restore_rendered_blocks(&working_content, &fenced_blocks, &code_blocks, config, &marks);
+    working_content = restore_footnotes(&working_content, &marks);
 
-    finish_html(content, working_content)
+    finish_html(content, working_content, &marks)
 }
 
 pub fn render_inline(content: &str) -> String {
@@ -185,15 +230,18 @@ pub fn render_inline(content: &str) -> String {
 }
 
 pub fn render_inline_with_config(content: &str, config: &RenderOptions) -> String {
+    let marks = Marks::new();
     let cleaned_content = remove_standalone_list_tags(content);
-    let (working_content, code_blocks) = extract_code_blocks(&cleaned_content);
-    let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content);
-    let (working_content_no_links, link_blocks) = extract_link_syntax(&working_content_no_media);
+    let (working_content, code_blocks) = extract_code_blocks(&cleaned_content, &marks);
+    let (working_content_no_media, media_blocks) = extract_media_syntax(&working_content, &marks);
+    let (working_content_no_links, link_blocks) =
+        extract_link_syntax(&working_content_no_media, &marks);
     let mut working_content = apply_emphasis(&working_content_no_links);
-    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks);
+    working_content =
+        restore_media_and_links(&working_content, &media_blocks, &link_blocks, &marks);
     working_content = process_images_and_links(&working_content, config);
-    working_content = restore_code_blocks(&working_content, &code_blocks);
-    finish_html(content, working_content)
+    working_content = restore_code_blocks(&working_content, &code_blocks, &marks);
+    finish_html(content, working_content, &marks)
 }
 
 fn apply_emphasis(text: &str) -> String {
@@ -467,13 +515,6 @@ fn html_cleaner() -> &'static ammonia::Builder<'static> {
                 "ol",
                 "ul",
                 "li",
-                "input",
-                "button",
-                "svg",
-                "polyline",
-                "line",
-                "rect",
-                "path",
             ])
             .add_tag_attributes("video", &["controls"])
             .add_tag_attributes("source", &["src", "type"])
@@ -485,34 +526,46 @@ fn html_cleaner() -> &'static ammonia::Builder<'static> {
             .add_tag_attributes("hr", &["class"])
             .add_tag_attributes("ul", &["class"])
             .add_tag_attributes("li", &["id", "class"])
-            .add_tag_attributes("input", &["type", "checked", "disabled"])
             .add_tag_attributes("sup", &["id"])
             .add_tag_attributes("h1", &["id"])
             .add_tag_attributes("h2", &["id"])
             .add_tag_attributes("h3", &["id"])
             .add_tag_attributes("h4", &["id"])
-            .add_tag_attributes("button", &["class", "data-icon-expand", "data-icon-check"])
-            .add_tag_attributes(
-                "svg",
-                &[
-                    "class",
-                    "viewBox",
-                    "fill",
-                    "stroke",
-                    "stroke-width",
-                    "stroke-linecap",
-                    "stroke-linejoin",
-                    "aria-hidden",
-                ],
-            )
-            .add_tag_attributes("polyline", &["points"])
-            .add_tag_attributes("line", &["x1", "y1", "x2", "y2"])
-            .add_tag_attributes("rect", &["x", "y", "width", "height", "rx"])
-            .add_tag_attributes("path", &["d", "fill-rule"])
             .add_tag_attributes("pre", &["class"])
+            .attribute_filter(keep_generated_ids)
             .link_rel(Some("noopener noreferrer"));
         builder
     })
+}
+
+fn keep_generated_ids<'a>(
+    _element: &str,
+    attribute: &str,
+    value: &'a str,
+) -> Option<std::borrow::Cow<'a, str>> {
+    if attribute == "id" && !generated_id(value) {
+        None
+    } else {
+        Some(std::borrow::Cow::Borrowed(value))
+    }
+}
+
+fn generated_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix(ID_PREFIX) else {
+        return false;
+    };
+    let rest = if let Some(number) = rest.strip_prefix("fnref") {
+        number
+    } else if let Some(number) = rest.strip_prefix("fn") {
+        number
+    } else if let Some(rest) = rest.strip_prefix("ifn") {
+        rest.strip_suffix("ref").unwrap_or(rest)
+    } else if let Some(number) = rest.strip_prefix('h') {
+        number
+    } else {
+        return false;
+    };
+    !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn sanitize_html(html: String) -> String {
@@ -524,7 +577,7 @@ fn text_cleaner() -> &'static ammonia::Builder<'static> {
     CLEANER.get_or_init(ammonia::Builder::empty)
 }
 
-pub fn sanitize_text(text: &str) -> String {
+pub fn strip_tags(text: &str) -> String {
     let sanitized = text_cleaner().clean(text).to_string();
     sanitized
         .replace("&amp;", "&")
@@ -562,28 +615,28 @@ fn process_single_header(text: &str, header_count: &mut usize) -> Option<String>
         let header_text = &trimmed[5..];
         *header_count += 1;
         Some(format!(
-            "<h4 id=\"h{}\">{}<a href=\"#h{}\" class=\"header-anchor\">#</a></h4>",
+            "<h4 id=\"ng-h{}\">{}<a href=\"#ng-h{}\" class=\"header-anchor\">#</a></h4>",
             *header_count, header_text, *header_count
         ))
     } else if trimmed.starts_with("### ") {
         let header_text = &trimmed[4..];
         *header_count += 1;
         Some(format!(
-            "<h3 id=\"h{}\">{}<a href=\"#h{}\" class=\"header-anchor\">#</a></h3>",
+            "<h3 id=\"ng-h{}\">{}<a href=\"#ng-h{}\" class=\"header-anchor\">#</a></h3>",
             *header_count, header_text, *header_count
         ))
     } else if trimmed.starts_with("## ") {
         let header_text = &trimmed[3..];
         *header_count += 1;
         Some(format!(
-            "<h2 id=\"h{}\">{}<a href=\"#h{}\" class=\"header-anchor\">#</a></h2>",
+            "<h2 id=\"ng-h{}\">{}<a href=\"#ng-h{}\" class=\"header-anchor\">#</a></h2>",
             *header_count, header_text, *header_count
         ))
     } else if trimmed.starts_with("# ") {
         let header_text = &trimmed[2..];
         *header_count += 1;
         Some(format!(
-            "<h1 id=\"h{}\">{}<a href=\"#h{}\" class=\"header-anchor\">#</a></h1>",
+            "<h1 id=\"ng-h{}\">{}<a href=\"#ng-h{}\" class=\"header-anchor\">#</a></h1>",
             *header_count, header_text, *header_count
         ))
     } else {
@@ -608,7 +661,7 @@ fn process_single_blockquote(text: &str) -> String {
     format!("<blockquote>{}</blockquote>", blockquote_content)
 }
 
-fn extract_fenced_code_blocks(text: &str) -> (String, Vec<(String, String, u32)>) {
+fn extract_fenced_code_blocks(text: &str, marks: &Marks) -> (String, Vec<(String, String, u32)>) {
     let mut result = String::new();
     let mut fenced_blocks = Vec::new();
 
@@ -636,7 +689,7 @@ fn extract_fenced_code_blocks(text: &str) -> (String, Vec<(String, String, u32)>
                     let count = code_content.lines().count() as u32;
                     count.clamp(1, 999)
                 };
-                let placeholder = format!("{{{{FENCEDBLOCK{}}}}}", fenced_blocks.len());
+                let placeholder = marks.slot('F', fenced_blocks.len());
                 fenced_blocks.push((language, code_content, line_count));
                 result.push_str(&placeholder);
                 if i < lines.len() - 1 || text.ends_with('\n') {
@@ -771,7 +824,7 @@ fn language_names(lang: &str) -> (&str, &str) {
     (lang, lang)
 }
 
-fn process_lists(text: &str) -> String {
+fn process_lists(text: &str, marks: &Marks) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut result = Vec::new();
     let mut i = 0;
@@ -781,7 +834,7 @@ fn process_lists(text: &str) -> String {
 
         // Check if this line starts a list
         if is_list_item(line) {
-            let (list_html, processed_lines) = process_list_block(&lines, i);
+            let (list_html, processed_lines) = process_list_block(&lines, i, marks);
             result.push(list_html);
             i += processed_lines;
 
@@ -900,7 +953,7 @@ fn parse_task_marker(content: &str) -> Option<(bool, String)> {
 
 const LIST_TAB_WIDTH: usize = 2;
 
-fn process_list_block(lines: &[&str], start_idx: usize) -> (String, usize) {
+fn process_list_block(lines: &[&str], start_idx: usize, marks: &Marks) -> (String, usize) {
     let mut i = start_idx;
 
     let mut flat: Vec<ListItem> = Vec::new();
@@ -953,7 +1006,7 @@ fn process_list_block(lines: &[&str], start_idx: usize) -> (String, usize) {
 
     let mut idx = 0;
     let tree = build_list_tree(&flat, &mut idx, flat.first().map_or(0, |item| item.indent));
-    let list_html = render_list_tree(&tree);
+    let list_html = render_list_tree(&tree, marks);
 
     (list_html, i - start_idx)
 }
@@ -1000,7 +1053,7 @@ fn build_list_tree(flat: &[ListItem], idx: &mut usize, level: usize) -> Vec<List
     siblings
 }
 
-fn render_list_tree(items: &[ListItem]) -> String {
+fn render_list_tree(items: &[ListItem], marks: &Marks) -> String {
     if items.is_empty() {
         return String::new();
     }
@@ -1013,17 +1066,13 @@ fn render_list_tree(items: &[ListItem]) -> String {
         match item.task {
             Some(checked) => {
                 inner.push_str("<li class=\"task-list-item\">");
-                inner.push_str(if checked {
-                    "<input type=\"checkbox\" checked> "
-                } else {
-                    "<input type=\"checkbox\"> "
-                });
+                inner.push_str(&marks.marker(if checked { 'D' } else { 'O' }));
             }
             None => inner.push_str("<li>"),
         }
         inner.push_str(&item.content);
         if !item.children.is_empty() {
-            inner.push_str(&render_list_tree(&item.children));
+            inner.push_str(&render_list_tree(&item.children, marks));
         }
         inner.push_str("</li>");
     }
@@ -1042,36 +1091,59 @@ fn restore_rendered_blocks(
     fenced_blocks: &[(String, String, u32)],
     code_blocks: &[String],
     config: &RenderOptions,
+    marks: &Marks,
 ) -> String {
     let (syntax_set, themes) = syntax_and_themes();
     let theme = theme_for(themes, &config.syntax_theme);
+    let fence = marks.prefix('F');
+    let code = marks.prefix('C');
     expand_indexed(
         text,
-        &[("{{FENCEDBLOCK", "}}"), ("{{CODEBLOCK", "}}")],
-        |prefix, index| match prefix {
-            "{{FENCEDBLOCK" => fenced_blocks
-                .get(index)
-                .map(|(language, code, line_count)| {
-                    render_code_block(syntax_set, theme, language, code, *line_count)
-                }),
-            "{{CODEBLOCK" => code_blocks
-                .get(index)
-                .map(|code| format!("<code>{}</code>", html_escape(code))),
-            _ => None,
+        &[(&fence, "z"), (&code, "z")],
+        |prefix, index| {
+            if prefix == fence {
+                fenced_blocks
+                    .get(index)
+                    .map(|(language, code, line_count)| {
+                        render_code_block(syntax_set, theme, language, code, *line_count, marks)
+                    })
+            } else if prefix == code {
+                code_blocks
+                    .get(index)
+                    .map(|code| format!("<code>{}</code>", html_escape(code)))
+            } else {
+                None
+            }
         },
     )
 }
 
-fn finish_html(source: &str, html: String) -> String {
-    if html.len() <= MAX_HTML_BYTES {
-        return sanitize_html(html);
-    }
-    let end = source
-        .char_indices()
-        .nth(16_000)
-        .map(|(index, _)| index)
-        .unwrap_or(source.len());
-    sanitize_html(format!("<p>{}</p>", html_escape(&source[..end])))
+fn finish_html(source: &str, html: String, marks: &Marks) -> String {
+    let cleaned = if html.len() <= MAX_HTML_BYTES {
+        sanitize_html(html)
+    } else {
+        let end = source
+            .char_indices()
+            .nth(16_000)
+            .map(|(index, _)| index)
+            .unwrap_or(source.len());
+        sanitize_html(format!("<p>{}</p>", html_escape(&source[..end])))
+    };
+    install_generated_html(&cleaned, marks)
+}
+
+fn install_generated_html(html: &str, marks: &Marks) -> String {
+    let controls = marks.marker('K');
+    let done = marks.marker('D');
+    let open = marks.marker('O');
+    replace_literals(
+        html,
+        &[
+            (&controls, CODE_CONTROLS),
+            (&done, TASK_DONE),
+            (&open, TASK_OPEN),
+        ],
+    )
 }
 
 fn expand_indexed(
@@ -1186,6 +1258,7 @@ fn render_code_block(
     original_language: &str,
     code_content: &str,
     line_count: u32,
+    marks: &Marks,
 ) -> String {
     let (syntax, auto_detected, css_lang) =
         code_syntax(syntax_set, original_language, code_content);
@@ -1221,12 +1294,16 @@ fn render_code_block(
     };
 
     format!(
-        r#"<pre{}><div class="code-header">{}<div class="code-controls"><button class="wrap-button"><svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="11" y2="8"/><line x1="2" y1="12" x2="9" y2="12"/></svg><span class="btn-label">Wrap</span></button><button class="collapse-button"><svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="14,11 8,5 2,11"/></svg><svg class="btn-icon btn-icon-alt" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="2,5 8,11 14,5"/></svg><span class="btn-label">Collapse</span></button><button class="copy-button"><svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="2" width="10" height="13" rx="1"/><rect x="6" y="1" width="4" height="3" rx="0.5"/></svg><svg class="btn-icon btn-icon-alt" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="2,8 6,12 14,4"/></svg><span class="btn-label">Copy</span></button></div></div><div class="line-numbers">{}</div><div class="code-wrapper"><code>{}</code></div></pre>"#,
-        class_attr, lang_display, line_numbers, highlighted_code
+        r#"<pre{}><div class="code-header">{}<div class="code-controls">{}</div></div><div class="line-numbers">{}</div><div class="code-wrapper"><code>{}</code></div></pre>"#,
+        class_attr,
+        lang_display,
+        marks.marker('K'),
+        line_numbers,
+        highlighted_code
     )
 }
 
-fn format_paragraphs_with_headers(text: &str) -> String {
+fn format_paragraphs_with_headers(text: &str, marks: &Marks) -> String {
     let mut result = String::with_capacity(text.len() + (text.len() / 10));
     let mut header_count = 0;
 
@@ -1248,8 +1325,8 @@ fn format_paragraphs_with_headers(text: &str) -> String {
         // Check for blockquotes
         else if trimmed.lines().any(|line| line.trim().starts_with("> ")) {
             result.push_str(&process_single_blockquote(trimmed));
-        } else if (trimmed.contains("{{FENCEDBLOCK") || trimmed.contains("<table>"))
-            && !trimmed.starts_with("{{FENCEDBLOCK")
+        } else if (trimmed.contains(&marks.prefix('F')) || trimmed.contains("<table>"))
+            && !trimmed.starts_with(&marks.prefix('F'))
             && !trimmed.starts_with("<table>")
         {
             let lines: Vec<&str> = part.lines().collect();
@@ -1258,7 +1335,7 @@ fn format_paragraphs_with_headers(text: &str) -> String {
             for line in lines {
                 let line_trimmed = line.trim();
 
-                if line_trimmed.starts_with("{{FENCEDBLOCK") || line_trimmed.starts_with("<table>")
+                if line_trimmed.starts_with(&marks.prefix('F')) || line_trimmed.starts_with("<table>")
                 {
                     if !current_paragraph.is_empty() {
                         result.push_str(&format!("<p>{}</p>\n", current_paragraph.trim_start()));
@@ -1277,7 +1354,7 @@ fn format_paragraphs_with_headers(text: &str) -> String {
             if !current_paragraph.is_empty() {
                 result.push_str(&format!("<p>{}</p>", current_paragraph.trim_start()));
             }
-        } else if trimmed.starts_with("{{FENCEDBLOCK")
+        } else if trimmed.starts_with(&marks.prefix('F'))
             || trimmed.starts_with("<img ")
             || trimmed.starts_with("<video ")
             || trimmed.starts_with("<table>")
@@ -1655,7 +1732,7 @@ fn push_html_escape(out: &mut String, text: &str, for_attr: bool) {
     out.push_str(&text[start..]);
 }
 
-fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
+fn extract_media_syntax(text: &str, marks: &Marks) -> (String, Vec<String>) {
     let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
     let mut media_blocks = Vec::new();
@@ -1668,7 +1745,7 @@ fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
             && bytes[i + 1] == b'['
         {
             if let Some(end) = delimited_span(bytes, i + 2) {
-                let placeholder = format!("{{{{MEDIASYNTAX{}}}}}", media_blocks.len());
+                let placeholder = marks.slot('M', media_blocks.len());
                 media_blocks.push(text[i..end].to_string());
                 result.push_str(&placeholder);
                 i = end;
@@ -1686,19 +1763,26 @@ fn extract_media_syntax(text: &str) -> (String, Vec<String>) {
     (result, media_blocks)
 }
 
-fn restore_media_and_links(text: &str, media_blocks: &[String], link_blocks: &[String]) -> String {
-    expand_indexed(
-        text,
-        &[("{{MEDIASYNTAX", "}}"), ("{{LINKSYNTAX", "}}")],
-        |prefix, index| match prefix {
-            "{{MEDIASYNTAX" => media_blocks.get(index).cloned(),
-            "{{LINKSYNTAX" => link_blocks.get(index).cloned(),
-            _ => None,
-        },
-    )
+fn restore_media_and_links(
+    text: &str,
+    media_blocks: &[String],
+    link_blocks: &[String],
+    marks: &Marks,
+) -> String {
+    let media = marks.prefix('M');
+    let link = marks.prefix('L');
+    expand_indexed(text, &[(&media, "z"), (&link, "z")], |prefix, index| {
+        if prefix == media {
+            media_blocks.get(index).cloned()
+        } else if prefix == link {
+            link_blocks.get(index).cloned()
+        } else {
+            None
+        }
+    })
 }
 
-fn extract_link_syntax(text: &str) -> (String, Vec<String>) {
+fn extract_link_syntax(text: &str, marks: &Marks) -> (String, Vec<String>) {
     let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
     let mut link_blocks = Vec::new();
@@ -1707,7 +1791,7 @@ fn extract_link_syntax(text: &str) -> (String, Vec<String>) {
     while i < bytes.len() {
         if link_blocks.len() < MAX_BLOCKS && bytes[i] == b'[' && !(i > 0 && bytes[i - 1] == b'!') {
             if let Some(end) = link_syntax_end(text, i) {
-                let placeholder = format!("{{{{LINKSYNTAX{}}}}}", link_blocks.len());
+                let placeholder = marks.slot('L', link_blocks.len());
                 link_blocks.push(text[i..end].to_string());
                 result.push_str(&placeholder);
                 i = end;
@@ -1746,7 +1830,7 @@ fn link_syntax_end(text: &str, i: usize) -> Option<usize> {
     None
 }
 
-fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
+fn extract_code_blocks(text: &str, marks: &Marks) -> (String, Vec<String>) {
     let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
     let mut code_blocks = Vec::new();
@@ -1758,7 +1842,7 @@ fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
                 let end = i + 1 + offset;
                 let code_content = &text[i + 1..end];
                 if !code_content.is_empty() && !code_content.contains('\n') {
-                    let placeholder = format!("{{{{CODEBLOCK{}}}}}", code_blocks.len());
+                    let placeholder = marks.slot('C', code_blocks.len());
                     code_blocks.push(code_content.to_string());
                     result.push_str(&placeholder);
                     i = end + 1;
@@ -1777,8 +1861,9 @@ fn extract_code_blocks(text: &str) -> (String, Vec<String>) {
     (result, code_blocks)
 }
 
-fn restore_code_blocks(text: &str, code_blocks: &[String]) -> String {
-    expand_indexed(text, &[("{{CODEBLOCK", "}}")], |_, index| {
+fn restore_code_blocks(text: &str, code_blocks: &[String], marks: &Marks) -> String {
+    let code = marks.prefix('C');
+    expand_indexed(text, &[(&code, "z")], |_, index| {
         code_blocks
             .get(index)
             .map(|code| format!("<code>{}</code>", html_escape(code)))
@@ -1818,7 +1903,7 @@ fn fenced_block_end(lines: &[&str], index: usize) -> Option<usize> {
     None
 }
 
-fn process_footnotes(content: &str) -> String {
+fn process_footnotes(content: &str, marks: &Marks) -> String {
     let mut result = String::new();
     let mut footnote_definitions = std::collections::HashMap::new();
     let mut footnote_counter = 0u32;
@@ -1860,8 +1945,11 @@ fn process_footnotes(content: &str) -> String {
                 let footnote_id = format!("ifn{}", inline_footnote_counter);
                 inline_footnotes.push((footnote_id, footnote_text));
                 result.push_str(&format!(
-                    "<sup><a href=\"XHASHXifn{}\" id=\"ifn{}ref\">{}</a></sup>",
-                    inline_footnote_counter, inline_footnote_counter, inline_footnote_counter
+                    "<sup><a href=\"{}ng-ifn{}\" id=\"ng-ifn{}ref\">{}</a></sup>",
+                    marks.marker('H'),
+                    inline_footnote_counter,
+                    inline_footnote_counter,
+                    inline_footnote_counter
                 ));
                 i = end_pos + 1;
                 continue;
@@ -1877,8 +1965,11 @@ fn process_footnotes(content: &str) -> String {
                     footnote_counter += 1;
                     footnote_references.push((footnote_id.to_string(), footnote_counter));
                     result.push_str(&format!(
-                        "<sup><a href=\"XHASHXFN{}\" id=\"fnref{}\">{}</a></sup>",
-                        footnote_counter, footnote_counter, footnote_counter
+                        "<sup><a href=\"{}ng-FN{}\" id=\"ng-fnref{}\">{}</a></sup>",
+                        marks.marker('H'),
+                        footnote_counter,
+                        footnote_counter,
+                        footnote_counter
                     ));
                     i = end_pos + 1;
                     continue;
@@ -1898,14 +1989,18 @@ fn process_footnotes(content: &str) -> String {
 
     // Add footnotes section at the end if there are any footnotes
     if !footnote_references.is_empty() || !inline_footnotes.is_empty() {
-        result.push_str("\n\nXFOOTNOTESECTIONSTARTX");
+        result.push_str("\n\n");
+        result.push_str(&marks.marker('S'));
 
         // Add reference footnotes
         for (footnote_id, number) in footnote_references {
             if let Some(definition) = footnote_definitions.get(&footnote_id) {
                 result.push_str(&format!(
-                    "<li id=\"fn{}\">{} <a href=\"XHASHXfnref{}\" class=\"footnote-backref\">↩</a></li>",
-                    number, definition, number
+                    "<li id=\"ng-fn{}\">{} <a href=\"{}ng-fnref{}\" class=\"footnote-backref\">↩</a></li>",
+                    number,
+                    definition,
+                    marks.marker('H'),
+                    number
                 ));
             }
         }
@@ -1913,27 +2008,30 @@ fn process_footnotes(content: &str) -> String {
         // Add inline footnotes
         for (footnote_id, footnote_text) in inline_footnotes.iter() {
             result.push_str(&format!(
-                "<li id=\"{}\">{} <a href=\"XHASHX{}ref\" class=\"footnote-backref\">↩</a></li>",
-                footnote_id, footnote_text, footnote_id
+                "<li id=\"ng-{}\">{} <a href=\"{}ng-{}ref\" class=\"footnote-backref\">↩</a></li>",
+                footnote_id,
+                footnote_text,
+                marks.marker('H'),
+                footnote_id
             ));
         }
 
-        result.push_str("XFOOTNOTESECTIONENDX");
+        result.push_str(&marks.marker('E'));
     }
 
     result
 }
 
-fn restore_footnotes(text: &str) -> String {
+fn restore_footnotes(text: &str, marks: &Marks) -> String {
+    let hash = marks.marker('H');
+    let start = marks.marker('S');
+    let end = marks.marker('E');
     replace_literals(
         text,
         &[
-            (
-                "XFOOTNOTESECTIONSTARTX",
-                "<div class=\"footnotes\">\n<ol>\n",
-            ),
-            ("XFOOTNOTESECTIONENDX", "</ol>\n</div>"),
-            ("XHASHX", "#"),
+            (&start, "<div class=\"footnotes\">\n<ol>\n"),
+            (&end, "</ol>\n</div>"),
+            (&hash, "#"),
         ],
     )
 }

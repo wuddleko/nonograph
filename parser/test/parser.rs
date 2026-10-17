@@ -294,53 +294,53 @@ fn test_fenced_code_blocks_no_markdown_processing() {
 }
 
 #[test]
-fn test_sanitize_text() {
+fn test_strip_tags() {
     let malicious_text = "<script>alert('xss')</script>Hello World";
-    let sanitized = sanitize_text(&malicious_text);
+    let sanitized = strip_tags(&malicious_text);
     assert_eq!(sanitized, "Hello World");
 
     let various_tags = "<b>Bold</b><i>Italic</i><script>alert('xss')</script>Clean Text";
-    let sanitized_tags = sanitize_text(&various_tags);
+    let sanitized_tags = strip_tags(&various_tags);
     assert_eq!(sanitized_tags, "BoldItalicClean Text");
 
     let clean_text = "Just normal text";
-    let sanitized_clean = sanitize_text(&clean_text);
+    let sanitized_clean = strip_tags(&clean_text);
     assert_eq!(sanitized_clean, "Just normal text");
 
     // Test long text (no truncation)
     let long_text = "This is a very long text that should be truncated";
-    let sanitized = sanitize_text(&long_text);
+    let sanitized = strip_tags(&long_text);
     assert_eq!(
         sanitized,
         "This is a very long text that should be truncated"
     );
 
-    assert_eq!(sanitize_text("Line1\nLine2"), "Line1 Line2");
-    assert_eq!(sanitize_text("Line1\r\nLine2"), "Line1 Line2");
-    assert_eq!(sanitize_text("A\n\nB"), "A  B");
-    assert_eq!(sanitize_text("No newlines"), "No newlines");
+    assert_eq!(strip_tags("Line1\nLine2"), "Line1 Line2");
+    assert_eq!(strip_tags("Line1\r\nLine2"), "Line1 Line2");
+    assert_eq!(strip_tags("A\n\nB"), "A  B");
+    assert_eq!(strip_tags("No newlines"), "No newlines");
 
-    assert_eq!(sanitize_text("Tom & Jerry"), "Tom & Jerry");
-    assert_eq!(sanitize_text("5 > 3 and 2 < 4"), "5 > 3 and 2 < 4");
-    assert_eq!(sanitize_text("She said \"hello\""), "She said \"hello\"");
-    assert_eq!(sanitize_text("O'Brien"), "O'Brien");
-    assert_eq!(sanitize_text("100%"), "100%");
+    assert_eq!(strip_tags("Tom & Jerry"), "Tom & Jerry");
+    assert_eq!(strip_tags("5 > 3 and 2 < 4"), "5 > 3 and 2 < 4");
+    assert_eq!(strip_tags("She said \"hello\""), "She said \"hello\"");
+    assert_eq!(strip_tags("O'Brien"), "O'Brien");
+    assert_eq!(strip_tags("100%"), "100%");
 
-    assert_eq!(sanitize_text("§1.2 Legal"), "§1.2 Legal");
-    assert_eq!(sanitize_text("Δx = 5"), "Δx = 5");
-    assert_eq!(sanitize_text("∑∏∫√∞≈≠≤≥"), "∑∏∫√∞≈≠≤≥");
-    assert_eq!(sanitize_text("£100 €200 ¥300 ₹400"), "£100 €200 ¥300 ₹400");
-    assert_eq!(sanitize_text("© 2024 ® ™"), "© 2024 ® ™");
-    assert_eq!(sanitize_text("α β γ δ ε ζ η θ"), "α β γ δ ε ζ η θ");
-    assert_eq!(sanitize_text("° ± × ÷ µ ¶ · ¿ ¡"), "° ± × ÷ µ ¶ · ¿ ¡");
-    assert_eq!(sanitize_text("† ‡ • … — – ‹ › « »"), "† ‡ • … — – ‹ › « »");
-    assert_eq!(sanitize_text("π ≈ 3.14159"), "π ≈ 3.14159");
-    assert_eq!(sanitize_text("f(x) = x² + 2x + 1"), "f(x) = x² + 2x + 1");
-    assert_eq!(sanitize_text("∀x ∈ ℝ: x² ≥ 0"), "∀x ∈ ℝ: x² ≥ 0");
-    assert_eq!(sanitize_text("¼ ½ ¾ ⅓ ⅔"), "¼ ½ ¾ ⅓ ⅔");
-    assert_eq!(sanitize_text("→ ← ↑ ↓ ↔ ⇒ ⇐"), "→ ← ↑ ↓ ↔ ⇒ ⇐");
-    assert_eq!(sanitize_text("♠ ♣ ♥ ♦ ♩ ♪ ♫"), "♠ ♣ ♥ ♦ ♩ ♪ ♫");
-    assert_eq!(sanitize_text("☀ ☁ ☂ ★ ☆ ✓ ✗"), "☀ ☁ ☂ ★ ☆ ✓ ✗");
+    assert_eq!(strip_tags("§1.2 Legal"), "§1.2 Legal");
+    assert_eq!(strip_tags("Δx = 5"), "Δx = 5");
+    assert_eq!(strip_tags("∑∏∫√∞≈≠≤≥"), "∑∏∫√∞≈≠≤≥");
+    assert_eq!(strip_tags("£100 €200 ¥300 ₹400"), "£100 €200 ¥300 ₹400");
+    assert_eq!(strip_tags("© 2024 ® ™"), "© 2024 ® ™");
+    assert_eq!(strip_tags("α β γ δ ε ζ η θ"), "α β γ δ ε ζ η θ");
+    assert_eq!(strip_tags("° ± × ÷ µ ¶ · ¿ ¡"), "° ± × ÷ µ ¶ · ¿ ¡");
+    assert_eq!(strip_tags("† ‡ • … — – ‹ › « »"), "† ‡ • … — – ‹ › « »");
+    assert_eq!(strip_tags("π ≈ 3.14159"), "π ≈ 3.14159");
+    assert_eq!(strip_tags("f(x) = x² + 2x + 1"), "f(x) = x² + 2x + 1");
+    assert_eq!(strip_tags("∀x ∈ ℝ: x² ≥ 0"), "∀x ∈ ℝ: x² ≥ 0");
+    assert_eq!(strip_tags("¼ ½ ¾ ⅓ ⅔"), "¼ ½ ¾ ⅓ ⅔");
+    assert_eq!(strip_tags("→ ← ↑ ↓ ↔ ⇒ ⇐"), "→ ← ↑ ↓ ↔ ⇒ ⇐");
+    assert_eq!(strip_tags("♠ ♣ ♥ ♦ ♩ ♪ ♫"), "♠ ♣ ♥ ♦ ♩ ♪ ♫");
+    assert_eq!(strip_tags("☀ ☁ ☂ ★ ☆ ✓ ✗"), "☀ ☁ ☂ ★ ☆ ✓ ✗");
 }
 
 #[test]
@@ -1404,19 +1404,19 @@ let x = 5;
 
     // Check that headers are processed correctly
     assert!(result.contains(
-            "<h1 id=\"h1\">Header Before Code<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+            "<h1 id=\"ng-h1\">Header Before Code<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
         ));
     assert!(result.contains(
-            "<h2 id=\"h2\">Header Before List<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
+            "<h2 id=\"ng-h2\">Header Before List<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
         ));
     assert!(result.contains(
-            "<h3 id=\"h3\">Header Before Blockquote<a href=\"#h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
+            "<h3 id=\"ng-h3\">Header Before Blockquote<a href=\"#ng-h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
         ));
     assert!(result.contains(
-            "<h4 id=\"h4\">Header Before Table<a href=\"#h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
+            "<h4 id=\"ng-h4\">Header Before Table<a href=\"#ng-h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
         ));
     assert!(result.contains(
-            "<h1 id=\"h5\">Header at End<a href=\"#h5\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+            "<h1 id=\"ng-h5\">Header at End<a href=\"#ng-h5\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
         ));
 
     // Check that the following elements are still processed correctly
@@ -1440,34 +1440,34 @@ fn test_footnotes() {
     let reference_result = render_markdown(reference_text);
 
     // Check that footnote references are created (link processor adds attributes)
-    assert!(reference_result.contains("<sup><a href=\"#FN1\""));
-    assert!(reference_result.contains("<sup><a href=\"#FN2\""));
+    assert!(reference_result.contains("<sup><a href=\"#ng-FN1\""));
+    assert!(reference_result.contains("<sup><a href=\"#ng-FN2\""));
     assert!(reference_result.contains(">1</a></sup>"));
     assert!(reference_result.contains(">2</a></sup>"));
     assert!(reference_result.contains("<div class=\"footnotes\">"));
     assert!(reference_result.contains("First footnote text."));
     assert!(reference_result.contains("Second footnote text."));
-    assert!(reference_result.contains("href=\"#fnref1\""));
-    assert!(reference_result.contains("href=\"#fnref2\""));
+    assert!(reference_result.contains("href=\"#ng-fnref1\""));
+    assert!(reference_result.contains("href=\"#ng-fnref2\""));
 
     // Test inline footnotes
     let inline_text = "This has an inline footnote^[This is inline] and another^[Second inline].";
     let inline_result = render_markdown(inline_text);
 
     // Check that inline footnotes are created
-    assert!(inline_result.contains("<sup><a href=\"#ifn1\""));
-    assert!(inline_result.contains("<sup><a href=\"#ifn2\""));
+    assert!(inline_result.contains("<sup><a href=\"#ng-ifn1\""));
+    assert!(inline_result.contains("<sup><a href=\"#ng-ifn2\""));
     assert!(inline_result.contains("This is inline"));
     assert!(inline_result.contains("Second inline"));
-    assert!(inline_result.contains("href=\"#ifn1ref\""));
-    assert!(inline_result.contains("href=\"#ifn2ref\""));
+    assert!(inline_result.contains("href=\"#ng-ifn1ref\""));
+    assert!(inline_result.contains("href=\"#ng-ifn2ref\""));
 
     // Test mixed footnotes
     let mixed_text = "Reference[^1] and inline^[Inline text].\n\n[^1]: Reference text.";
     let mixed_result = render_markdown(mixed_text);
 
-    assert!(mixed_result.contains("href=\"#FN1\""));
-    assert!(mixed_result.contains("href=\"#ifn1\""));
+    assert!(mixed_result.contains("href=\"#ng-FN1\""));
+    assert!(mixed_result.contains("href=\"#ng-ifn1\""));
     assert!(mixed_result.contains("Reference text."));
     assert!(mixed_result.contains("Inline text"));
 
@@ -1504,13 +1504,13 @@ let x = 42;
     let result = render_markdown(complex_text);
 
     // Check that reference footnotes work
-    assert!(result.contains("href=\"#FN1\""));
-    assert!(result.contains("href=\"#FN2\""));
-    assert!(result.contains("href=\"#FN3\""));
+    assert!(result.contains("href=\"#ng-FN1\""));
+    assert!(result.contains("href=\"#ng-FN2\""));
+    assert!(result.contains("href=\"#ng-FN3\""));
 
     // Check that inline footnotes work
-    assert!(result.contains("href=\"#ifn1\""));
-    assert!(result.contains("href=\"#ifn2\""));
+    assert!(result.contains("href=\"#ng-ifn1\""));
+    assert!(result.contains("href=\"#ng-ifn2\""));
 
     // Check footnotes section exists
     assert!(result.contains("<div class=\"footnotes\">"));
@@ -1522,12 +1522,12 @@ let x = 42;
 
     // Check that code blocks don't process footnotes
     assert!(result.contains("footnotes[^code]"));
-    assert!(!result.contains("href=\"#FN4\""));
+    assert!(!result.contains("href=\"#ng-FN4\""));
 
     // Check that other markdown still works (with correct formatting)
-    assert!(result.contains("<h1 id=\"h1\">"));
+    assert!(result.contains("<h1 id=\"ng-h1\">"));
     assert!(result.contains(
-        "<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+        "<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
     ));
     assert!(result.contains("<strong>bold</strong>")); // ** is bold, * is italic in this parser
     assert!(result.contains("<em>italic</em>"));
@@ -1848,23 +1848,23 @@ fn test_headers() {
     let result = render_markdown(text_with_blanks);
 
     assert!(result
-            .contains("<h1 id=\"h1\">Header 1<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
+            .contains("<h1 id=\"ng-h1\">Header 1<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
     assert!(result
-            .contains("<h2 id=\"h2\">Header 2<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"));
+            .contains("<h2 id=\"ng-h2\">Header 2<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"));
     assert!(result
-            .contains("<h3 id=\"h3\">Header 3<a href=\"#h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"));
+            .contains("<h3 id=\"ng-h3\">Header 3<a href=\"#ng-h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"));
     assert!(result
-            .contains("<h4 id=\"h4\">Header 4<a href=\"#h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"));
+            .contains("<h4 id=\"ng-h4\">Header 4<a href=\"#ng-h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"));
 
     // Test headers without blank lines
     let text_without_blanks = "# Main Header\nThis paragraph follows immediately.\n\n## Sub Header\nAnother paragraph right after.";
     let result2 = render_markdown(text_without_blanks);
 
     assert!(result2.contains(
-            "<h1 id=\"h1\">Main Header<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+            "<h1 id=\"ng-h1\">Main Header<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
         ));
     assert!(result2.contains(
-            "<h2 id=\"h2\">Sub Header<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
+            "<h2 id=\"ng-h2\">Sub Header<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
         ));
     assert!(result2.contains("<p>This paragraph follows immediately.</p>"));
     assert!(result2.contains("<p>Another paragraph right after.</p>"));
@@ -1889,10 +1889,10 @@ fn test_mixed_headers_and_quotes() {
     let result = render_markdown(text);
 
     assert!(result
-            .contains("<h1 id=\"h1\">Title<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
+            .contains("<h1 id=\"ng-h1\">Title<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
     assert!(result.contains("<blockquote>A quote</blockquote>"));
     assert!(result
-            .contains("<h2 id=\"h2\">Subtitle<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"));
+            .contains("<h2 id=\"ng-h2\">Subtitle<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"));
     assert!(result.contains("<p>Normal text</p>"));
 }
 
@@ -1959,9 +1959,9 @@ Final paragraph with normal text."#;
     // Verify normal formatting still works
     assert!(html_output.contains("<strong>bold text</strong>"));
     assert!(html_output.contains("<em>Italic text</em>"));
-    assert!(html_output.contains("<h1 id=\"h1\">Test File for Comment Functionality<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
+    assert!(html_output.contains("<h1 id=\"ng-h1\">Test File for Comment Functionality<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
     assert!(html_output.contains(
-            "<h2 id=\"h2\">Section with Comments<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
+            "<h2 id=\"ng-h2\">Section with Comments<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
         ));
 
     // Verify code block comments are preserved (they're inside code blocks)
@@ -2648,7 +2648,7 @@ fn test_comments_mixed_with_other_features() {
 
     // Other features should work normally
     assert!(result
-            .contains("<h1 id=\"h1\">Header<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
+            .contains("<h1 id=\"ng-h1\">Header<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"));
     assert!(result.contains("<strong>Bold text</strong>"));
     assert!(result.contains("<blockquote>Quote</blockquote>"));
 }
@@ -2766,16 +2766,16 @@ fn test_header_anchor_functionality() {
 
     // Check that each header gets the correct sequential ID
     assert!(result.contains(
-            "<h1 id=\"h1\">First Header<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+            "<h1 id=\"ng-h1\">First Header<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
         ));
     assert!(result.contains(
-            "<h2 id=\"h2\">Second Header<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
+            "<h2 id=\"ng-h2\">Second Header<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
         ));
     assert!(result.contains(
-            "<h3 id=\"h3\">Third Header<a href=\"#h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
+            "<h3 id=\"ng-h3\">Third Header<a href=\"#ng-h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
         ));
     assert!(result.contains(
-            "<h4 id=\"h4\">Fourth Header<a href=\"#h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
+            "<h4 id=\"ng-h4\">Fourth Header<a href=\"#ng-h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
         ));
 
     // Test that numbering is consistent across multiple renders of same content
@@ -2787,16 +2787,16 @@ fn test_header_anchor_functionality() {
     let mixed_result = render_markdown(mixed_content);
 
     assert!(mixed_result.contains(
-            "<h2 id=\"h1\">Starting with H2<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
+            "<h2 id=\"ng-h1\">Starting with H2<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h2>"
         ));
     assert!(mixed_result.contains(
-            "<h1 id=\"h2\">Then H1<a href=\"#h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
+            "<h1 id=\"ng-h2\">Then H1<a href=\"#ng-h2\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>"
         ));
     assert!(mixed_result.contains(
-            "<h4 id=\"h3\">Then H4<a href=\"#h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
+            "<h4 id=\"ng-h3\">Then H4<a href=\"#ng-h3\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h4>"
         ));
     assert!(mixed_result.contains(
-            "<h3 id=\"h4\">Then H3<a href=\"#h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
+            "<h3 id=\"ng-h4\">Then H3<a href=\"#ng-h4\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h3>"
         ));
 }
 
@@ -2864,6 +2864,44 @@ fn test_dividers() {
     assert!(multiple_result.contains("<div class=\"asterisk\"><div class=\"center\"></div></div>"));
     assert!(multiple_result.contains("<hr class=\"divider-thin\">"));
     assert!(multiple_result.contains("<hr class=\"divider-double\">"));
+}
+
+#[test]
+fn literal_placeholders_round_trip() {
+    let text = "See {{CODEBLOCK0}} and {{FENCEDBLOCK1}} plus XHASHX and XFOOTNOTESECTIONSTARTX.";
+    let html = render_markdown(text);
+    assert!(html.contains("{{CODEBLOCK0}}"));
+    assert!(html.contains("{{FENCEDBLOCK1}}"));
+    assert!(html.contains("XHASHX"));
+    assert!(html.contains("XFOOTNOTESECTIONSTARTX"));
+}
+
+#[test]
+fn a_trailing_dot_on_localhost_is_blocked() {
+    let image = render_markdown("![x](http://localhost./secret)");
+    assert!(!image.contains("src=\"http://localhost"));
+    let link = render_markdown("[x](http://localhost./secret)");
+    assert!(!link.contains("href=\"http://localhost"));
+    let bare = render_markdown("![x](http://localhost/secret)");
+    assert!(!bare.contains("src=\"http://localhost"));
+}
+
+#[test]
+fn user_markup_cannot_emit_controls_or_page_ids() {
+    let html = render_markdown(
+        "<button class=\"wrap-button\">Wrap</button>\n\n<svg><path d=\"M0 0\"></path></svg>\n\n<input type=\"checkbox\">\n\n<h1 id=\"sealed-event\">Hi</h1>\n\n```\nlet x = 1;\n```",
+    );
+    assert!(!html.contains("sealed-event"));
+    assert!(html.contains("Hi"));
+    assert!(html.contains("class=\"wrap-button\""));
+    assert!(html.contains("<svg"));
+    let without_fence = render_markdown(
+        "<button>Wrap</button> <svg></svg> <input type=\"checkbox\"> <h1 id=\"publishForm\">Hi</h1>",
+    );
+    assert!(!without_fence.contains("<button"));
+    assert!(!without_fence.contains("<svg"));
+    assert!(!without_fence.contains("<input"));
+    assert!(!without_fence.contains("publishForm"));
 }
 
 #[test]

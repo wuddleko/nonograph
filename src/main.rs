@@ -128,8 +128,23 @@ fn content_security_policy() -> String {
      object-src 'none'; \
      script-src 'self' 'wasm-unsafe-eval'; \
      script-src-attr 'none'; \
-     style-src 'self' https:"
+     style-src 'self'"
         .to_string()
+}
+
+const PUBLISH_JSON_OVERHEAD: usize = 8 * 1024;
+
+fn json_body_limit(config: &Config) -> usize {
+    crate::seal::sealed_payload_max(
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+    )
+    .saturating_add(PUBLISH_JSON_OVERHEAD)
+}
+
+fn server_ident() -> rocket::config::Ident {
+    rocket::config::Ident::none()
 }
 
 fn render_options(config: &Config) -> parser::RenderOptions {
@@ -174,11 +189,11 @@ fn parse_yaml_frontmatter(file_content: &str) -> Option<(String, String, DateTim
             continue;
         }
         if let Some(value) = line.strip_prefix("title:") {
-            title = parser::sanitize_text(value.trim());
+            title = parser::strip_tags(value.trim());
         } else if let Some(value) = line.strip_prefix("date:") {
             date_str = value.trim().to_string();
         } else if let Some(value) = line.strip_prefix("author:") {
-            author = parser::sanitize_text(value.trim());
+            author = parser::strip_tags(value.trim());
         }
     }
 
@@ -200,7 +215,7 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
     let (date_str, author) = if let Some(pipe_pos) = lines[0].find(" | ") {
         (
             lines[0][..pipe_pos].to_string(),
-            parser::sanitize_text(&lines[0][(pipe_pos + 3)..]),
+            parser::strip_tags(&lines[0][(pipe_pos + 3)..]),
         )
     } else {
         (lines[0].to_string(), "".to_string())
@@ -212,7 +227,7 @@ fn parse_legacy_frontmatter(file_content: &str) -> Option<(String, String, DateT
         .map(|datetime| DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc))
         .unwrap_or_else(|| Utc::now());
 
-    let title = parser::sanitize_text(lines[2].strip_prefix("# ").unwrap_or("Untitled"));
+    let title = parser::strip_tags(lines[2].strip_prefix("# ").unwrap_or("Untitled"));
     let raw_content = lines[3].to_string();
 
     Some((title, author, created_at, raw_content))
@@ -301,7 +316,8 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     let limits = Limits::default()
         .limit("form", config.form_data_limit_bytes().bytes())
         .limit("data-form", config.form_data_limit_bytes().bytes())
-        .limit("string", config.form_data_limit_bytes().bytes());
+        .limit("string", config.form_data_limit_bytes().bytes())
+        .limit("json", json_body_limit(&config).bytes());
 
     let socks = match startup_socks(&config) {
         Ok(socks @ crate::nostr::RelaySocks::Proxy(addr)) => {
@@ -347,6 +363,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
             limits,
             port: config.server.port,
             address,
+            ident: server_ident(),
             ..rocket::Config::default()
         })
         .attach(SecurityHeadersFairing)

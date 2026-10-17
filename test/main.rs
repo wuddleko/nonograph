@@ -33,6 +33,25 @@ fn csp_keeps_the_tab_on_this_host() {
     assert!(!policy.contains("damus.io"));
     assert!(policy.contains("default-src 'self'"));
     assert!(policy.contains("img-src 'self' https: http: data:"));
+    assert!(policy.contains("style-src 'self'"));
+    assert!(!policy.contains("style-src 'self' https:"));
+}
+
+#[test]
+fn the_json_limit_fits_a_sealed_note_and_the_server_is_unnamed() {
+    let config = Config::default();
+    let payload = crate::seal::sealed_payload_max(
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+    );
+    assert!(json_body_limit(&config) >= payload + PUBLISH_JSON_OVERHEAD);
+    let mut wide = config;
+    wide.limits.content_max_length = 256_000;
+    let full = crate::seal::sealed_payload_max(128, 32, 256_000);
+    assert!(json_body_limit(&wide) >= full + PUBLISH_JSON_OVERHEAD);
+    assert!(json_body_limit(&wide) > 1024 * 1024);
+    assert_eq!(server_ident().as_str(), None);
 }
 
 #[test]
@@ -99,19 +118,19 @@ fn test_content_sanitization() {
 #[test]
 fn test_title_and_author_sanitization() {
     let malicious_title = "<script>alert('xss')</script>Safe Title";
-    let sanitized_title = parser::sanitize_text(&malicious_title);
+    let sanitized_title = parser::strip_tags(&malicious_title);
     assert_eq!(sanitized_title, "Safe Title");
 
     let malicious_author = "<b>Bold</b><script>alert('xss')</script>John Doe";
-    let sanitized_author = parser::sanitize_text(&malicious_author);
+    let sanitized_author = parser::strip_tags(&malicious_author);
     assert_eq!(sanitized_author, "BoldJohn Doe");
 
     let clean_text = "Normal Title";
-    let sanitized_clean = parser::sanitize_text(&clean_text);
+    let sanitized_clean = parser::strip_tags(&clean_text);
     assert_eq!(sanitized_clean, "Normal Title");
 
     let various_tags = "<h1>Title</h1><p>Content</p><script>alert('xss')</script>";
-    let sanitized_various = parser::sanitize_text(&various_tags);
+    let sanitized_various = parser::strip_tags(&various_tags);
     assert_eq!(sanitized_various, "TitleContent");
 }
 
@@ -171,7 +190,7 @@ fn test_xss_attack_vectors() {
     ];
 
     for (i, xss_payload) in xss_test_cases.iter().enumerate() {
-        let sanitized = parser::sanitize_text(xss_payload);
+        let sanitized = parser::strip_tags(xss_payload);
         let lower = sanitized.to_lowercase();
         assert!(
             !lower.contains("<script"),
@@ -230,11 +249,11 @@ fn test_xss_attack_vectors() {
     }
 
     let mixed_payload = "Hello <script>alert('XSS')</script> World";
-    let sanitized_mixed = parser::sanitize_text(&mixed_payload);
+    let sanitized_mixed = parser::strip_tags(&mixed_payload);
     assert_eq!(sanitized_mixed, "Hello  World");
 
     let title_with_xss = "My Blog Post <img src=x onerror=alert(1)>";
-    let sanitized_title = parser::sanitize_text(&title_with_xss);
+    let sanitized_title = parser::strip_tags(&title_with_xss);
     assert_eq!(sanitized_title, "My Blog Post ");
 
     let dangerous_payloads = [
@@ -250,7 +269,7 @@ fn test_xss_attack_vectors() {
     ];
 
     for (payload, expected) in dangerous_payloads {
-        let result = parser::sanitize_text(payload);
+        let result = parser::strip_tags(payload);
         assert_eq!(result, expected, "Failed for payload: {}", payload);
     }
 }

@@ -2,8 +2,8 @@
   {
     "name": "heading",
     "markdown": "# Header",
-    "rust": "<h1 id=\"h1\">Header<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>\n",
-    "writemark": "<h1 id=\"h1\">Header<a href=\"#h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>\n",
+    "rust": "<h1 id=\"ng-h1\">Header<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>\n",
+    "writemark": "<h1 id=\"ng-h1\">Header<a href=\"#ng-h1\" class=\"header-anchor\" rel=\"noopener noreferrer\">#</a></h1>\n",
     "live": "<div class=\"md-line md-heading md-h1\" part=\"line\" data-editable=\"line\" data-kind=\"heading\" data-from=\"2\" data-to=\"8\" contenteditable=\"true\" spellcheck=\"true\" id=\"header\">Header</div>"
   },
   {
