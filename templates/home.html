@@ -48,7 +48,7 @@
             </div>
             <div class="mobile-header-center">
                 <a href="#help-sheet" class="help-link">About</a>
-                <a href="#help-sheet" class="help-link relays-open-sheet">Relays</a>
+                <a href="#sidebar-relays" class="help-link relays-open-sheet">Relays</a>
                 <a href="#sidebar-relays" class="help-link relays-open-bar">Relays</a>
                 <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
             </div>
@@ -68,16 +68,21 @@
                         <p>
                             Nonograph is for writing things you want to exist
                             somewhere permanent without that somewhere being
-                            attached to you. A thought, an essay, a rant, class
-                            notes, up to you. You write it, you get a link.
-                            Share the link with whoever you'd like, or keep it
-                            to yourself.
+                            attached to you, or to a single central entity.<br />
+                            A thought, an essay, a rant, class notes, up to you.
+                            You write it, you get a link. Share the link with
+                            whoever you'd like, or keep it to yourself.
                         </p>
+                        <p>{{about_durability}}</p>
                         <p>
-                            The service and software are designed to last.
-                            {{about_durability}} Being a simple, lightweight,
-                            open-source project means it should last a long
-                            time with very little funding.
+                            Notes are stored on
+                            <a
+                                href="https://nostr.com/info"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                >nostr relays</a
+                            >. They are reached through Tor, so nobody sees who
+                            posted a note or who read it.
                         </p>
                     </div>
 
@@ -86,7 +91,7 @@
                     <div class="help-section">
                         <h3>Principles</h3>
                         <ul>
-                            <li>No ads, no monetization, no investors</li>
+                            <li>No ads</li>
                             <li>
                                 Posts cannot be edited or deleted after
                                 publishing
@@ -101,9 +106,13 @@
                         <h3>Source code</h3>
                         <p>
                             It's entirely open source. The code is at
-                            <strong>github.com/wuddleko/nonograph</strong>. You can
-                            read it, run it yourself, and host for others
-                            easily.
+                            <a
+                                href="https://github.com/wuddleko/nonograph"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                >github.com/wuddleko/nonograph</a
+                            >. You can read it, run it yourself, and host for
+                            others easily.
                         </p>
                         <p>
                             PDF text uses the
@@ -204,6 +213,8 @@
                     <button type="submit" form="publishForm"{{publish_attrs}}>Store</button>
                     <div class="char-count" id="charCount">
                         <span class="live-count">0 / {{content_limit}}</span>
+                        <a href="#help-sheet" class="sidebar-about">About</a>
+                        <span class="count-meter" aria-hidden="true"><span></span></span>
                         <span class="static-count">{{content_limit}} characters</span>
                     </div>
                 </div>

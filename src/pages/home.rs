@@ -252,8 +252,12 @@ fn nojs_landing_relays(
     );
     let sidebar = format!(
         "<div class=\"sidebar-relays\" id=\"sidebar-relays\">\n\
+        <a href=\"#\" class=\"relay-sheet-backdrop\" aria-label=\"Close relays\"></a>\n\
+        <div class=\"relay-sheet-panel\">\n\
+        <a href=\"#\" class=\"relay-sheet-close\" aria-label=\"Close relays\">&times;</a>\n\
         <p class=\"sidebar-relays-title\">Relays</p>\n\
         {form}\
+        </div>\n\
         </div>\n"
     );
     let listed: Vec<String> = state
@@ -272,9 +276,9 @@ fn nojs_landing_relays(
 
 fn about_durability(nojs: bool) -> &'static str {
     if nojs {
-        "The host seals the note and does not keep a copy. The writing is ordinary markup, not a proprietary format."
+        "The host encrypts the note and does not keep a copy.<br>Only you, and anyone with the link, can read it.<br>The writing is ordinary markup, not a proprietary format."
     } else {
-        "The browser seals the note and this host does not keep a copy. The writing is ordinary markup, not a proprietary format."
+        "Your post is encrypted in your browser the moment you click Store.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format."
     }
 }
 

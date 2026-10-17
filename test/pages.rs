@@ -438,12 +438,12 @@ fn rendered_home_switches_the_content_field() {
     assert!(nojs.contains("This host seals the note and does not keep a copy."));
     assert!(nojs.contains("The key stays in the address."));
     assert!(nojs.contains(
-        "The host seals the note and does not keep a copy. The writing is ordinary markup, not a proprietary format."
+        "The host encrypts the note and does not keep a copy.<br>Only you, and anyone with the link, can read it.<br>The writing is ordinary markup, not a proprietary format."
     ));
     assert!(!nojs.contains("stored as plaintext markup"));
     assert!(!js.contains("stored as plaintext markup"));
     assert!(js.contains(
-        "The browser seals the note and this host does not keep a copy. The writing is ordinary markup, not a proprietary format."
+        "Your post is encrypted in your browser the moment you click Store.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format."
     ));
     assert!(nojs.contains("class=\"nojs-file-note\""));
     assert!(js.contains("class=\"nojs-file-note\""));

@@ -492,6 +492,10 @@ function paintSavedRelayLists(doc, storage) {
                     const span = root.querySelector(".live-count");
                     if (span) span.textContent = countText;
                 }
+                if (charCount && contentLimit > 0) {
+                    const fill = Math.min(count / contentLimit, 1);
+                    charCount.style.setProperty("--fill", String(fill));
+                }
 
                 // Update button state and character count styling
                 if (count > contentLimit) {

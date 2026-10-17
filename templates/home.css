@@ -46,29 +46,54 @@
             }
             .container {
                 position: relative;
-                max-width: 1000px;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 180px;
+                column-gap: 40px;
+                align-items: start;
+                width: min(920px, 100%);
+                max-width: 920px;
                 margin: 0 auto;
             }
             .writingarea {
-                width: 700px;
-                margin: 0 auto;
+                width: auto;
+                min-width: 0;
+                max-width: 700px;
+                margin: 0;
                 position: relative;
             }
             .content {
                 width: 100%;
             }
             .sidebar {
-                position: fixed;
-                left: 50%;
-                margin-left: 390px;
-                top: 56px;
+                position: static;
                 width: 180px;
+                max-width: 100%;
+                min-width: 0;
+                margin-top: 6px;
                 font-size: 15px;
                 line-height: 1.45;
                 text-align: left;
                 display: flex;
                 flex-direction: column;
-                align-items: flex-start;
+                align-items: stretch;
+            }
+            .sidebar-about {
+                justify-self: end;
+                color: var(--quiet);
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                line-height: 1;
+                text-transform: uppercase;
+                text-decoration: none;
+                margin: 0;
+            }
+            .sidebar-about:hover {
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .sidebar-about:hover {
+                text-decoration: underline;
             }
             .sidebar button {
                 display: block;
@@ -84,13 +109,15 @@
             }
             textarea[name="title"] {
                 font-family: var(--face);
-                font-size: 54px;
+                font-size: clamp(32px, 5.4vw, 54px);
                 font-weight: 700;
                 letter-spacing: -0.03em;
                 text-transform: uppercase;
                 margin-top: 6px;
                 margin-bottom: 0;
                 height: auto;
+                min-width: 0;
+                max-width: 100%;
                 min-height: 58px;
                 max-height: 320px;
                 line-height: 0.95;
@@ -98,6 +125,7 @@
                 overflow-y: auto;
                 overflow-x: hidden;
                 white-space: pre-wrap;
+                overflow-wrap: anywhere;
                 word-wrap: break-word;
                 field-sizing: content; /* Auto-grow with content */
             }
@@ -298,29 +326,66 @@
                 opacity: 0.4;
             }
             .sidebar-store {
-                display: grid;
-                width: max-content;
-                max-width: 100%;
+                display: flex;
+                flex-direction: column;
+                width: 100%;
+                min-width: 0;
+            }
+            .sidebar-store button[type="submit"] {
+                width: 100%;
+                margin: 0;
             }
 
             .sidebar .char-count {
-                width: 0;
-                min-width: 100%;
-                font-size: 15px;
-                color: var(--ink);
-                margin: 6px 0 18px;
-                display: flex;
-                align-items: center;
-                gap: 0;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: baseline;
+                column-gap: 8px;
+                width: 100%;
+                min-width: 0;
+                margin: 8px 0 16px;
+                font-size: 13px;
+                color: var(--quiet);
             }
-
-            .sidebar .char-count .live-count,
-            .sidebar .char-count .static-count {
-                flex: 1 1 auto;
-                min-width: 100%;
+            .sidebar .char-count .live-count {
+                grid-column: 1;
+                grid-row: 1;
+                min-width: 0;
                 white-space: nowrap;
-                text-align: justify;
-                text-align-last: justify;
+                font-variant-numeric: tabular-nums;
+            }
+            .sidebar .sidebar-about {
+                grid-column: 2;
+                grid-row: 1;
+            }
+            .sidebar .count-meter {
+                grid-column: 1 / -1;
+                height: 2px;
+                margin-top: 6px;
+                background: color-mix(in srgb, var(--ink) 16%, transparent);
+            }
+            .sidebar .count-meter > span {
+                display: block;
+                height: 100%;
+                width: 100%;
+                background: currentColor;
+                transform: scaleX(var(--fill, 0));
+                transform-origin: left center;
+            }
+            .sidebar .char-count.over-limit {
+                color: var(--quiet);
+            }
+            .sidebar .char-count.over-limit .live-count,
+            .sidebar .char-count.over-limit .count-meter {
+                color: #e74c3c;
+            }
+            .sidebar .char-count .static-count {
+                grid-column: 1;
+                grid-row: 1;
+                width: auto;
+                min-width: 0;
+                white-space: nowrap;
+                text-align: left;
             }
             .char-count.over-limit {
                 color: #e74c3c;
@@ -340,6 +405,15 @@
 
             body.nojs .sidebar .char-count .static-count {
                 display: block;
+            }
+            body.nojs .sidebar .count-meter {
+                display: none;
+            }
+            body.nojs .sidebar .sidebar-about {
+                grid-column: 1;
+                grid-row: 2;
+                justify-self: start;
+                margin-top: 6px;
             }
             .nojs-file-note,
             .needs-js {
@@ -395,8 +469,11 @@
                 flex-wrap: wrap;
                 align-items: center;
                 margin-top: 0;
-                max-width: 180px;
+                max-width: none;
                 width: 100%;
+                min-width: 0;
+                container-type: inline-size;
+                container-name: sidebar;
                 font-size: 15px;
                 color: var(--ink);
                 line-height: 1.45;
@@ -404,6 +481,16 @@
                 scroll-margin-top: 72px;
             }
 
+            .relay-sheet-panel {
+                display: contents;
+            }
+            .relay-sheet-backdrop,
+            .relay-sheet-close {
+                display: none;
+            }
+            #help-sheet #relays {
+                display: none;
+            }
             .sidebar-relays-title {
                 flex: none;
                 order: 0;
@@ -426,6 +513,11 @@
             .sidebar-relays .relay-list li {
                 margin: 0 0 3px;
                 word-break: break-word;
+                cursor: default;
+            }
+            .sidebar .relay-list li,
+            .sidebar .relay-list li * {
+                cursor: default;
             }
 
             .relay-circuit {
@@ -646,6 +738,110 @@
                 color: var(--ink);
             }
 
+            @container sidebar (max-width: 220px) {
+                .sidebar-relays .relay-list {
+                    width: 100%;
+                    min-width: 0;
+                    max-width: 100%;
+                }
+
+                .sidebar-relays .relay-list li {
+                    display: flex;
+                    flex-wrap: nowrap;
+                    align-items: center;
+                    gap: 6px;
+                    width: 100%;
+                    max-width: 100%;
+                    min-width: 0;
+                    position: relative;
+                    word-break: normal;
+                    overflow-wrap: normal;
+                }
+
+                .sidebar-relays .relay-name {
+                    order: 1;
+                    flex: 1 1 0;
+                    width: 0;
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+
+                .sidebar-relays .relay-remove-form {
+                    display: contents;
+                }
+
+                .sidebar-relays .relay-remove {
+                    order: 3;
+                }
+
+                .sidebar-relays .relay-circuit {
+                    order: 2;
+                    flex: none;
+                    flex-wrap: nowrap;
+                    margin-top: 0;
+                    overflow: hidden;
+                }
+
+                .sidebar-relays .relay-circuit-arrow,
+                .sidebar-relays .relay-circuit-hop {
+                    display: none;
+                }
+
+                .sidebar-relays .relay-list li:hover,
+                .sidebar-relays .relay-list li:focus-within {
+                    z-index: 3;
+                    background: color-mix(in srgb, var(--ink) 10%, var(--ground));
+                }
+
+                .sidebar-relays .relay-list li:hover .relay-circuit,
+                .sidebar-relays .relay-list li:focus-within .relay-circuit {
+                    position: absolute;
+                    top: 0;
+                    right: calc(100% + 8px);
+                    left: auto;
+                    z-index: 5;
+                    width: max-content;
+                    max-width: 260px;
+                    margin-top: 22px;
+                    padding: 4px 6px;
+                    overflow: visible;
+                    flex-wrap: wrap;
+                    background: var(--ground);
+                    box-shadow: 0 0 0 1px var(--ink);
+                    pointer-events: none;
+                }
+
+                .sidebar-relays .relay-list li:hover .relay-circuit-arrow,
+                .sidebar-relays .relay-list li:hover .relay-circuit-hop,
+                .sidebar-relays .relay-list li:focus-within .relay-circuit-arrow,
+                .sidebar-relays .relay-list li:focus-within .relay-circuit-hop {
+                    display: inline;
+                }
+
+                .sidebar-relays .relay-list li[data-relay]:hover::after,
+                .sidebar-relays .relay-list li[data-relay]:focus-within::after {
+                    content: attr(data-relay);
+                    position: absolute;
+                    z-index: 6;
+                    top: 0;
+                    right: calc(100% + 8px);
+                    bottom: auto;
+                    max-width: min(280px, 70vw);
+                    padding: 2px 6px;
+                    background: var(--ground);
+                    color: var(--ink);
+                    box-shadow: 0 0 0 1px var(--ink);
+                    font-size: 12px;
+                    line-height: 1.35;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    pointer-events: none;
+                }
+            }
+
             .help-section .relay-add {
                 border-top: none;
                 padding-top: 0;
@@ -802,7 +998,7 @@
             }
 
             .bottom-sheet-header {
-                padding: 20px 20px 10px;
+                padding: 20px max(20px, calc((100% - 38rem) / 2)) 10px;
                 border-bottom: 1px solid var(--ink);
                 position: sticky;
                 top: 0;
@@ -841,7 +1037,7 @@
             }
 
             .bottom-sheet-content {
-                padding: 20px;
+                padding: 20px max(20px, calc((100% - 38rem) / 2));
             }
 
             .help-section {
@@ -872,6 +1068,13 @@
                 line-height: 1.4;
             }
 
+            .help-section a {
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .help-section a:hover {
+                color: var(--ink);
+            }
             .help-section code {
                 background: var(--ground);
                 padding: 2px 4px;
@@ -1087,38 +1290,155 @@
                 margin-left: 4px;
             }
 
-            /* Mobile Styles */
-            @media (max-width: 1040px) {
+            /* The pair is 700 + 40 + 180. Below this the padded window cannot hold it. */
+            @media (max-width: 999px) {
+                .container {
+                    grid-template-columns: minmax(0, 700px);
+                    width: min(700px, 100%);
+                    max-width: 700px;
+                }
+                body {
+                    padding-top: 64px;
+                }
                 .alias-rand {
                     display: none;
-                }
-                .container {
                 }
                 .writingarea {
                     width: 100%;
                     max-width: 700px;
                 }
-                .sidebar {
+                .sidebar-about {
+                    display: none;
+                }
+                body:not(.nojs) .sidebar {
+                    display: block;
+                    width: 0;
+                    height: 0;
+                    margin: 0;
+                    overflow: visible;
+                }
+                body:not(.nojs) .sidebar-store {
+                    display: none;
+                }
+                body:not(.nojs) #sidebar-relays {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 200;
+                    display: block;
+                    width: auto;
+                    max-width: none;
+                    margin: 0;
+                    padding: 0;
+                    background: transparent;
+                    visibility: hidden;
+                    pointer-events: none;
+                }
+                body:not(.nojs) #sidebar-relays:target {
+                    visibility: visible;
+                    pointer-events: auto;
+                }
+                body:not(.nojs) #sidebar-relays:target .relay-sheet-backdrop {
+                    display: block;
+                    position: absolute;
+                    inset: 0;
+                    background: rgba(0, 0, 0, 0.5);
+                }
+                body:not(.nojs) #sidebar-relays:target .relay-sheet-panel {
+                    display: flex;
+                    flex-wrap: wrap;
+                    align-items: center;
+                    position: absolute;
+                    z-index: 1;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    max-height: 80vh;
+                    overflow: auto;
+                    box-sizing: border-box;
+                    padding: 20px 20px 28px;
+                    background: var(--ground);
+                    color: var(--ink);
+                }
+                body:not(.nojs) #sidebar-relays:target .relay-sheet-close {
+                    display: flex;
+                    position: absolute;
+                    top: 12px;
+                    right: 12px;
+                    width: 32px;
+                    height: 32px;
+                    align-items: center;
+                    justify-content: center;
+                    color: var(--ink);
+                    font-size: 24px;
+                    line-height: 1;
+                    text-decoration: none;
+                }
+                body:not(.nojs) #sidebar-relays:target .sidebar-relays-title {
+                    padding-right: 8px;
+                }
+                body:not(.nojs) #sidebar-relays:target .relay-count-row {
+                    padding-right: 44px;
+                }
+                body:not(.nojs) #sidebar-relays .relay-add-row,
+                body:not(.nojs) #sidebar-relays.sidebar-relays {
+                    max-width: none;
+                }
+                body.nojs .sidebar {
+                    display: flex;
                     position: static;
                     left: auto;
-                    margin-left: 0;
-                    margin-top: 32px;
                     width: 100%;
-                    text-align: left;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: flex-start;
-                    gap: 16px;
+                    max-width: 700px;
+                    margin-top: 28px;
+                    margin-left: 0;
                 }
-                .sidebar button {
-                    width: fit-content;
-                    max-width: none;
+                body.nojs .sidebar-store {
+                    display: none;
+                }
+                body.nojs .sidebar-relays,
+                body.nojs .relay-add-row {
+                    max-width: 100%;
+                }
+                .mobile-header {
+                    display: flex;
+                }
+                .mobile-header-center {
+                    display: flex;
+                }
+                .help-link {
+                    display: block;
+                }
+                .relays-open-bar {
+                    display: none;
+                }
+                body.nojs .relays-open-sheet {
+                    display: none;
+                }
+                body.nojs .relays-open-bar {
+                    display: block;
+                }
+                .mobile-header .char-count {
+                    font-size: 13px;
+                    margin-bottom: 0;
+                    flex: 1;
+                }
+                .mobile-header button {
+                    padding: 8px 12px;
+                    font-size: 13px;
+                    font-weight: 700;
+                    letter-spacing: 0.03em;
+                    text-transform: uppercase;
+                    line-height: 1;
+                    min-height: 0;
+                    margin-bottom: 0;
+                    margin-left: 0;
+                    border-radius: 0;
                 }
             }
 
             @media (max-width: 768px) {
                 body {
-                    padding: 16px 16px 64px;
+                    padding: 64px 16px 64px;
                 }
                 .container {
                     padding: 0;
@@ -1208,9 +1528,13 @@
                     min-height: 180px;
                 }
 
-                /* Hide the original sidebar elements on mobile */
+                /* Hide the original sidebar elements on mobile.
+                   The JS relay sheet stays mounted so Relays can open it. */
                 .sidebar {
                     display: none;
+                }
+                body:not(.nojs) .sidebar {
+                    display: block;
                 }
 
                 body.nojs .sidebar {
@@ -1326,7 +1650,15 @@
             .sidebar-relays .relay-add {
                 order: 2;
                 flex-basis: 100%;
+                width: 100%;
+                max-width: 100%;
+                min-width: 0;
                 margin-top: 10px;
+            }
+            .sidebar .relay-add-row {
+                width: 100%;
+                max-width: 100%;
+                min-width: 0;
             }
 
             .relay-count-row {

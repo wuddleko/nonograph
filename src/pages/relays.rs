@@ -66,8 +66,12 @@ pub(super) fn landing_relay_blocks(configured: &[String]) -> (String, String) {
     let dealt = deal(&urls, OPEN_SEATS, &[], &[]);
     let sidebar = format!(
         "<div class=\"sidebar-relays\" id=\"sidebar-relays\">\n\
+        <a href=\"#\" class=\"relay-sheet-backdrop\" aria-label=\"Close relays\"></a>\n\
+        <div class=\"relay-sheet-panel\">\n\
+        <a href=\"#\" class=\"relay-sheet-close\" aria-label=\"Close relays\">&times;</a>\n\
         <p class=\"sidebar-relays-title\">Relays</p>\n\
         {}\
+        </div>\n\
         </div>\n",
         crate::relays::render_dealt_rows(&dealt, &urls)
     );
