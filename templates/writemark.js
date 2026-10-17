@@ -88,12 +88,13 @@ function renderMarkdown(markdown, opts = {}) {
   return page.render_markdown(String(markdown ?? ""), String(theme), maxUrl, external);
 }
 function renderInline(markdown, opts = {}) {
+  const text = String(markdown ?? "");
   const page = pageModule;
-  if (!page || typeof page.render_inline !== "function") return "";
+  if (!page || typeof page.render_inline !== "function") return renderInlineMarkdown(text, opts);
   const parsedLimit = Number(opts.maxUrl);
   const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
   const external = opts.external !== false;
-  return page.render_inline(String(markdown ?? ""), maxUrl, external);
+  return page.render_inline(text, maxUrl, external);
 }
 function highlightCodeLines(language, code, opts = {}) {
   const page = pageModule;
@@ -364,21 +365,40 @@ function textFromMarkdown(markdown, opts = {}) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function rememberPageModule(module) {
+  pageModule = module;
+  return module;
+}
+function clearPageLoad(pending, shared) {
+  if (loadPageModule.pending === pending) loadPageModule.pending = null;
+  if (globalThis.nonographPageModule === shared) globalThis.nonographPageModule = null;
+}
 async function loadPageModule() {
   if (pageModule) return pageModule;
   if (!loadPageModule.pending) {
-    const js = new URL("./page/nonograph_page.js", import.meta.url);
-    const wasm = new URL("./page/nonograph_page_bg.wasm", import.meta.url);
-    loadPageModule.pending = import(js.href)
-      .then((module) => module.default({ module_or_path: wasm }).then(() => module))
-      .then((module) => {
-        pageModule = module;
-        return module;
-      })
-      .catch((error) => {
-        loadPageModule.pending = null;
+    const shared = globalThis.nonographPageModule;
+    if (shared) {
+      let pending;
+      pending = Promise.resolve(shared).then(rememberPageModule).catch((error) => {
+        clearPageLoad(pending, shared);
         throw error;
       });
+      loadPageModule.pending = pending;
+    } else {
+      const search = new URL(import.meta.url).search;
+      const js = new URL("./page/nonograph_page.js" + search, import.meta.url);
+      const wasm = new URL("./page/nonograph_page_bg.wasm" + search, import.meta.url);
+      let pending;
+      pending = import(js.href)
+        .then((module) => module.default({ module_or_path: wasm }).then(() => module))
+        .then(rememberPageModule)
+        .catch((error) => {
+          clearPageLoad(pending, pending);
+          throw error;
+        });
+      loadPageModule.pending = pending;
+      globalThis.nonographPageModule = pending;
+    }
   }
   return loadPageModule.pending;
 }
@@ -432,6 +452,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._virtualPainting = 0;
     this._virtualScrollFrame = 0;
     this._paintFrame = 0;
+    this._pageRenderFrame = 0;
     this._deferredPaint = null;
     this._offsetMap = [];
     this._paintedOffsets = new WeakMap();
@@ -486,6 +507,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (this._completionUpdateFrame) cancelAnimationFrame(this._completionUpdateFrame);
     if (this._virtualScrollFrame) cancelAnimationFrame(this._virtualScrollFrame);
     if (this._paintFrame) cancelAnimationFrame(this._paintFrame);
+    if (this._pageRenderFrame) cancelAnimationFrame(this._pageRenderFrame);
     if (this._boundDocumentScroll) {
       this.ownerDocument?.removeEventListener("scroll", this._boundDocumentScroll, true);
       this.ownerDocument?.defaultView?.removeEventListener("scroll", this._boundDocumentScroll, true);
@@ -495,6 +517,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._completionUpdateFrame = 0;
     this._virtualScrollFrame = 0;
     this._paintFrame = 0;
+    this._pageRenderFrame = 0;
     this._deferredPaint = null;
     this._clearOffsetMap();
     if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
@@ -812,9 +835,26 @@ class WritemarkEditorElement extends HTMLElement {
   _ensurePageRenderer() {
     if (pageModule || this._pageLoad) return;
     this._pageLoad = loadPageModule().then(() => {
-      if (this.isConnected) this._renderAll({ restoreSelection: true, force: true });
+      this._pageLoad = null;
+      this._applyPageRenderer();
     }).catch(() => {
       this._pageLoad = null;
+    });
+  }
+  _applyPageRenderer() {
+    if (!this.isConnected || !pageModule || this._userEdited) return;
+    if (this._isComposing || this._holdAccentTarget || this._deferredPaint || this._paintFrame || this._pointerSelection) {
+      this._schedulePageRenderer();
+      return;
+    }
+    const focused = Boolean(this._focusWithin && this._shadow?.activeElement);
+    this._renderAll({ restoreSelection: focused, force: true });
+  }
+  _schedulePageRenderer() {
+    if (this._pageRenderFrame) return;
+    this._pageRenderFrame = requestAnimationFrame(() => {
+      this._pageRenderFrame = 0;
+      this._applyPageRenderer();
     });
   }
   _inlineHtml(markdown) {
@@ -855,7 +895,10 @@ class WritemarkEditorElement extends HTMLElement {
   _afterValueChanged({ source = "api", inputType = null, silent = false, restoreSelection = true, previousValue = null, changes = null, defer = false, editable = null } = {}) {
     this._selectAllLevel = 0;
     this._structuredSelection = null;
-    if (["user", "keyboard", "paste", "pointer"].includes(source)) this._validationVisible = true;
+    if (["user", "keyboard", "paste", "pointer"].includes(source)) {
+      this._validationVisible = true;
+      this._userEdited = true;
+    }
     this._updateFormValue(); this._updateValidity(); this._renderAll({ restoreSelection, previousValue, changes, defer, editable });
     const oldDirty = this._dirty; this._dirty = this._value !== this._defaultValue; if (oldDirty !== this._dirty) this._dispatch("md-dirty-change", { dirty: this._dirty });
     this._updateSelectionToolbar();

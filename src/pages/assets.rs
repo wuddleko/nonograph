@@ -36,6 +36,20 @@ const PDF_LICENSE: &str = include_str!("../../pdf/fonts/LICENSE");
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "public, no-cache";
 
+pub fn cache_control_for_request(path: &str, query: Option<&str>) -> &'static str {
+    let versioned = query.is_some_and(|value| {
+        value
+            .split('&')
+            .any(|part| part.starts_with("v=") && part.len() > 2)
+    });
+    // The home fingerprint covers these two files. PDF URLs inherit the same
+    // ?v= from home.js and are not part of that hash, so they keep revalidating.
+    if versioned && matches!(path, PAGE_JS_PATH | PAGE_WASM_PATH) {
+        return LONG_CACHE;
+    }
+    cache_control_for_path(path)
+}
+
 pub fn cache_control_for_path(path: &str) -> &'static str {
     if path.starts_with("/nojs/s/") {
         return "no-store";
@@ -221,6 +235,8 @@ fn asset_version(parts: &[&str]) -> String {
     for part in parts {
         hasher.update(part.as_bytes());
     }
+    hasher.update(PAGE_WASM);
+    hasher.update(PAGE_JS.as_bytes());
     short_hex(&hasher.finalize())
 }
 
@@ -230,7 +246,7 @@ pub(super) fn version() -> &'static str {
 
 pub(super) fn home_scripts(version: &str) -> String {
     format!(
-        "<script src=\"/relays.js?v={version}\"></script>\n<script src=\"/editor-mode.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
+        "<link rel=\"modulepreload\" href=\"/writemark.js?v={version}\" />\n<link rel=\"modulepreload\" href=\"/writemark-live.js?v={version}\" />\n<link rel=\"preload\" href=\"/page/nonograph_page_bg.wasm?v={version}\" as=\"fetch\" crossorigin />\n<script src=\"/relays.js?v={version}\"></script>\n<script src=\"/editor-mode.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
     )
 }
 

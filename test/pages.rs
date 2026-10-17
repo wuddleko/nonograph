@@ -30,6 +30,22 @@ fn static_assets_are_cacheable_and_html_is_not() {
     // Stable renderer URLs revalidate. They are not pinned for a year and not discarded.
     assert_eq!(cache_control_for_path(PAGE_JS_PATH), "public, no-cache");
     assert_eq!(cache_control_for_path(PAGE_WASM_PATH), "public, no-cache");
+    assert_eq!(
+        cache_control_for_request(PAGE_WASM_PATH, Some("v=abc")),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        cache_control_for_request(PAGE_JS_PATH, Some("v=abc")),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        cache_control_for_request(PDF_WASM_PATH, Some("v=abc")),
+        "public, no-cache"
+    );
+    assert_eq!(
+        cache_control_for_request(PDF_JS_PATH, Some("v=abc")),
+        "public, no-cache"
+    );
     assert_eq!(cache_control_for_path(PDF_JS_PATH), "public, no-cache");
     assert_eq!(cache_control_for_path(PDF_WASM_PATH), "public, no-cache");
     assert_eq!(cache_control_for_path(PDF_LICENSE_PATH), "public, no-cache");
@@ -77,10 +93,17 @@ fn nojs_home_omits_scripts() {
     assert!(scripts.contains("/editor-mode.js?v="));
     assert!(scripts.contains("/writemark.js?v="));
     assert!(scripts.contains("/home.js?v="));
+    assert!(scripts.contains("<link rel=\"modulepreload\" href=\"/writemark.js?v="));
+    assert!(scripts.contains("<link rel=\"modulepreload\" href=\"/writemark-live.js?v="));
+    assert!(scripts.contains("<link rel=\"preload\" href=\"/page/nonograph_page_bg.wasm?v="));
     assert!(
-        scripts.find("/editor-mode.js?v=").unwrap() < scripts.find("/writemark.js?v=").unwrap()
+        scripts.find("<script src=\"/editor-mode.js?v=").unwrap()
+            < scripts.find("<script type=\"module\" src=\"/writemark.js?v=").unwrap()
     );
-    assert!(scripts.find("/relays.js?v=").unwrap() < scripts.find("/home.js?v=").unwrap());
+    assert!(
+        scripts.find("<script src=\"/relays.js?v=").unwrap()
+            < scripts.find("<script type=\"module\" src=\"/home.js?v=").unwrap()
+    );
     assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
     let field = js.get("content_field").unwrap();
     assert!(field.contains("<writemark-editor"));

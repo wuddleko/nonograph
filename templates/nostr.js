@@ -443,17 +443,21 @@ export function generateSealMaterial() {
 let pageModule;
 
 async function loadPage() {
+    if (globalThis.nonographPageModule) return globalThis.nonographPageModule;
     if (!pageModule) {
-        const js = new URL("./page/nonograph_page.js", import.meta.url);
-        const wasm = new URL("./page/nonograph_page_bg.wasm", import.meta.url);
+        const search = new URL(import.meta.url).search;
+        const js = new URL("./page/nonograph_page.js" + search, import.meta.url);
+        const wasm = new URL("./page/nonograph_page_bg.wasm" + search, import.meta.url);
         pageModule = import(js.href)
             .then((module) =>
                 module.default({ module_or_path: wasm }).then(() => module),
             )
             .catch((error) => {
                 pageModule = undefined;
+                globalThis.nonographPageModule = null;
                 throw error;
             });
+        globalThis.nonographPageModule = pageModule;
     }
     return pageModule;
 }

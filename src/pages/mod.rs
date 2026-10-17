@@ -9,7 +9,7 @@ mod sealed;
 mod static_pages;
 
 pub use assets::{
-    cache_control_for_path, editor_mode_js, entity_tag_for_path, home_css, home_js,
+    cache_control_for_path, cache_control_for_request, editor_mode_js, entity_tag_for_path, home_css, home_js,
     home_noscript_css, if_none_match_matches, nostr_js, notice_css, parser_js, parser_wasm, pdf_js,
     pdf_license, pdf_wasm, post_css, post_js, post_noscript_css, relays_js, robots_txt,
     secp256k1_js, theme_js, warm, writemark_css, writemark_js, writemark_live_js,

@@ -98,9 +98,10 @@ impl Fairing for SecurityHeadersFairing {
         response.set_header(Header::new("X-Permitted-Cross-Domain-Policies", "none"));
         response.set_header(Header::new("X-XSS-Protection", "0"));
         let path = request.uri().path().as_str();
+        let query = request.uri().query().map(|query| query.as_str());
         response.set_header(Header::new(
             "Cache-Control",
-            pages::cache_control_for_path(path),
+            pages::cache_control_for_request(path, query),
         ));
         if let Some(etag) = pages::entity_tag_for_path(path) {
             response.set_header(Header::new("ETag", etag));
