@@ -2532,7 +2532,7 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
     let relays = include_str!("../templates/relays.js");
     let bind = home.find("bindRelayActions(localStorage").unwrap();
     let send = home.find("async function sendRelayList()").unwrap();
-    let refresh = home.find("async function refreshRelayCircuits()").unwrap();
+    let refresh = home.find("async function refreshRelayCircuits(").unwrap();
     let get = home
         .find("fetch(\"/tor-circuits\", { cache: \"no-store\" })")
         .unwrap();
@@ -2543,7 +2543,11 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
     assert!(relays.contains("show(reshuffleRelays(storage"));
     assert!(relays.contains("show(removeRelay(storage"));
     assert!(home[send..refresh].contains("method: \"POST\""));
-    assert!(home[send..refresh].contains("relays: savedRelayUrls(localStorage)"));
+    assert!(home[send..refresh].contains("savedRelayUrls(localStorage)"));
+    assert!(home[send..refresh].contains("relays: relays"));
+    assert!(home[send..refresh].contains("return relayListSend"));
+    assert!(!home[send..refresh].contains("postedRelayList"));
+    assert!(home[send..refresh].contains("response.ok"));
     assert!(home[send..refresh].contains("csrf_token:"));
     assert!(refresh < get);
     assert!(home[refresh..get].contains("await sendRelayList()"));
@@ -3151,7 +3155,7 @@ fn publish_sends_the_saved_relays() {
         .find("let relayListSending = false;")
         .expect("relay post");
     let post_end = home[post_at..]
-        .find("\n            async function refreshRelayCircuits()")
+        .find("\n            async function refreshRelayCircuits(")
         .map(|offset| post_at + offset)
         .expect("circuit refresh follows the relay post");
     let mut program = home[urls_at..urls_end].to_string();
@@ -3206,6 +3210,7 @@ let circuitsTracked = false;
     program.push_str(
         r##"
 (async () => {
+    try {
     const expected = ["wss://pin.example", "wss://dealt.example"];
     await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     if (JSON.stringify(sent) !== JSON.stringify(expected)) {
@@ -3258,6 +3263,12 @@ let circuitsTracked = false;
     circuitsTracked = true;
     if (everyRelayHasPath()) {
         throw new Error("an empty list should wait");
+    }
+    } catch (error) {
+        if (typeof setTimeout === "function") {
+            setTimeout(function () { throw error; }, 0);
+        }
+        throw error;
     }
 })();
 "##,
@@ -3566,6 +3577,7 @@ if (after.pinned.indexOf("wss://extra.example") === -1) {
         r##"
 globalThis.refreshRelayCircuits = refreshRelayCircuits;
 (async () => {
+    try {
     await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     const expected = after.pinned.concat(after.dealt);
     if (JSON.stringify(sent) !== JSON.stringify(expected)) {
@@ -3633,6 +3645,9 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     const posted = calls.filter(function (call) {
         return call.method === "POST";
     });
+    if (posted.length !== 1) {
+        throw new Error("relay change posted more than once: " + JSON.stringify(posted));
+    }
     if (
         !posted.some(function (call) {
             return JSON.stringify(JSON.parse(call.body).relays) === JSON.stringify(nextList);
@@ -3686,6 +3701,167 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     if (!everyRelayHasPath() || publishButton.attributes["aria-disabled"] !== "false") {
         throw new Error("publish should proceed once every relay has a path");
     }
+    const sampleRow = document.querySelectorAll(".relay-list li[data-relay]")[0];
+    const hopBefore = sampleRow.querySelector(".relay-circuit-hop");
+    const postsBefore = calls.filter(function (call) {
+        return call.method === "POST";
+    }).length;
+    await refreshCircuits();
+    const hopAfter = sampleRow.querySelector(".relay-circuit-hop");
+    const postsAfter = calls.filter(function (call) {
+        return call.method === "POST";
+    }).length;
+    if (hopBefore !== hopAfter) {
+        throw new Error("an unchanged circuit rebuilt the row");
+    }
+    if (postsAfter !== postsBefore + 1) {
+        throw new Error("a poll did not post the relay list");
+    }
+    const pollPost = calls.filter(function (call) {
+        return call.method === "POST";
+    }).pop();
+    const listed = JSON.parse(localStorage.getItem("nonograph_relays"));
+    const currentList = listed.pinned.concat(listed.dealt);
+    if (JSON.stringify(JSON.parse(pollPost.body).relays) !== JSON.stringify(currentList)) {
+        throw new Error(JSON.stringify(pollPost.body));
+    }
+    let rejected = 0;
+    globalThis.fetch = async (url, options) => {
+        if (options && options.method === "POST") {
+            rejected += 1;
+            return { ok: false };
+        }
+        return {
+            ok: true,
+            json: async () => ({ tracking: true, relays: circuitPaths }),
+        };
+    };
+    await sendRelayList();
+    if (rejected !== 1) {
+        throw new Error("a rejected relay list was posted more than once");
+    }
+    let retried = 0;
+    globalThis.fetch = async (url, options) => {
+        if (options && options.method === "POST") {
+            retried += 1;
+            return { ok: true };
+        }
+        return {
+            ok: true,
+            json: async () => ({ tracking: true, relays: circuitPaths }),
+        };
+    };
+    await sendRelayList();
+    if (retried !== 1) {
+        throw new Error("a rejected relay list was not retried");
+    }
+    const quietRow = document.querySelectorAll(".relay-list li[data-relay]")[0];
+    const quietHop = quietRow.querySelector(".relay-circuit-hop");
+    lastTypingAt = Date.now();
+    circuitPaths[quietRow.dataset.relay] = "fresh-during-typing";
+    await refreshCircuits();
+    clearTimeout(circuitPollTimer);
+    circuitPollTimer = 0;
+    if (quietRow.querySelector(".relay-circuit-hop") !== quietHop) {
+        throw new Error("a poll during typing rebuilt the row");
+    }
+    circuitPaths[quietRow.dataset.relay] = "wait";
+    await refreshCircuits({ force: true });
+    clearTimeout(circuitPollTimer);
+    circuitPollTimer = 0;
+    const forcedHop = quietRow.querySelector(".relay-circuit-hop");
+    if (!forcedHop || forcedHop.textContent !== "wait" || quietRow.querySelector(".relay-spinner")) {
+        throw new Error("a relay change should paint while typing");
+    }
+    lastTypingAt = 0;
+    const target = quietRow.dataset.relay;
+    const releaseGet = [];
+    globalThis.fetch = async (url, options) => {
+        if (options && options.method === "POST") {
+            return { ok: true };
+        }
+        return new Promise((resolve) => {
+            releaseGet.push(resolve);
+        });
+    };
+    const older = refreshCircuits();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (releaseGet.length !== 1) {
+        throw new Error("the older circuit read did not start");
+    }
+    const newer = refreshCircuits();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (releaseGet.length !== 2) {
+        throw new Error("the newer circuit read did not start");
+    }
+    releaseGet[1]({
+        ok: true,
+        json: async () => ({ tracking: true, relays: { [target]: "fresh-path" } }),
+    });
+    await newer;
+    releaseGet[0]({
+        ok: true,
+        json: async () => ({ tracking: true, relays: { [target]: "stale-path" } }),
+    });
+    await older;
+    const shown = quietRow.querySelector(".relay-circuit-hop");
+    if (!shown || shown.textContent !== "fresh-path") {
+        throw new Error(shown && shown.textContent);
+    }
+    const releasePost = [];
+    const postBodies = [];
+    let readsAfterPost = 0;
+    globalThis.fetch = async (url, options) => {
+        if (options && options.method === "POST") {
+            postBodies.push(options.body);
+            return new Promise((resolve) => {
+                releasePost.push(resolve);
+            });
+        }
+        readsAfterPost += 1;
+        return {
+            ok: true,
+            json: async () => ({ tracking: true, relays: { [target]: "after-post" } }),
+        };
+    };
+    const earlier = refreshCircuits();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (releasePost.length !== 1 || readsAfterPost !== 0) {
+        throw new Error("the circuit read started before its post");
+    }
+    const savedList = JSON.parse(localStorage.getItem("nonograph_relays"));
+    savedList.pinned.push("wss://late.example");
+    localStorage.setItem("nonograph_relays", JSON.stringify(savedList));
+    const later = refreshCircuits({ force: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (readsAfterPost !== 0 || releasePost.length !== 1) {
+        throw new Error("a second refresh read before the in-flight post finished");
+    }
+    releasePost[0]({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (releasePost.length !== 2 || readsAfterPost !== 0) {
+        throw new Error("the changed list was not posted before the read");
+    }
+    const sentLate = JSON.parse(postBodies[1]).relays;
+    if (sentLate.indexOf("wss://late.example") === -1) {
+        throw new Error(JSON.stringify(sentLate));
+    }
+    releasePost[1]({ ok: true });
+    await later;
+    await earlier;
+    if (readsAfterPost !== 1) {
+        throw new Error("expected one circuit read after the posts");
+    }
+    const afterPost = quietRow.querySelector(".relay-circuit-hop");
+    if (!afterPost || afterPost.textContent !== "after-post") {
+        throw new Error(afterPost && afterPost.textContent);
+    }
+    } catch (error) {
+        if (typeof setTimeout === "function") {
+            setTimeout(function () { throw error; }, 0);
+        }
+        throw error;
+    }
 })();
 "##,
     );
@@ -3694,21 +3870,57 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
 
 fn run_javascript(prefix: &str, program: &str) {
     let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
-    std::fs::write(&path, program).expect("write script fixture");
-    let output = match std::process::Command::new("node").arg(&path).output() {
-        Ok(output) if output.status.success() => output,
-        _ => std::process::Command::new("osascript")
-            .args(["-l", "JavaScript"])
-            .arg(&path)
-            .output()
-            .expect("node or osascript must run the script"),
-    };
+    std::fs::write(&path, format!("{}\n{program}", script_shim())).expect("write script fixture");
+    let output = script_output(&path);
     let _ = std::fs::remove_file(&path);
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
+}
+
+fn script_shim() -> &'static str {
+    r#"
+if (typeof AbortSignal === "undefined") {
+    var AbortSignal = function () {};
+    AbortSignal.timeout = function () { return {}; };
+}
+if (typeof clearTimeout !== "function" && typeof setTimeout === "function") {
+    var __nativeSetTimeout = setTimeout;
+    var __timerState = [];
+    setTimeout = function (fn, ms) {
+        var id = __timerState.length + 1;
+        var state = { dead: false };
+        __timerState[id] = state;
+        __nativeSetTimeout(function () {
+            if (!state.dead) fn();
+        }, ms);
+        return id;
+    };
+    clearTimeout = function (id) {
+        if (__timerState[id]) __timerState[id].dead = true;
+    };
+}
+"#
+}
+
+fn script_output(path: &std::path::Path) -> std::process::Output {
+    if let Ok(output) = std::process::Command::new("node").arg(path).output() {
+        if output.status.success() || output.status.code().is_some() {
+            return output;
+        }
+    }
+    let jsc = "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc";
+    if let Ok(output) = std::process::Command::new(jsc).arg(path).output() {
+        return output;
+    }
+    std::process::Command::new("osascript")
+        .args(["-l", "JavaScript"])
+        .arg(path)
+        .output()
+        .expect("node or osascript must run the script")
 }
 
 #[test]

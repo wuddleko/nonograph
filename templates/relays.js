@@ -394,7 +394,10 @@ function sameRelayList(current, next) {
 }
 
 function rememberRelayList(current, next) {
-    if (!sameRelayList(current, next)) {
+    if (
+        !sameRelayList(current, next) &&
+        typeof globalThis.refreshRelayCircuits !== "function"
+    ) {
         postRelayList(next);
     }
     return next;
@@ -430,7 +433,7 @@ function bindRelayActions(storage, root) {
             !sameRelayList(previous, list) &&
             typeof globalThis.refreshRelayCircuits === "function"
         ) {
-            void globalThis.refreshRelayCircuits();
+            void globalThis.refreshRelayCircuits({ force: true });
         }
     }
     show(pinExtraRelays(storage));

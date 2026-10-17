@@ -211,6 +211,7 @@ function paintSavedRelayLists(doc, storage) {
             }
 
             globalThis.paintSavedRelayLists = paintSavedRelayLists;
+            globalThis.refreshRelayCircuits = function () {};
             const relaySidebar = document.querySelector("#sidebar-relays");
             if (relaySidebar && typeof globalThis.bindRelayActions === "function") {
                 globalThis.bindRelayActions(localStorage, relaySidebar);
@@ -219,51 +220,81 @@ function paintSavedRelayLists(doc, storage) {
             }
             let relayListSending = false;
             let relayListDirty = false;
-            async function sendRelayList() {
-                relayListDirty = true;
-                if (relayListSending) {
+            let relayListSend = null;
+            const CIRCUIT_POLL_MS = 8000;
+            const CIRCUIT_QUIET_MS = 400;
+            let lastTypingAt = 0;
+            let circuitRefreshGen = 0;
+            let circuitPollTimer = 0;
+            function noteTyping() {
+                lastTypingAt = Date.now();
+            }
+            function circuitPollPaused() {
+                if (document.hidden) {
+                    return true;
+                }
+                return Date.now() - lastTypingAt < CIRCUIT_QUIET_MS;
+            }
+            function scheduleCircuitPoll() {
+                if (circuitPollTimer || document.hidden) {
                     return;
                 }
+                const delay = Math.max(CIRCUIT_QUIET_MS - (Date.now() - lastTypingAt), 50);
+                circuitPollTimer = setTimeout(function () {
+                    circuitPollTimer = 0;
+                    pollRelayCircuits();
+                }, delay);
+            }
+            function pollRelayCircuits() {
+                if (circuitPollPaused()) {
+                    scheduleCircuitPoll();
+                    return;
+                }
+                void refreshRelayCircuits();
+            }
+            async function sendRelayList() {
+                relayListDirty = true;
+                if (!relayListSend) {
+                    relayListSend = deliverRelayList();
+                }
+                return relayListSend;
+            }
+            async function deliverRelayList() {
                 relayListSending = true;
                 try {
                     while (relayListDirty) {
                         relayListDirty = false;
+                        const relays = savedRelayUrls(localStorage);
                         try {
-                            await fetch("/tor-circuits", {
+                            const response = await fetch("/tor-circuits", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
-                                    relays: savedRelayUrls(localStorage),
+                                    relays: relays,
                                     csrf_token: form.csrf_token
                                         ? form.csrf_token.value
                                         : "",
                                 }),
                                 signal: AbortSignal.timeout(4000),
                             });
+                            if (!response.ok && !relayListDirty) {
+                                break;
+                            }
                         } catch (error) {
-                            break;
+                            if (!relayListDirty) {
+                                break;
+                            }
                         }
                     }
                 } finally {
                     relayListSending = false;
+                    relayListSend = null;
                 }
                 if (relayListDirty) {
-                    void sendRelayList();
+                    return sendRelayList();
                 }
             }
-            async function refreshRelayCircuits() {
-                await loadNostr();
-                await sendRelayList();
-                let payload;
-                try {
-                    const response = await fetch("/tor-circuits", { cache: "no-store" });
-                    if (!response.ok) {
-                        return;
-                    }
-                    payload = await response.json();
-                } catch (error) {
-                    return;
-                }
+            function applyCircuitPayload(payload) {
                 circuitsTracked = payload.tracking === true;
                 const live = new Set();
                 if (circuitsTracked) {
@@ -281,6 +312,36 @@ function paintSavedRelayLists(doc, storage) {
                         circuitByRelay.delete(key);
                     }
                 }
+            }
+            async function refreshRelayCircuits(options) {
+                const force = !!(options && options.force);
+                const gen = ++circuitRefreshGen;
+                await loadNostr();
+                if (gen !== circuitRefreshGen) {
+                    return;
+                }
+                await sendRelayList();
+                if (gen !== circuitRefreshGen) {
+                    return;
+                }
+                let payload;
+                try {
+                    const response = await fetch("/tor-circuits", { cache: "no-store" });
+                    if (!response.ok) {
+                        return;
+                    }
+                    payload = await response.json();
+                } catch (error) {
+                    return;
+                }
+                if (gen !== circuitRefreshGen) {
+                    return;
+                }
+                if (!force && circuitPollPaused()) {
+                    scheduleCircuitPoll();
+                    return;
+                }
+                applyCircuitPayload(payload);
                 paintRelayCircuits();
             }
             function relayGuardIcon() {
@@ -305,17 +366,31 @@ function paintSavedRelayLists(doc, storage) {
                 return icon;
             }
 
+            function circuitToken(path) {
+                if (!circuitsTracked) {
+                    return "0";
+                }
+                if (!path) {
+                    return "1";
+                }
+                return "2:" + path;
+            }
             function paintRelayCircuits() {
                 document.querySelectorAll(".relay-list li[data-relay]").forEach((row) => {
                     const path = circuitsTracked
                         ? circuitByRelay.get(relayKey(row.dataset.relay || ""))
                         : "";
+                    const token = circuitToken(path);
                     let line = row.querySelector(".relay-circuit");
+                    if (line && line.dataset.circuit === token) {
+                        return;
+                    }
                     if (!line) {
                         line = document.createElement("div");
                         line.className = "relay-circuit";
                         row.append(line);
                     }
+                    line.dataset.circuit = token;
                     line.replaceChildren();
                     if (!circuitsTracked) {
                         line.classList.remove("relay-circuit-wait");
@@ -358,7 +433,17 @@ function paintSavedRelayLists(doc, storage) {
             globalThis.syncNostrButtons = syncNostrButtons;
             globalThis.refreshRelayCircuits = refreshRelayCircuits;
             refreshRelayCircuits();
-            setInterval(refreshRelayCircuits, 2000);
+            setInterval(pollRelayCircuits, CIRCUIT_POLL_MS);
+            document.addEventListener("keydown", noteTyping, true);
+            document.addEventListener("beforeinput", noteTyping, true);
+            document.addEventListener("compositionstart", noteTyping, true);
+            document.addEventListener("compositionupdate", noteTyping, true);
+            editor.addEventListener("md-input", noteTyping);
+            document.addEventListener("visibilitychange", function () {
+                if (!document.hidden) {
+                    pollRelayCircuits();
+                }
+            });
 
             let publishing = false;
 

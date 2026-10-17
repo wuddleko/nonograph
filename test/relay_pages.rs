@@ -1221,19 +1221,55 @@ if (again.error !== "" || !again.clear || memory.getItem("nonograph_relays") !==
 
 fn run_javascript(prefix: &str, program: &str) {
     let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
-    std::fs::write(&path, program).expect("write relay list fixture");
-    let output = match std::process::Command::new("node").arg(&path).output() {
-        Ok(output) if output.status.success() => output,
-        _ => std::process::Command::new("osascript")
-            .args(["-l", "JavaScript"])
-            .arg(&path)
-            .output()
-            .expect("node or osascript must run the relay list"),
-    };
+    std::fs::write(&path, format!("{}\n{program}", script_shim())).expect("write relay list fixture");
+    let output = script_output(&path);
     let _ = std::fs::remove_file(&path);
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
+}
+
+fn script_shim() -> &'static str {
+    r#"
+if (typeof AbortSignal === "undefined") {
+    var AbortSignal = function () {};
+    AbortSignal.timeout = function () { return {}; };
+}
+if (typeof clearTimeout !== "function" && typeof setTimeout === "function") {
+    var __nativeSetTimeout = setTimeout;
+    var __timerState = [];
+    setTimeout = function (fn, ms) {
+        var id = __timerState.length + 1;
+        var state = { dead: false };
+        __timerState[id] = state;
+        __nativeSetTimeout(function () {
+            if (!state.dead) fn();
+        }, ms);
+        return id;
+    };
+    clearTimeout = function (id) {
+        if (__timerState[id]) __timerState[id].dead = true;
+    };
+}
+"#
+}
+
+fn script_output(path: &std::path::Path) -> std::process::Output {
+    if let Ok(output) = std::process::Command::new("node").arg(path).output() {
+        if output.status.success() || output.status.code().is_some() {
+            return output;
+        }
+    }
+    let jsc = "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc";
+    if let Ok(output) = std::process::Command::new(jsc).arg(path).output() {
+        return output;
+    }
+    std::process::Command::new("osascript")
+        .args(["-l", "JavaScript"])
+        .arg(path)
+        .output()
+        .expect("node or osascript must run the relay list")
 }
