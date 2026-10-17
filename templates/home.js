@@ -565,7 +565,13 @@ function paintSavedRelayLists(doc, storage) {
             }
 
 
+            let charCountFrame = 0;
             function updateCharCount() {
+                if (charCountFrame) return;
+                charCountFrame = requestAnimationFrame(paintCharCount);
+            }
+            function paintCharCount() {
+                charCountFrame = 0;
                 const count = editor.value.length;
                 const countText =
                     count.toLocaleString() +
@@ -605,7 +611,7 @@ function paintSavedRelayLists(doc, storage) {
             });
             storeReady = true;
 
-            updateCharCount();
+            paintCharCount();
 
             document
                 .getElementById("aliasRand")

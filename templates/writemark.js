@@ -247,6 +247,50 @@ function singleParagraphHtml(html) {
   if (inner.includes("<p>") || inner.includes("</p>")) return html;
   return inner;
 }
+// Positions on the DOM are from the last paint. Each section is the range one
+// key replaced, in the coordinates of that moment, and how much the text grew.
+// Replay walks the sections in order. The edited range grows. A range that only
+// ends where the edit starts stays put, so a setext heading does not swallow
+// the after-anchor that shares its edge. A point at or after the edit moves.
+function mapPaintedOffset(pos, sections) {
+  let out = pos;
+  for (const section of sections) {
+    if (out >= section.to) out += section.delta;
+  }
+  return out;
+}
+function mapPaintedRange(from, to, sections) {
+  let start = from;
+  let end = to;
+  for (const section of sections) {
+    const edited = from === section.start && to === section.at && start === section.from && end === section.to;
+    if (edited) {
+      end += section.delta;
+      continue;
+    }
+    if (end <= section.from) continue;
+    if (start >= section.to) {
+      start += section.delta;
+      end += section.delta;
+      continue;
+    }
+    if (start <= section.from && end >= section.to) end += section.delta;
+  }
+  return { from: start, to: end };
+}
+// The caret is in the current note. Blocks are still from the last paint.
+// Walk the sections backward so the caret lands in that painted block.
+function unmapPaintedOffset(pos, sections) {
+  let out = pos;
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    const section = sections[i];
+    const boundary = section.to + section.delta;
+    if (section.delta > 0 && out > section.to && out < boundary) out = section.to;
+    else if (out >= boundary) out -= section.delta;
+  }
+  return out;
+}
+
 function textFromMarkdown(markdown, opts = {}) {
   const extracted = extractReferenceDefinitions(markdown, opts.references);
   const options = { ...DEFAULTS, ...opts, references: extracted.references };
@@ -330,11 +374,16 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveEditablesCache = [];
     this._liveNavigationCache = [];
     this._liveIndexDirty = true;
-    this._liveDirty = true;
     this._validationVisible = false;
     this._completionUpdateFrame = 0;
     this._virtualState = { active: false, start: 0, end: 0, total: 0, lineHeight: 24 };
     this._virtualScrollFrame = 0;
+    this._paintFrame = 0;
+    this._deferredPaint = null;
+    this._offsetMap = [];
+    this._paintedOffsets = new WeakMap();
+    this._paintedChecks = new WeakMap();
+    this._spellEditable = null;
     this._actions = new Map();
     this._providers = new Map();
     this._completion = { open: false, providerId: null, match: null, items: [], activeIndex: 0, requestId: 0, abort: null };
@@ -380,10 +429,14 @@ class WritemarkEditorElement extends HTMLElement {
     this._completion.abort?.abort();
     if (this._completionUpdateFrame) cancelAnimationFrame(this._completionUpdateFrame);
     if (this._virtualScrollFrame) cancelAnimationFrame(this._virtualScrollFrame);
+    if (this._paintFrame) cancelAnimationFrame(this._paintFrame);
     if (this._compositionEndTimer) clearTimeout(this._compositionEndTimer);
     this._compositionEndTimer = 0;
     this._completionUpdateFrame = 0;
     this._virtualScrollFrame = 0;
+    this._paintFrame = 0;
+    this._deferredPaint = null;
+    this._clearOffsetMap();
   }
   attributeChangedCallback(name, oldValue, newValue) {
     if (oldValue === newValue) return;
@@ -700,12 +753,6 @@ class WritemarkEditorElement extends HTMLElement {
       this._pageLoad = null;
     });
   }
-  _pageHtml(markdown) {
-    const text = String(markdown ?? "");
-    const html = renderMarkdown(text, this._rendererOptions());
-    if (html) return singleParagraphHtml(html);
-    return text ? escapeHtml(text) : "<br>";
-  }
   _inlineHtml(markdown) {
     const text = String(markdown ?? "");
     const html = renderInline(text, this._rendererOptions());
@@ -735,42 +782,201 @@ class WritemarkEditorElement extends HTMLElement {
   _setValueInternal(next, opts = {}) {
     const previousValue = this._value;
     const value = normalizeLineEndings(next ?? ""); const before = this._snapshot(); const changed = value !== previousValue;
-    this._value = value; if (this._sourceTextarea && this._sourceTextarea.value !== value) this._sourceTextarea.value = value;
+    this._value = value;
+    if (this._sourceTextarea && !this._isLiveVisible() && this._sourceTextarea.value !== value) this._sourceTextarea.value = value;
     if (!opts.preserveSelection) this._selection = { start: clamp(this._selection.start, 0, value.length), end: clamp(this._selection.end, 0, value.length), direction: "none" };
     if (opts.recordUndo && changed) this._recordUndo(before, this._snapshot(), opts.undoGroup || opts.source || "api", { coalesce: false });
     if (changed || opts.force || !this._hasRenderedOnce) this._afterValueChanged({ source: opts.source || "api", silent: opts.silent, restoreSelection: opts.preserveSelection !== false, previousValue, changes: changed ? diffTextChange(previousValue, value) : [] });
   }
-  _afterValueChanged({ source = "api", inputType = null, silent = false, restoreSelection = true, previousValue = null, changes = null } = {}) {
+  _afterValueChanged({ source = "api", inputType = null, silent = false, restoreSelection = true, previousValue = null, changes = null, defer = false, editable = null } = {}) {
     this._selectAllLevel = 0;
     this._structuredSelection = null;
     if (["user", "keyboard", "paste", "pointer"].includes(source)) this._validationVisible = true;
-    this._updateFormValue(); this._updateValidity(); this._renderAll({ restoreSelection, previousValue, changes });
+    this._updateFormValue(); this._updateValidity(); this._renderAll({ restoreSelection, previousValue, changes, defer, editable });
     const oldDirty = this._dirty; this._dirty = this._value !== this._defaultValue; if (oldDirty !== this._dirty) this._dispatch("md-dirty-change", { dirty: this._dirty });
     this._updateSelectionToolbar();
     if (!silent) this._dispatch("md-input", { value: this._value, source, inputType });
   }
-  _renderAll({ restoreSelection = true, previousValue = null, changes = null, force = false } = {}) {
+  _renderAll({ restoreSelection = true, previousValue = null, changes = null, force = false, defer = false, editable = null } = {}) {
     if (!this._liveEditor) return;
     // Replacing the DOM (or writing the textarea value) ends a Mac accent menu
     // or IME session, so the preview can only land on the first candidate.
     if (this._isComposing || this._holdAccentTarget) {
-      this._liveDirty = true;
       if (this._holdAccentTarget && this._isLiveVisible()) this._syncAccentMetadata(previousValue, changes);
       return;
     }
+    const args = { restoreSelection, previousValue, changes, force };
+    if (force) {
+      this._cancelDeferredPaint();
+      this._renderAllNow(args);
+      return;
+    }
+    // Only a live key whose text is already in the line can wait. Undo, the
+    // slash menu, and the toolbar paint now, because their DOM is still old.
+    if (defer && this._canDeferLivePaint({ previousValue, changes }) && this._prepareDeferredEditable(editable, changes)) {
+      if (this._deferredPaint?.previousValue == null) this._deferredPaint = { previousValue, restoreSelection };
+      else this._deferredPaint.restoreSelection = restoreSelection;
+      if (!this._paintFrame) this._paintFrame = requestAnimationFrame(() => this._flushDeferredPaint());
+      return;
+    }
+    const pending = this._deferredPaint;
+    this._cancelDeferredPaint();
+    const merged = pending?.previousValue != null
+      ? { restoreSelection, previousValue: pending.previousValue, changes: diffTextChange(pending.previousValue, this._value), force: false }
+      : args;
+    this._renderAllNow(merged);
+  }
+  _deferredPaintBlocked() {
+    return this._isComposing || this._holdAccentTarget || this._accentMenuHoldingTarget();
+  }
+  _canDeferLivePaint({ previousValue = null, changes = null } = {}) {
+    if (!this._isLiveVisible() || !this._hasRenderedOnce || previousValue == null || !changes?.length) return false;
+    if (changes.length !== 1) return false;
+    const change = changes[0];
+    const insert = String(change.insert ?? "");
+    if (insert.includes("\n")) return false;
+    if (String(previousValue).slice(change.from, change.to).includes("\n")) return false;
+    return true;
+  }
+  _cancelDeferredPaint() {
+    if (this._paintFrame) cancelAnimationFrame(this._paintFrame);
+    this._paintFrame = 0;
+    this._deferredPaint = null;
+    this._clearOffsetMap();
+  }
+  _clearOffsetMap() {
+    this._offsetMap = [];
+    this._paintedOffsets = new WeakMap();
+    this._paintedChecks = new WeakMap();
+  }
+  _flushDeferredPaint() {
+    this._paintFrame = 0;
+    const pending = this._deferredPaint;
+    this._deferredPaint = null;
+    if (!pending) return;
+    if (!this.isConnected) return;
+    if (this._deferredPaintBlocked()) {
+      this._deferredPaint = pending;
+      this._paintFrame = requestAnimationFrame(() => this._flushDeferredPaint());
+      return;
+    }
+    const previousValue = pending.previousValue;
+    const caretMoved = this._sourceFormKey() !== (this._sourceFormKeyShown ?? "");
+    this._renderAllNow({
+      restoreSelection: pending.restoreSelection !== false,
+      previousValue,
+      changes: diffTextChange(previousValue, this._value),
+      force: false,
+      deferredFrame: true,
+      caretMoved,
+    });
+  }
+  // Attributes stay at the last paint. The map records the growth, and readers
+  // use the map. The frame paint writes the real offsets after the map is cleared.
+  _prepareDeferredEditable(editable, changes) {
+    if (!editable?.isConnected || changes?.length !== 1) return false;
+    const change = changes[0];
+    const from = Number(change.from);
+    const to = Number(change.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return false;
+    const delta = String(change.insert ?? "").length - (to - from);
+    this._rememberPaintedOffsets();
+    const paintedFrom = this._paintedOffset(editable, "from");
+    const paintedTo = this._paintedOffset(editable, "to");
+    if (!Number.isFinite(paintedFrom) || !Number.isFinite(paintedTo) || paintedTo < paintedFrom) return false;
+    const current = mapPaintedRange(paintedFrom, paintedTo, this._offsetMap);
+    const cell = editable.dataset.editable === "cell";
+    if (cell ? from < current.from || to > current.to : from !== current.from || to !== current.to) return false;
+    if (!delta) return true;
+    if (current.to + delta < current.from) return false;
+    this._noteOffsetDelta(paintedFrom, paintedTo, from, to, delta);
+    return true;
+  }
+  _rememberPaintedOffsets() {
+    const root = this._liveEditor;
+    if (!root) return;
+    for (const node of root.querySelectorAll("[data-from]")) {
+      if (!node.hasAttribute("data-to") || this._paintedOffsets.has(node)) continue;
+      const from = Number(node.dataset.from);
+      const to = Number(node.dataset.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+      this._paintedOffsets.set(node, { from, to });
+    }
+    for (const box of root.querySelectorAll("[data-check-offset]")) {
+      if (this._paintedChecks.has(box)) continue;
+      const offset = Number(box.dataset.checkOffset);
+      if (!Number.isFinite(offset)) continue;
+      this._paintedChecks.set(box, offset);
+    }
+  }
+  _paintedOffset(node, key) {
+    const stored = this._paintedOffsets.get(node);
+    if (stored && Number.isFinite(stored[key])) return stored[key];
+    const raw = Number(node?.dataset?.[key]);
+    return Number.isFinite(raw) ? raw : NaN;
+  }
+  _noteOffsetDelta(start, at, from, to, delta) {
+    const index = this._offsetMap.findIndex(section => section.start === start && section.at === at);
+    if (index === -1) {
+      this._offsetMap.push({ start, at, from, to, delta });
+      return;
+    }
+    const existing = this._offsetMap[index];
+    existing.delta += delta;
+    // Later sections were stored after the previous growth. Move the ones at
+    // or past this edit by the added growth, or their replay lands short.
+    const boundary = existing.to;
+    for (let i = index + 1; i < this._offsetMap.length; i += 1) {
+      const later = this._offsetMap[i];
+      if (later.from >= boundary) {
+        later.from += delta;
+        later.to += delta;
+      } else if (later.to > boundary) {
+        later.to += delta;
+      }
+    }
+  }
+  _liveFrom(node) {
+    const paintedTo = this._paintedOffset(node, "to");
+    const paintedFrom = this._paintedOffset(node, "from");
+    if (!Number.isFinite(paintedFrom)) return paintedFrom;
+    return mapPaintedRange(paintedFrom, Number.isFinite(paintedTo) ? paintedTo : paintedFrom, this._offsetMap).from;
+  }
+  _liveTo(node) {
+    const paintedFrom = this._paintedOffset(node, "from");
+    const paintedTo = this._paintedOffset(node, "to");
+    if (!Number.isFinite(paintedTo)) return paintedTo;
+    return mapPaintedRange(Number.isFinite(paintedFrom) ? paintedFrom : paintedTo, paintedTo, this._offsetMap).to;
+  }
+  _liveCheckOffset(box) {
+    const painted = this._paintedChecks.has(box) ? this._paintedChecks.get(box) : Number(box?.dataset?.checkOffset);
+    if (!Number.isFinite(painted)) return painted;
+    return mapPaintedOffset(painted, this._offsetMap);
+  }
+  _renderAllNow({ restoreSelection = true, previousValue = null, changes = null, force = false, deferredFrame = false, caretMoved = false } = {}) {
+    this._clearOffsetMap();
     this._hasRenderedOnce = true;
-    this._sourceTextarea.value = this._value;
+    if (this._sourceTextarea && !this._isLiveVisible()) this._sourceTextarea.value = this._value;
     if (restoreSelection && this._isSourceActive() && this._sourceTextarea) {
       const sel = this._selection || { start: 0, end: 0, direction: "none" };
       this._sourceTextarea.setSelectionRange(sel.start, sel.end, sel.direction || "none");
     }
     if (this._isLiveVisible()) {
-      this._renderLive({ previousValue, changes, force });
-      this._liveDirty = false;
+      this._renderLive({ previousValue, changes, force, deferredFrame, caretMoved });
       if (restoreSelection && !this._isSourceActive()) this._restoreLiveSelection(this._selection);
-    } else {
-      this._liveDirty = true;
+      this._armSpellcheck();
     }
+  }
+  _armSpellcheck() {
+    const want = Boolean(this._sourceTextarea?.spellcheck);
+    const active = want ? this._activeEditableFromSelection() : null;
+    const editable = active?.dataset.kind === "code-fence" ? null : active;
+    if (this._spellEditable && this._spellEditable !== editable && this._spellEditable.isConnected) {
+      this._spellEditable.spellcheck = false;
+    }
+    if (active?.dataset.kind === "code-fence") active.spellcheck = false;
+    if (editable) editable.spellcheck = true;
+    this._spellEditable = editable || null;
   }
   _isLiveVisible() {
     return this.mode === "live";
@@ -778,41 +984,101 @@ class WritemarkEditorElement extends HTMLElement {
   _getBlocks() {
     if (this._blockCacheValue === this._value && this._blockCache) return this._blockCache;
     const blocks = parseBlocks(this._value, this._parseOptions());
-    this._setBlockCache(blocks, "full");
+    this._setBlockCache(blocks);
     return blocks;
   }
-  _setBlockCache(blocks, mode = "full") {
+  _setBlockCache(blocks) {
     assignHeadingIds(blocks);
     this._blockCacheValue = this._value;
     this._blockCache = blocks;
-    this._lastParseMode = mode;
   }
   _blocksForRender(previousValue, changes) {
     const incremental = this._tryIncrementalBlocks(previousValue, changes);
     if (incremental) {
-      this._setBlockCache(incremental, "incremental");
+      this._setBlockCache(incremental);
       return incremental;
     }
     const blocks = parseBlocks(this._value, this._parseOptions());
-    this._setBlockCache(blocks, "full");
+    this._setBlockCache(blocks);
     return blocks;
   }
-  _renderLive({ previousValue = null, changes = null, force = false, virtualAnchorOffset = null } = {}) {
+  _renderLive({ previousValue = null, changes = null, force = false, deferredFrame = false, caretMoved = false } = {}) {
     const previousBlocks = this._liveBlocks || [];
     const blocks = this._blocksForRender(previousValue, changes);
     if (this._shouldVirtualize(blocks)) {
-      this._renderLiveVirtual(blocks, { anchorOffset: virtualAnchorOffset ?? this._selection.start, force });
+      let painted = this._renderLiveVirtual(blocks, { anchorOffset: this._selection.start, force });
+      // The caret moved while this window was waiting. Paint it so the line
+      // entered is source and the line left is formatted.
+      if (!painted && deferredFrame && caretMoved) {
+        painted = this._renderLiveVirtual(blocks, { anchorOffset: this._selection.start, force: true });
+      }
+      if (!painted) this._syncVirtualWindow(blocks, changes);
+      this._liveBlocks = blocks;
+      this._rebuildLiveIndex();
+      if (painted) this._sourceFormKeyShown = this._sourceFormKey();
+      return;
+    }
+    this._virtualState = { ...this._virtualState, active: false, start: 0, end: blocks.length, total: blocks.length };
+    if (deferredFrame && this._paintDeferredSourceFrame(previousBlocks, blocks, changes, previousValue, caretMoved)) {
       this._liveBlocks = blocks;
       this._rebuildLiveIndex();
       this._sourceFormKeyShown = this._sourceFormKey();
       return;
     }
-    this._virtualState = { ...this._virtualState, active: false, start: 0, end: blocks.length, total: blocks.length };
     const patched = !force && this._tryPatchLiveBlocks(previousBlocks, blocks, changes, previousValue);
     if (!patched) this._renderLiveFull(blocks);
     this._liveBlocks = blocks;
     this._rebuildLiveIndex();
     this._sourceFormKeyShown = this._sourceFormKey();
+  }
+  // The caret line is already source text. Update offsets in place. When the
+  // caret has moved, format the line it left and show source on the new one.
+  _paintDeferredSourceFrame(previousBlocks, blocks, changes, previousValue, caretMoved) {
+    if (!previousValue || !changes?.length || !previousBlocks.length || !this._liveEditor) return false;
+    const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
+    if (children.length !== previousBlocks.length || children.length !== blocks.length) return false;
+    const spans = changedSpans(changes);
+    if (!spans) return false;
+    const oldRange = this._blockRangeForSourceRange(previousBlocks, spans.oldStart, spans.oldEnd, previousValue.length);
+    const newRange = this._blockRangeForSourceRange(blocks, spans.newStart, spans.newEnd, this._value.length);
+    if (!oldRange || !newRange || (oldRange.end - oldRange.start) !== (newRange.end - newRange.start)) return false;
+    // Highlighted code is not source text. Rebuild it, or the spans the key
+    // edited stay on screen. A code fence has no source-form key, so leaving
+    // it would otherwise omit it from the replace list too.
+    const fresh = this._indexesNeedingFreshDom(blocks, newRange);
+    if (!caretMoved) {
+      if (fresh.length && !this._replaceLiveBlockNodes(blocks, fresh)) return false;
+      if (this._syncLiveMetadataFrom(blocks, newRange.start)) return true;
+      if ((newRange.end - newRange.start) !== 1) return false;
+      if (!this._replaceLiveBlockNodes(blocks, [newRange.start])) return false;
+      return this._syncLiveMetadataFrom(blocks, newRange.end);
+    }
+    const previousIndexes = this._sourceFormBlockIndexes(this._sourceFormKeyShown ?? "", previousBlocks) || [];
+    const freshIndexes = this._sourceFormBlockIndexes(this._sourceFormKeyFor(blocks, false), blocks) || [];
+    const replace = [...new Set([...previousIndexes, ...freshIndexes, ...fresh])].filter(index => index >= 0 && index < blocks.length);
+    if (!replace.length) return this._syncLiveMetadataFrom(blocks, newRange.start);
+    if (!this._replaceLiveBlockNodes(blocks, replace)) return false;
+    return this._syncLiveMetadataFrom(blocks, newRange.start);
+  }
+  _indexesNeedingFreshDom(blocks, range) {
+    const indexes = [];
+    if (!range) return indexes;
+    for (let index = range.start; index < range.end; index += 1) {
+      if (blocks[index]?.type === "code-fence") indexes.push(index);
+    }
+    return indexes;
+  }
+  _replaceLiveBlockNodes(blocks, indexes) {
+    const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
+    const prepared = [];
+    for (const index of indexes) {
+      if (!blocks[index] || !children[index]) return false;
+      const fresh = Array.from(this._liveFragmentForBlocks([blocks[index]]).children);
+      if (fresh.length !== 1) return false;
+      prepared.push({ node: children[index], fresh: fresh[0] });
+    }
+    for (const item of prepared) item.node.replaceWith(item.fresh);
+    return true;
   }
   _renderLiveFull(blocks) {
     const html = blocks.map(block => this._renderLiveBlock(block)).join("");
@@ -832,7 +1098,7 @@ class WritemarkEditorElement extends HTMLElement {
     const reference = children[oldRange.end] || null;
     for (const node of children.slice(oldRange.start, oldRange.end)) node.remove();
     this._liveEditor.insertBefore(fragment, reference);
-    if (!this._syncLiveMetadata(blocks)) {
+    if (!this._syncLiveMetadataFrom(blocks, newRange.end)) {
       this._renderLiveFull(blocks);
     }
     return true;
@@ -870,19 +1136,23 @@ class WritemarkEditorElement extends HTMLElement {
     return template.content;
   }
   _syncLiveMetadata(blocks) {
+    return this._syncLiveMetadataFrom(blocks, 0);
+  }
+  _syncLiveMetadataFrom(blocks, startIndex) {
     const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
     if (children.length !== blocks.length) return false;
-    for (let i = 0; i < blocks.length; i += 1) {
+    const start = clamp(startIndex, 0, blocks.length);
+    for (let i = start; i < blocks.length; i += 1) {
       if (!this._syncLiveBlockNodeMetadata(children[i], blocks[i])) return false;
     }
     return true;
   }
-  _setEditableMetadata(el, from, to, editable = this._lineEditable(), spellcheck = this._sourceTextarea?.spellcheck ? "true" : "false") {
+  _setEditableMetadata(el, from, to, editable = this._lineEditable(), spellcheck = undefined) {
     if (!el) return false;
     el.dataset.from = String(from);
     el.dataset.to = String(to);
     if (el.hasAttribute("contenteditable")) el.contentEditable = editable;
-    if (el.hasAttribute("spellcheck")) el.setAttribute("spellcheck", spellcheck);
+    if (spellcheck != null && el.hasAttribute("spellcheck")) el.setAttribute("spellcheck", spellcheck);
     return true;
   }
   _syncLiveBlockNodeMetadata(node, block) {
@@ -1041,7 +1311,11 @@ class WritemarkEditorElement extends HTMLElement {
     return clamp(viewportRows + 180, 220, 520);
   }
   _blockIndexForOffset(blocks, offset) {
-    const safe = clamp(offset, 0, this._value.length);
+    const last = blocks[blocks.length - 1];
+    // Painted blocks can still end past the note after a deletion. Clamping to
+    // the shorter note pulls a caret on the next line back into the edited one.
+    const paintedEnd = Math.max(last?.newlineEnd ?? 0, last?.to ?? 0, last?.from ?? 0);
+    const safe = clamp(offset, 0, Math.max(this._value.length, paintedEnd));
     let low = 0;
     let high = blocks.length - 1;
     let best = 0;
@@ -1066,13 +1340,46 @@ class WritemarkEditorElement extends HTMLElement {
     let start = clamp(anchorIndex - Math.floor(windowSize / 2), 0, Math.max(0, total - windowSize));
     let end = clamp(start + windowSize, start, total);
     if (end - start < windowSize && start > 0) start = Math.max(0, end - windowSize);
-    if (!force && this._virtualState.active && start === this._virtualState.start && end === this._virtualState.end && total === this._virtualState.total) return;
+    if (!force && this._virtualState.active && start === this._virtualState.start && end === this._virtualState.end && total === this._virtualState.total) return false;
     const topHeight = Math.round(start * lineHeight);
     const bottomHeight = Math.round((total - end) * lineHeight);
     this._liveEditor.innerHTML = blocks.slice(start, end).map(block => this._renderLiveBlock(block)).join("");
     this._liveEditor.prepend(this._virtualSpacer(topHeight));
     this._liveEditor.append(this._virtualSpacer(bottomHeight));
     this._virtualState = { active: true, start, end, total, lineHeight };
+    return true;
+  }
+  _syncVirtualWindow(blocks, changes) {
+    const { start, end } = this._virtualState;
+    if (!this._liveEditor || end <= start) return;
+    const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
+    const slice = blocks.slice(start, end);
+    if (children.length !== slice.length) {
+      this._renderLiveVirtual(blocks, { force: true });
+      return;
+    }
+    const touch = Number(changes?.[0]?.from);
+    const touchFrom = Number.isFinite(touch) ? touch : 0;
+    const spans = changedSpans(changes);
+    for (let i = 0; i < slice.length; i += 1) {
+      const block = slice[i];
+      const blockEnd = Math.max(block.newlineEnd ?? block.to ?? block.from ?? 0, block.to ?? block.from ?? 0, block.from ?? 0);
+      if (changes?.length && blockEnd < touchFrom) continue;
+      const edited = spans && block.from < spans.newEnd && blockEnd > spans.newStart;
+      if (edited && block.type === "code-fence") {
+        const fresh = Array.from(this._liveFragmentForBlocks([block]).children);
+        if (fresh.length !== 1) {
+          this._renderLiveVirtual(blocks, { force: true });
+          return;
+        }
+        children[i].replaceWith(fresh[0]);
+        continue;
+      }
+      if (!this._syncLiveBlockNodeMetadata(children[i], block)) {
+        this._renderLiveVirtual(blocks, { force: true });
+        return;
+      }
+    }
   }
   _virtualSpacer(height) {
     const spacer = document.createElement("div");
@@ -1163,11 +1470,19 @@ class WritemarkEditorElement extends HTMLElement {
     return null;
   }
   _sourceFormKey() {
-    if (!this._focusWithin || this.mode === "source" || !this._selection) return "";
+    const painted = this._offsetMap.length > 0 && this._liveBlocks?.length;
     const blocks = this._liveBlocks?.length ? this._liveBlocks : this._blockCache;
-    if (!blocks?.length) return "";
-    const start = Math.min(this._selection.start, this._selection.end);
-    const end = Math.max(this._selection.start, this._selection.end);
+    return this._sourceFormKeyFor(blocks, painted);
+  }
+  _sourceFormKeyFor(blocks, unmap) {
+    if (!this._focusWithin || this.mode === "source" || !this._selection || !blocks?.length) return "";
+    let start = Math.min(this._selection.start, this._selection.end);
+    let end = Math.max(this._selection.start, this._selection.end);
+    if (unmap) {
+      start = unmapPaintedOffset(start, this._offsetMap);
+      end = unmapPaintedOffset(end, this._offsetMap);
+      if (end < start) [start, end] = [end, start];
+    }
     const index = this._blockIndexForOffset(blocks, start);
     const block = blocks[index];
     if (!block || start < block.from || end > Math.max(block.to, block.from)) return "";
@@ -1217,6 +1532,18 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _syncSourceForm() {
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock || this._pointerSelection || this._isComposing) return;
+    if (this._deferredPaint || this._paintFrame) {
+      if (this._deferredPaintBlocked()) return;
+      if (this._sourceFormKey() === (this._sourceFormKeyShown ?? "")) return;
+      this._sourceFormLock = true;
+      try {
+        this._flushDeferredPaint();
+      } finally {
+        this._sourceFormLock = false;
+      }
+      // The flush already painted this window, including the line the caret entered.
+      if (this._virtualState.active) return;
+    }
     const key = this._sourceFormKey();
     if (key === (this._sourceFormKeyShown ?? "")) return;
     const previousKey = this._sourceFormKeyShown ?? "";
@@ -1234,6 +1561,10 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _formatWhenIdle() {
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
+    if (this._deferredPaint || this._paintFrame) {
+      if (this._deferredPaintBlocked()) return;
+      this._flushDeferredPaint();
+    }
     if ((this._sourceFormKeyShown ?? "") === "") return;
     const previousKey = this._sourceFormKeyShown ?? "";
     this._sourceFormLock = true;
@@ -1245,7 +1576,7 @@ class WritemarkEditorElement extends HTMLElement {
     }
   }
   _renderSourceFormBlock(block) {
-    const lineAttrs = (line, kind, extra = "", attrs = "", from = block.from, to = block.to) => `class="md-line ${extra}" part="line" data-editable="line" data-kind="${kind}" data-from="${from}" data-to="${to}" data-source-form="true" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}"${attrs ? ` ${attrs}` : ""}`;
+    const lineAttrs = (line, kind, extra = "", attrs = "", from = block.from, to = block.to) => `class="md-line ${extra}" part="line" data-editable="line" data-kind="${kind}" data-from="${from}" data-to="${to}" data-source-form="true" contenteditable="${this._lineEditable()}" spellcheck="false"${attrs ? ` ${attrs}` : ""}`;
     const html = this._sourceTextHtml(block.from, block.to);
     if (block.type === "code-fence") return codeFenceBlockHtml(block, this._livePaintOptions());
     const line = block.line || { start: block.from, end: block.to };
@@ -1256,7 +1587,7 @@ class WritemarkEditorElement extends HTMLElement {
     }
     if (block.type === "heading") {
       const afterAnchor = block.setext && block.newlineEnd === block.to
-        ? `<div class="md-line md-setext-after" part="line" data-editable="virtual-setext-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After heading"><br></div>`
+        ? `<div class="md-line md-setext-after" part="line" data-editable="virtual-setext-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="false" aria-label="After heading"><br></div>`
         : "";
       return `<div ${lineAttrs(line, "heading", `md-heading md-h${block.heading.level} md-source-form`, `id="${escapeAttribute(block.heading.id)}"`)}>${html}</div>${afterAnchor}`;
     }
@@ -1279,7 +1610,7 @@ class WritemarkEditorElement extends HTMLElement {
     return {
       ...this._rendererOptions(),
       editable: this._lineEditable(),
-      spellcheck: this._sourceTextarea?.spellcheck ? "true" : "false",
+      spellcheck: "false",
       indentString: this.indentString,
       placeholder: this.placeholder,
       emptyDocument: this._value.length === 0,
@@ -1321,14 +1652,14 @@ class WritemarkEditorElement extends HTMLElement {
       const unescaped = unescapeTableCellText(cell?.text ?? "");
       const body = sourceForm ? (unescaped ? escapeHtml(unescaped) : "<br>") : this._inlineHtml(unescaped);
       const form = sourceForm ? ` data-source-form="true"` : "";
-      return `<${tag}${tableAlignmentClass(alignments[col])}>${extra}<div class="md-cell${sourceForm ? " md-source-form" : ""}" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${from}" data-to="${to}"${form} contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}">${body}</div></${tag}>`;
+      return `<${tag}${tableAlignmentClass(alignments[col])}>${extra}<div class="md-cell${sourceForm ? " md-source-form" : ""}" part="table-cell" data-editable="cell" data-row="${row}" data-col="${col}" data-from="${from}" data-to="${to}"${form} contenteditable="${this._lineEditable()}" spellcheck="false">${body}</div></${tag}>`;
     };
     const header = `<thead><tr>${Array.from({ length: cols }, (_, i) => renderCell(block.header.cells[i] ?? { text: "", from: block.header.end, to: block.header.end }, "th", -1, i, `${delColBtn(i)}${i === lastCol ? addColBtn : ""}`)).join("")}</tr></thead>`;
     const hasRealRows = block.rows.length > 0;
     const bodyRows = hasRealRows ? block.rows : [{ cells: Array.from({ length: cols }, () => ({ text: "", from: block.delimiter.end, to: block.delimiter.end })) }];
     const body = `<tbody>${bodyRows.map((row, r) => `<tr>${Array.from({ length: cols }, (_, i) => renderCell(row.cells[i] ?? { text: "", from: row.end, to: row.end }, "td", r, i, i === lastCol && hasRealRows ? delRowBtn(r) : "")).join("")}</tr>`).join("")}</tbody>`;
     const afterAnchor = block.newlineEnd === block.to
-      ? `<div class="md-line md-table-after" part="line" data-editable="virtual-table-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="${this._sourceTextarea?.spellcheck ? "true" : "false"}" aria-label="After table"><br></div>`
+      ? `<div class="md-line md-table-after" part="line" data-editable="virtual-table-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${this._lineEditable()}" spellcheck="false" aria-label="After table"><br></div>`
       : "";
     return `<div class="md-table-block${editable ? " md-has-controls" : ""}" part="table" data-kind="table" data-from="${block.from}" data-to="${block.to}"><table class="md-table">${header}${body}</table>${addRowBtn}</div>${afterAnchor}`;
   }
@@ -1414,7 +1745,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._beforeInputTarget = null;
     if (!editable) return;
     const before = this._beforeInputSnapshot;
-    const from = Number(editable.dataset.from); const to = Number(editable.dataset.to);
+    const from = this._liveFrom(editable); const to = this._liveTo(editable);
     const sourceSlice = this._value.slice(from, to);
     const sourceForm = editable.dataset.sourceForm === "true";
     const literalLine = sourceForm || ["image", "comment", "code-fence"].includes(editable.dataset.kind);
@@ -1456,7 +1787,7 @@ class WritemarkEditorElement extends HTMLElement {
       const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction);
       if (before) this._recordUndo(before, after, this._undoGroupForInput(event?.inputType), { coalesce: event?.inputType === "insertText" || event?.inputType === "deleteContentBackward" });
       this._beforeInputSnapshot = null;
-      this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: diffTextChange(previousValue, this._value) });
+      this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: diffTextChange(previousValue, this._value), editable });
       if (!this._isComposing) this._scheduleCompletionUpdate();
       return;
     }
@@ -1487,14 +1818,14 @@ class WritemarkEditorElement extends HTMLElement {
     const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction);
     if (before) this._recordUndo(before, after, this._undoGroupForInput(event?.inputType), { coalesce: event?.inputType === "insertText" || event?.inputType === "deleteContentBackward" });
     this._beforeInputSnapshot = null;
-    this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: [{ from, to, insert }] });
+    this._finishLiveInput({ source: "user", inputType: event?.inputType, restoreSelection: true, previousValue, changes: [{ from, to, insert }], editable });
     if (!this._isComposing) this._scheduleCompletionUpdate();
   }
   _finishLiveInput(details) {
     const hold = details.inputType !== "insertCompositionText" && this._accentMenuHoldingTarget();
     this._holdAccentTarget = hold;
     try {
-      this._afterValueChanged(details);
+      this._afterValueChanged({ ...details, defer: !hold });
     } finally {
       this._holdAccentTarget = false;
     }
@@ -1509,6 +1840,7 @@ class WritemarkEditorElement extends HTMLElement {
     return true;
   }
   _syncAccentMetadata(previousValue, changes) {
+    this._clearOffsetMap();
     const blocks = this._blocksForRender(previousValue, changes);
     this._liveBlocks = blocks;
     this._syncLiveMetadata(blocks);
@@ -1644,8 +1976,9 @@ class WritemarkEditorElement extends HTMLElement {
     return text.replace(/\u00a0/g, " ").replace(/\n+$/g, "");
   }
   _editableSourceRange(editable) {
-    const from = Number(editable?.dataset?.from);
-    const to = Number(editable?.dataset?.to);
+    if (!editable) return null;
+    const from = this._liveFrom(editable);
+    const to = this._liveTo(editable);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
     return { from, to: Math.max(from, to) };
   }
@@ -1735,7 +2068,7 @@ class WritemarkEditorElement extends HTMLElement {
     const checkbox = event.target.closest?.("[data-task-checkbox]");
     if (checkbox) {
       event.preventDefault();
-      const offset = Number(checkbox.dataset.checkOffset);
+      const offset = this._liveCheckOffset(checkbox);
       const current = this._value[offset] || " ";
       const next = current.toLowerCase() === "x" ? " " : "x";
       const source = event.detail === 0 ? "keyboard" : "pointer";
@@ -1751,7 +2084,7 @@ class WritemarkEditorElement extends HTMLElement {
         next === "x" ? "Task checked." : "Task unchecked."
       );
       this._applyActionResult("block.taskDone", result, { source });
-      if (source === "keyboard") this._liveEditor.querySelector(`[data-task-checkbox][data-check-offset="${offset}"]`)?.focus();
+      if (source === "keyboard") [...this._liveEditor.querySelectorAll("[data-task-checkbox]")].find(node => this._liveCheckOffset(node) === offset)?.focus();
       return;
     }
     this._onSelectionChanged();
@@ -1933,23 +2266,23 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _horizontalArrowTarget(editable, offset, direction) {
-    const from = Number(editable.dataset.from);
-    const to = Number(editable.dataset.to);
+    const from = this._liveFrom(editable);
+    const to = this._liveTo(editable);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
     if (direction < 0 && offset <= from) {
       const previous = this._adjacentLiveEditable(editable, -1);
-      return previous ? Number(previous.dataset.to) : null;
+      return previous ? this._liveTo(previous) : null;
     }
     if (direction > 0 && offset >= to) {
       const next = this._adjacentLiveEditable(editable, 1);
-      return next ? Number(next.dataset.from) : null;
+      return next ? this._liveFrom(next) : null;
     }
     return null;
   }
 
   _fallbackHorizontalArrowTarget(editable, offset, direction) {
-    const from = Number(editable.dataset.from);
-    const to = Number(editable.dataset.to);
+    const from = this._liveFrom(editable);
+    const to = this._liveTo(editable);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
     if (direction < 0 && offset > from) {
       return offset - (Array.from(this._value.slice(from, offset)).at(-1)?.length || 1);
@@ -1978,8 +2311,8 @@ class WritemarkEditorElement extends HTMLElement {
     const targetEditable = this._adjacentLiveEditable(editable, direction);
     if (!targetEditable) return null;
     if (this._isSingleVisualRow(editable) && this._isSingleVisualRow(targetEditable)) {
-      const sourceColumn = clamp(offset - Number(editable.dataset.from), 0, this._plainText(editable).length);
-      return Number(targetEditable.dataset.from) + Math.min(sourceColumn, this._plainText(targetEditable).length);
+      const sourceColumn = clamp(offset - this._liveFrom(editable), 0, this._plainText(editable).length);
+      return this._liveFrom(targetEditable) + Math.min(sourceColumn, this._plainText(targetEditable).length);
     }
     const caretRect = this._caretRectForSourceOffset(offset, editable);
     const fallbackRect = editable.getBoundingClientRect();
@@ -1996,7 +2329,7 @@ class WritemarkEditorElement extends HTMLElement {
   _rebuildLiveIndex() {
     const editables = [...this._liveEditor.querySelectorAll("[data-editable]")]
       .filter(el => Number.isFinite(Number(el.dataset.from)) && Number.isFinite(Number(el.dataset.to)))
-      .sort((a, b) => Number(a.dataset.from) - Number(b.dataset.from));
+      .sort((a, b) => this._liveFrom(a) - this._liveFrom(b));
     this._liveEditablesCache = editables;
     this._liveNavigationCache = editables.filter(el => el.dataset.editable !== "cell");
     this._liveIndexDirty = false;
@@ -2025,8 +2358,8 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _isCaretOnVisualBoundary(editable, offset, direction) {
-    const from = Number(editable.dataset.from);
-    const to = Number(editable.dataset.to);
+    const from = this._liveFrom(editable);
+    const to = this._liveTo(editable);
     const rect = this._caretRectForSourceOffset(offset, editable);
     const box = editable.getBoundingClientRect();
     if (!rect || !box || box.height === 0) return direction < 0 ? offset <= from : offset >= to;
@@ -2053,8 +2386,8 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _sourceOffsetInEditableAtX(editable, clientX, direction) {
-    const from = Number(editable.dataset.from);
-    const to = Number(editable.dataset.to);
+    const from = this._liveFrom(editable);
+    const to = this._liveTo(editable);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
     const box = editable.getBoundingClientRect();
     if (!box || box.width === 0 || box.height === 0) return direction < 0 ? to : from;
@@ -2110,16 +2443,16 @@ class WritemarkEditorElement extends HTMLElement {
     const editable = this._liveEditableFromPoint(clientX, clientY);
     if (!editable) return null;
     const rect = editable.getBoundingClientRect();
-    if (!rect || rect.width === 0 || rect.height === 0) return Number(editable.dataset.from);
+    if (!rect || rect.width === 0 || rect.height === 0) return this._liveFrom(editable);
     const x = clamp(clientX, rect.left + 1, rect.right - 1);
     const y = clamp(clientY, rect.top + 1, rect.bottom - 1);
     const fromPoint = this._sourceOffsetFromPoint(editable, x, y);
-    if (fromPoint != null) return clamp(fromPoint, Number(editable.dataset.from), Number(editable.dataset.to));
+    if (fromPoint != null) return clamp(fromPoint, this._liveFrom(editable), this._liveTo(editable));
     return this._nearestSourceOffsetInEditable(editable, x, y);
   }
 
   _nearestSourceOffsetInEditable(editable, clientX, clientY) {
-    const from = Number(editable.dataset.from);
+    const from = this._liveFrom(editable);
     const length = this._plainText(editable).length;
     if (!length) return from;
     let bestOffset = 0;
@@ -2160,6 +2493,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._emitSelectionChange();
     if (!this._isComposing) this._scheduleCompletionUpdate();
     this._updateSelectionToolbar();
+    this._armSpellcheck();
   }
 
   _hideSelectionToolbar() {
@@ -2308,7 +2642,7 @@ class WritemarkEditorElement extends HTMLElement {
     return count;
   }
   _sourceOffsetFromDom(editable, node, offset) {
-    const from = Number(editable.dataset.from); if (!Number.isFinite(from)) return null;
+    const from = this._liveFrom(editable); if (!Number.isFinite(from)) return null;
     if (node?.nodeType === Node.TEXT_NODE) {
       return this._sourceOffsetFromDisplayOffset(editable, this._editingOffset(editable, node, offset)) ?? from;
     }
@@ -2390,11 +2724,11 @@ class WritemarkEditorElement extends HTMLElement {
     if (!editables.length) return null;
     let previous = null;
     for (const el of editables) {
-      const from = Number(el.dataset.from);
-      const to = Number(el.dataset.to);
+      const from = this._liveFrom(el);
+      const to = this._liveTo(el);
       if (safe < from) {
         if (!previous) return this._textPositionInElement(el, 0);
-        const prevTo = Number(previous.dataset.to);
+        const prevTo = this._liveTo(previous);
         return (safe - prevTo <= from - safe)
           ? this._textPositionInElement(previous, this._plainText(previous).length)
           : this._textPositionInElement(el, 0);
@@ -2763,8 +3097,8 @@ class WritemarkEditorElement extends HTMLElement {
   _findTableBlockForCell(cell) {
     const tableEl = cell?.closest?.(".md-table-block");
     if (!tableEl) return null;
-    const from = Number(tableEl.dataset.from);
-    const to = Number(tableEl.dataset.to);
+    const from = this._liveFrom(tableEl);
+    const to = this._liveTo(tableEl);
     return this._getBlocks().find(block => block.type === "table" && block.from === from && block.to === to) || null;
   }
 
@@ -2805,7 +3139,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (i === -1) return false;
     const next = cells[i + delta];
     if (!next) return false;
-    const from = Number(next.dataset.from);
+    const from = this._liveFrom(next);
     const text = this._plainText(next);
     this._selection = { start: from, end: from + text.length, direction: "none" };
     this._restoreLiveSelection(this._selection);
@@ -2881,7 +3215,12 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _tableCellElement(block, row, col) {
-    return this._liveEditor?.querySelector(`.md-table-block[data-from="${block.from}"][data-to="${block.to}"] .md-cell[data-row="${row}"][data-col="${col}"]`) || null;
+    const tables = this._liveEditor?.querySelectorAll(".md-table-block") || [];
+    for (const table of tables) {
+      if (this._liveFrom(table) !== block.from || this._liveTo(table) !== block.to) continue;
+      return table.querySelector(`.md-cell[data-row="${row}"][data-col="${col}"]`);
+    }
+    return null;
   }
 
   _horizontalTableArrowTarget(cell, offset, direction) {
@@ -2890,14 +3229,14 @@ class WritemarkEditorElement extends HTMLElement {
     if (direction < 0 && offset <= range.from) {
       const cells = this._tableCellsForCell(cell);
       const previous = cells[cells.indexOf(cell) - 1];
-      if (previous) return { offset: Number(previous.dataset.to) };
+      if (previous) return { offset: this._liveTo(previous) };
       const info = this._tableInfoForCell(cell);
       return info?.block ? { exit: "before", offset: info.block.from } : null;
     }
     if (direction > 0 && offset >= range.to) {
       const cells = this._tableCellsForCell(cell);
       const next = cells[cells.indexOf(cell) + 1];
-      if (next) return { offset: Number(next.dataset.from) };
+      if (next) return { offset: this._liveFrom(next) };
       const info = this._tableInfoForCell(cell);
       return info?.block ? { exit: "after", offset: info.block.to } : null;
     }
@@ -2914,7 +3253,7 @@ class WritemarkEditorElement extends HTMLElement {
     if (!targetCell) return null;
     const displayOffset = this._displayOffsetFromSourceOffset(cell, offset);
     const targetDisplayOffset = Math.min(displayOffset, this._plainText(targetCell).length);
-    return { offset: this._sourceOffsetFromDisplayOffset(targetCell, targetDisplayOffset) ?? Number(targetCell.dataset.from) };
+    return { offset: this._sourceOffsetFromDisplayOffset(targetCell, targetDisplayOffset) ?? this._liveFrom(targetCell) };
   }
 
   _maybeExitTableWithArrow(cell, direction) {
@@ -2930,8 +3269,8 @@ class WritemarkEditorElement extends HTMLElement {
   _isCellSelectionAtBoundary(cell, boundary) {
     const sel = this._getLiveSelection(cell);
     if (!sel || sel.start !== sel.end) return false;
-    const from = Number(cell.dataset.from);
-    const to = Number(cell.dataset.to);
+    const from = this._liveFrom(cell);
+    const to = this._liveTo(cell);
     return boundary === "start" ? sel.start <= from : sel.start >= to;
   }
 
@@ -3075,8 +3414,8 @@ class WritemarkEditorElement extends HTMLElement {
     const active = this._activeEditableFromSelection();
     if (active?.dataset.editable === "cell") {
       const info = this._tableInfoForCell(active);
-      const cellFrom = Number(active.dataset.from);
-      const cellTo = Number(active.dataset.to);
+      const cellFrom = this._liveFrom(active);
+      const cellTo = this._liveTo(active);
       push(cellFrom, cellTo, "cell");
       if (info?.line) push(info.line.start, info.line.end, "row");
       if (info?.block) push(info.block.from, info.block.to, "table");
@@ -3155,29 +3494,6 @@ class WritemarkEditorElement extends HTMLElement {
   _tableCellTexts(line, cols) {
     const cells = splitTableRow(line?.text ?? "");
     return Array.from({ length: cols }, (_, i) => unescapeTableCellText(cells[i] ?? ""));
-  }
-  _tablePositionForOffset(block, offset) {
-    if (!block) return null;
-    const safe = clamp(Number(offset) || 0, block.from, block.to);
-    const lines = [
-      { line: block.header, row: -1 },
-      { line: block.delimiter, row: -2 },
-      ...block.rows.map((line, row) => ({ line, row })),
-    ];
-    const match = lines.find(entry => safe >= entry.line.start && safe <= entry.line.end)
-      || lines.find(entry => safe >= entry.line.start && safe <= entry.line.newlineEnd)
-      || lines.at(-1);
-    if (!match) return null;
-    const cells = match.line.cells || [];
-    let col = cells.findIndex(cell => safe >= cell.from && safe <= cell.to);
-    if (col === -1 && cells.length) {
-      let bestDistance = Infinity;
-      cells.forEach((cell, index) => {
-        const distance = safe < cell.from ? cell.from - safe : safe > cell.to ? safe - cell.to : 0;
-        if (distance < bestDistance) { bestDistance = distance; col = index; }
-      });
-    }
-    return { row: match.row, col: Math.max(0, col), line: match.line };
   }
   _tableColumnResult(ctx, block, col, mode) {
     const cols = Math.max(block.header.cells.length, ...block.rows.map(r => r.cells.length), 1);
