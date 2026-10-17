@@ -384,6 +384,8 @@ class WritemarkEditorElement extends HTMLElement {
     this._paintedOffsets = new WeakMap();
     this._paintedChecks = new WeakMap();
     this._spellEditable = null;
+    this._sourceFormatTimer = 0;
+    this._idleFormattedKey = "";
     this._actions = new Map();
     this._providers = new Map();
     this._completion = { open: false, providerId: null, match: null, items: [], activeIndex: 0, requestId: 0, abort: null };
@@ -437,6 +439,9 @@ class WritemarkEditorElement extends HTMLElement {
     this._paintFrame = 0;
     this._deferredPaint = null;
     this._clearOffsetMap();
+    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
+    this._sourceFormatTimer = 0;
+    this._idleFormattedKey = "";
   }
   attributeChangedCallback(name, oldValue, newValue) {
     if (oldValue === newValue) return;
@@ -1532,6 +1537,9 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _syncSourceForm() {
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock || this._pointerSelection || this._isComposing) return;
+    const key = this._sourceFormKey();
+    if (this._idleFormattedKey && key === this._idleFormattedKey && (this._sourceFormKeyShown ?? "") === "") return;
+    this._idleFormattedKey = "";
     if (this._deferredPaint || this._paintFrame) {
       if (this._deferredPaintBlocked()) return;
       if (this._sourceFormKey() === (this._sourceFormKeyShown ?? "")) return;
@@ -1544,8 +1552,9 @@ class WritemarkEditorElement extends HTMLElement {
       // The flush already painted this window, including the line the caret entered.
       if (this._virtualState.active) return;
     }
-    const key = this._sourceFormKey();
     if (key === (this._sourceFormKeyShown ?? "")) return;
+    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
+    this._sourceFormatTimer = 0;
     const previousKey = this._sourceFormKeyShown ?? "";
     this._sourceFormLock = true;
     this._sourceFormKeyShown = key;
@@ -1559,7 +1568,96 @@ class WritemarkEditorElement extends HTMLElement {
       this._sourceFormLock = false;
     }
   }
+  _keepsActiveSource(editable) {
+    if (!editable) return false;
+    if (editable.dataset.editable === "cell") return true;
+    return ["paragraph", "heading", "blockquote", "bullet-list-item", "ordered-list-item", "task-list-item", "blank"].includes(editable.dataset.kind);
+  }
+  _scheduleActiveSourceFormat() {
+    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
+    this._sourceFormatTimer = setTimeout(() => {
+      this._sourceFormatTimer = 0;
+      this._formatShownSourceLine();
+    }, 600);
+  }
+  _formatShownSourceLine() {
+    if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
+    if (this._isComposing || this._completion?.open || this._deferredPaintBlocked()) return;
+    if (this._deferredPaint || this._paintFrame) {
+      if (this._deferredPaintBlocked()) return;
+      this._flushDeferredPaint();
+    }
+    const key = this._sourceFormKeyShown ?? "";
+    if (!key) return;
+    const blocks = this._liveBlocks;
+    const indexes = this._sourceFormBlockIndexes(key, blocks);
+    if (!indexes?.length) return;
+    const selection = { ...this._selection };
+    this._sourceFormLock = true;
+    const savedSelection = this._selection;
+    this._selection = { start: -1, end: -1, direction: "none" };
+    let prepared = null;
+    try {
+      prepared = this._planFormattedBlockReplacement(blocks, indexes);
+    } finally {
+      this._selection = savedSelection;
+    }
+    if (!prepared) {
+      this._selection = { start: -1, end: -1, direction: "none" };
+      try {
+        this._renderAll({ restoreSelection: false, force: true });
+      } finally {
+        this._selection = savedSelection;
+      }
+    }
+    this._sourceFormKeyShown = "";
+    this._idleFormattedKey = key;
+    try {
+      if (prepared) {
+        for (const item of prepared) {
+          item.oldNodes[0].replaceWith(...item.fresh);
+          for (const extra of item.oldNodes.slice(1)) extra.remove();
+        }
+        this._rebuildLiveIndex();
+      }
+      this._restoreLiveSelection(selection);
+      this._armSpellcheck();
+    } finally {
+      this._sourceFormLock = false;
+    }
+  }
+  // Top-level nodes for one block, including a trailing anchor when the block
+  // is the last thing in the note. Built while the caret is outside the block
+  // so the replacement is formatted text.
+  _planFormattedBlockReplacement(blocks, indexes) {
+    const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
+    const planned = [];
+    for (const index of indexes) {
+      const block = blocks[index];
+      if (!block) return null;
+      const nextFrom = blocks[index + 1]?.from ?? Number.POSITIVE_INFINITY;
+      let start = -1;
+      let end = -1;
+      for (let i = 0; i < children.length; i += 1) {
+        const from = Number(children[i].dataset?.from);
+        if (!Number.isFinite(from)) return null;
+        if (from >= block.from && from < nextFrom) {
+          if (start < 0) start = i;
+          end = i + 1;
+        }
+      }
+      if (start < 0) return null;
+      const fresh = Array.from(this._liveFragmentForBlocks([blocks[index]]).children);
+      if (!fresh.length) return null;
+      planned.push({ start, oldNodes: children.slice(start, end), fresh });
+    }
+    planned.sort((a, b) => b.start - a.start);
+    return planned;
+  }
   _formatWhenIdle() {
+    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
+    this._sourceFormatTimer = 0;
+    this._idleFormattedKey = "";
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
     if (this._deferredPaint || this._paintFrame) {
       if (this._deferredPaintBlocked()) return;
@@ -1829,6 +1927,7 @@ class WritemarkEditorElement extends HTMLElement {
     } finally {
       this._holdAccentTarget = false;
     }
+    if (!hold && !this._isComposing) this._scheduleActiveSourceFormat();
   }
   _accentMenuHoldingTarget() {
     if (now() - (this._keyRepeatAt || 0) > 4000) return false;
@@ -1900,11 +1999,13 @@ class WritemarkEditorElement extends HTMLElement {
       const nextRaw = raw.slice(0, displayStart) + insert + raw.slice(displayEnd);
       const cellRange = this._editableSourceRange(editable);
       const inlineSource = cellRange ? unescapeTableCellText(this._value.slice(cellRange.from, cellRange.to)) : "";
-      const rendered = renderInline(inlineSource, this._rendererOptions());
+      const rendered = editable.dataset.sourceForm === "true" || this._keepsActiveSource(editable)
+        ? ""
+        : renderInline(inlineSource, this._rendererOptions());
       const oldDisplay = rendered ? this._textFromHtml(rendered).replace(/\n/g, "") : inlineSource;
       let cellText = nextRaw;
       let cellCursor = displayStart + insert.length;
-      if (editable.dataset.sourceForm !== "true" && oldDisplay !== inlineSource) {
+      if (editable.dataset.sourceForm !== "true" && !this._keepsActiveSource(editable) && oldDisplay !== inlineSource) {
         const edit = sourceEditFromDisplay(inlineSource, oldDisplay, nextRaw);
         cellText = edit.value;
         cellCursor = edit.cursor;
@@ -2921,6 +3022,13 @@ class WritemarkEditorElement extends HTMLElement {
       return;
     }
     if (this._isComposing || event.isComposing || event.keyCode === 229 || event.which === 229) return;
+    if (!this._isSourceActive() && !event.altKey && !event.metaKey && !event.ctrlKey && (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete")) {
+      const sourceEditable = this._activeEditableFromEvent(event);
+      if (this._keepsActiveSource(sourceEditable) && sourceEditable.dataset.sourceForm !== "true") {
+        this._idleFormattedKey = "";
+        this._syncSourceForm();
+      }
+    }
     if (this._pressAndHoldOwnsKey(event)) return;
     if (this._sourceFormDomDirty(event)) return;
     const isMac = /Mac|iPhone|iPad|iPod/.test(globalThis.navigator?.platform ?? "");
