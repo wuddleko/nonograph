@@ -58,30 +58,105 @@
                 recur(document.getElementById("CONTENT"));
             }
 
+            var positionByNode = null;
+            function contentPositions() {
+                if (positionByNode) return positionByNode;
+                var map = new Map();
+                var root = document.getElementById("CONTENT");
+                if (root) {
+                    walkContent(function (node, pos) {
+                        map.set(node, pos);
+                    });
+                }
+                positionByNode = map;
+                return map;
+            }
+            function forgetContentPositions() {
+                positionByNode = null;
+            }
+            function textOffsets(node, range) {
+                if (node.nodeType !== 3 || !node.length) return null;
+                try {
+                    if (!range.intersectsNode(node)) return null;
+                } catch (e) {
+                    return null;
+                }
+                var start = range.startContainer === node ? range.startOffset : 0;
+                var end = range.endContainer === node ? range.endOffset : node.length;
+                if (start < 0) start = 0;
+                if (end > node.length) end = node.length;
+                if (start >= end) return null;
+                return [start, end];
+            }
+            // A selection that starts in the title or ends in the footer still
+            // covers the article. Hash the article portion.
+            function clipToContent(range, root) {
+                try {
+                    if (!range.intersectsNode(root)) return null;
+                } catch (e) {
+                    return null;
+                }
+                var startNode = null,
+                    startOff = 0,
+                    endNode = null,
+                    endOff = 0;
+                walkContent(function (node) {
+                    var off = textOffsets(node, range);
+                    if (!off) return;
+                    if (!startNode) {
+                        startNode = node;
+                        startOff = off[0];
+                    }
+                    endNode = node;
+                    endOff = off[1];
+                });
+                if (!startNode || !endNode) return null;
+                return [startNode, startOff, endNode, endOff];
+            }
             function computeSelectionHash() {
                 if (!document.getSelection) return "";
                 var sel = document.getSelection();
-                if (sel.isCollapsed) return "";
+                if (!sel || sel.isCollapsed || sel.rangeCount === 0) return "";
                 var range = sel.getRangeAt(0);
-                var begin = [0, 0],
-                    end = [0, 0];
-                walkContent(function (e, pos) {
-                    if (range.startContainer === e)
-                        begin = [pos, range.startOffset];
-                    if (range.endContainer === e) end = [pos, range.endOffset];
-                });
-                if (begin[0] > 0 && end[0] > 0)
-                    return (
-                        "selection-" +
-                        begin[0] +
-                        "." +
-                        begin[1] +
-                        "-" +
-                        end[0] +
-                        "." +
-                        end[1]
-                    );
-                return "";
+                var root = document.getElementById("CONTENT");
+                if (!root) return "";
+                var startNode, startOff, endNode, endOff;
+                if (
+                    root.contains(range.startContainer) &&
+                    root.contains(range.endContainer)
+                ) {
+                    startNode = range.startContainer;
+                    startOff = range.startOffset;
+                    endNode = range.endContainer;
+                    endOff = range.endOffset;
+                } else {
+                    var clipped = clipToContent(range, root);
+                    if (!clipped) return "";
+                    startNode = clipped[0];
+                    startOff = clipped[1];
+                    endNode = clipped[2];
+                    endOff = clipped[3];
+                }
+                var map = contentPositions();
+                var begin = map.get(startNode);
+                var end = map.get(endNode);
+                if (begin == null || end == null) {
+                    forgetContentPositions();
+                    map = contentPositions();
+                    begin = map.get(startNode);
+                    end = map.get(endNode);
+                }
+                if (!begin || !end) return "";
+                return (
+                    "selection-" +
+                    begin +
+                    "." +
+                    startOff +
+                    "-" +
+                    end +
+                    "." +
+                    endOff
+                );
             }
 
             function applySelectionHash(newhash) {
@@ -103,12 +178,76 @@
 
             var _initHash = location.hash;
             var _hl = false;
-            document.addEventListener("selectionchange", function () {
-                if (!_hl) {
-                    var h = computeSelectionHash();
-                    if (h.length > 0) applySelectionHash(h);
+            function inHighlight(node) {
+                var el = node && (node.nodeType === 1 ? node : node.parentNode);
+                while (el && el !== document.documentElement) {
+                    if (
+                        el.classList &&
+                        el.classList.contains("selection-highlight")
+                    )
+                        return true;
+                    el = el.parentNode;
                 }
-            });
+                return false;
+            }
+            function publishSelectionHash() {
+                window.clearTimeout(selectionTimer);
+                selectionTimer = 0;
+                if (_hl) return;
+                var sel = document.getSelection && document.getSelection();
+                if (sel && sel.rangeCount && !sel.isCollapsed) {
+                    var range = sel.getRangeAt(0);
+                    if (
+                        inHighlight(range.startContainer) &&
+                        inHighlight(range.endContainer)
+                    )
+                        return;
+                }
+                var h = computeSelectionHash();
+                if (h.length > 0) applySelectionHash(h);
+            }
+            var selectionTimer = 0;
+            function scheduleSelectionHash() {
+                if (_hl) return;
+                window.clearTimeout(selectionTimer);
+                selectionTimer = window.setTimeout(publishSelectionHash, 200);
+            }
+            document.addEventListener("selectionchange", scheduleSelectionHash);
+            document.addEventListener("mouseup", publishSelectionHash);
+            document.addEventListener("keyup", publishSelectionHash);
+            function wrapSlice(node, start, end) {
+                var slice = document.createRange();
+                slice.setStart(node, start);
+                slice.setEnd(node, end);
+                var mk = document.createElement("mark");
+                mk.className = "selection-highlight";
+                slice.surroundContents(mk);
+                return mk;
+            }
+            function highlightRange(range) {
+                var mk = document.createElement("mark");
+                mk.className = "selection-highlight";
+                try {
+                    range.surroundContents(mk);
+                    return mk;
+                } catch (e) {
+                    var slices = [];
+                    walkContent(function (node) {
+                        var off = textOffsets(node, range);
+                        if (off) slices.push([node, off[0], off[1]]);
+                    });
+                    var first = null;
+                    for (var i = 0; i < slices.length; i++) {
+                        var wrapped = wrapSlice(
+                            slices[i][0],
+                            slices[i][1],
+                            slices[i][2],
+                        );
+                        if (!first) first = wrapped;
+                    }
+                    return first;
+                }
+            }
             function _doHighlight() {
                 var m = _initHash.match(
                     /^#selection-(\d+)\.(\d+)-(\d+)\.(\d+)$/,
@@ -134,10 +273,15 @@
                     r.setStart(sN, sO);
                     r.setEnd(eN, eO);
                     _hl = true;
-                    var mk = document.createElement("mark");
-                    mk.className = "selection-highlight";
-                    r.surroundContents(mk);
-                    _hl = false;
+                    window.clearTimeout(selectionTimer);
+                    var mk = highlightRange(r);
+                    forgetContentPositions();
+                    if (!mk) {
+                        window.setTimeout(function () {
+                            _hl = false;
+                        }, 400);
+                        return;
+                    }
                     window.scrollTo({
                         top:
                             mk.getBoundingClientRect().top +
@@ -145,8 +289,12 @@
                             window.innerHeight * 0.2,
                         behavior: "smooth",
                     });
+                    window.setTimeout(function () {
+                        _hl = false;
+                    }, 400);
                 } catch (x) {
                     _hl = false;
+                    forgetContentPositions();
                 }
             }
             if (document.readyState === "loading")
