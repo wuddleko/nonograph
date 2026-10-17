@@ -168,6 +168,11 @@ function codeFenceBlockHtml(block, opts = {}) {
     : "";
   return `<div class="md-code-block" part="code-block" data-kind="code-fence" data-language="${escapeAttribute(language)}" contenteditable="false">${fenceLine(block.opening, "open")}<div class="md-code-lines">${lines}</div>${fenceLine(block.closing, "close")}</div>${afterAnchor}`;
 }
+function virtualGapHtml(height) {
+  const size = Math.round(Number(height) || 0);
+  if (size <= 0) return "";
+  return `<div class="md-virtual-spacer" data-block-size="${size}"></div>`;
+}
 function codeFenceWindowHtml(block, opts) {
   const editable = opts.editable || "true";
   const spellcheck = opts.spellcheck == null || opts.spellcheck === "" ? "true" : String(opts.spellcheck);
@@ -206,10 +211,8 @@ function codeFenceWindowHtml(block, opts) {
   }
   if (codeLines.length) parts.push(`<div class="md-code-lines">${codeLines.join("")}</div>`);
   const lineHeight = Math.max(1, requested.lineHeight || 20);
-  const topGap = start > 0 ? Math.round(start * lineHeight) : 0;
-  const bottomGap = end < rows.length ? Math.round((rows.length - end) * lineHeight) : 0;
-  const topSpacer = topGap > 0 ? `<div class="md-virtual-spacer" style="block-size:${topGap}px"></div>` : "";
-  const bottomSpacer = bottomGap > 0 ? `<div class="md-virtual-spacer" style="block-size:${bottomGap}px"></div>` : "";
+  const topSpacer = virtualGapHtml(start > 0 ? start * lineHeight : 0);
+  const bottomSpacer = virtualGapHtml(end < rows.length ? (rows.length - end) * lineHeight : 0);
   const afterAnchor = block.closing && block.newlineEnd === block.to
     ? `<div class="md-line md-code-after" part="line" data-editable="virtual-code-after" data-kind="blank" data-from="${block.to}" data-to="${block.to}" contenteditable="${editable}" spellcheck="${spellcheck}" aria-label="After code block"><br></div>`
     : "";
@@ -1676,6 +1679,7 @@ class WritemarkEditorElement extends HTMLElement {
     try {
       this._clearOffsetMap();
       this._liveEditor.innerHTML = html.join("");
+      this._paintGapSpacers();
       this._liveEditor.prepend(this._virtualSpacer(Math.max(0, Math.round(tops[start] || 0))));
       this._liveEditor.append(this._virtualSpacer(Math.max(0, Math.round((tops[total] || 0) - (tops[end] || 0)))));
       this._virtualState = { active: true, start, end, total, lineHeight: this._metrics().line, slices, sliceKey };
@@ -1798,6 +1802,11 @@ class WritemarkEditorElement extends HTMLElement {
     spacer.setAttribute("aria-hidden", "true");
     spacer.style.blockSize = `${height}px`;
     return spacer;
+  }
+  _paintGapSpacers() {
+    for (const spacer of this._liveEditor.querySelectorAll(".md-virtual-spacer[data-block-size]")) {
+      spacer.style.blockSize = `${spacer.dataset.blockSize}px`;
+    }
   }
   _sliceCovers(slice, offset) {
     if (!slice) return true;
@@ -2206,8 +2215,8 @@ class WritemarkEditorElement extends HTMLElement {
       const start = clamp(rowWindow.start, 0, sourceRows.length);
       const end = clamp(rowWindow.end, start, sourceRows.length);
       const line = Math.max(1, rowWindow.lineHeight || this._metrics().tableRow);
-      if (start > 0) topGap = `<tr class="md-virtual-spacer"><td colspan="${cols}"><div class="md-virtual-spacer" style="block-size:${Math.round(start * line)}px"></div></td></tr>`;
-      if (end < sourceRows.length) bottomGap = `<tr class="md-virtual-spacer"><td colspan="${cols}"><div class="md-virtual-spacer" style="block-size:${Math.round((sourceRows.length - end) * line)}px"></div></td></tr>`;
+      if (start > 0) topGap = `<tr class="md-virtual-spacer"><td colspan="${cols}">${virtualGapHtml(start * line)}</td></tr>`;
+      if (end < sourceRows.length) bottomGap = `<tr class="md-virtual-spacer"><td colspan="${cols}">${virtualGapHtml((sourceRows.length - end) * line)}</td></tr>`;
       indexed = sourceRows.slice(start, end).map((row, i) => ({ row, r: start + i }));
     }
     const body = `<tbody>${topGap}${indexed.map(({ row, r }) => `<tr>${Array.from({ length: cols }, (_, i) => renderCell(row.cells[i] ?? { text: "", from: row.end, to: row.end }, "td", r, i, i === lastCol && hasRealRows ? delRowBtn(r) : "")).join("")}</tr>`).join("")}${bottomGap}</tbody>`;
