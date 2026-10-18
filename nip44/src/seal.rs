@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{decrypt, encrypt, hkdf_extract, Error};
 
 pub const SECRET_LEN: usize = 32;
-const DOMAIN: &[u8] = b"nonograph-seal-v1";
+const DOMAIN: &[u8] = b"nostorgraph-seal-v1";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Note {

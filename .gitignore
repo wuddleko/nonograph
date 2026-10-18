@@ -9,8 +9,8 @@
 /pdf/pkg/
 
 # Runtime and log files
-nonograph.log
-nonograph.pid
+nostorgraph.log
+nostorgraph.pid
 *.log
 *.pid
 

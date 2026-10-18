@@ -58,11 +58,11 @@ const LIVE_ARROW_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDow
 const NAVIGATION_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 const ESCAPABLE_PUNCTUATION = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
-// Nonograph-flavored inline markup. Unlike CommonMark emphasis, Nonograph uses
+// Nostorgraph-flavored inline markup. Unlike CommonMark emphasis, Nostorgraph uses
 // literal paired same-delimiter wrapping processed left-to-right in a fixed
 // order (mirrors safe_replace in src/parser.rs). Each entry maps a delimiter to
 // the HTML element the server produces.
-const NONOGRAPH_INLINE_RULES = [
+const NOSTORGRAPH_INLINE_RULES = [
   { marker: "**", tag: "strong" },
   { marker: "*", tag: "em" },
   { marker: "_", tag: "u" },
@@ -89,7 +89,7 @@ const MARKER_PAIRS = [
 // scanning continues past it. Regions already claimed by earlier (higher-priority)
 // passes are skipped so markers inside them are treated as literal text, matching
 // the server which never re-wraps inside a produced tag's markers.
-function nonographPairsForMarker(source, marker, claimed, allowEmpty = false) {
+function nostorgraphPairsForMarker(source, marker, claimed, allowEmpty = false) {
   const pairs = [];
   const len = source.length;
   const isClaimed = pos => {
@@ -118,15 +118,15 @@ function nonographPairsForMarker(source, marker, claimed, allowEmpty = false) {
   return pairs;
 }
 
-// Compute all Nonograph inline emphasis spans for a single line of source text,
+// Compute all Nostorgraph inline emphasis spans for a single line of source text,
 // in the server's processing order. Returns a flat list of { from, to, html }
 // insertion points suitable for interleaving with the escaped source, where each
 // span carries its opening/closing HTML and (for live mode) the retained marker.
-function nonographEmphasisSpans(source, markerHtml = () => "") {
+function nostorgraphEmphasisSpans(source, markerHtml = () => "") {
   const claimed = [];
   const spans = [];
-  for (const rule of NONOGRAPH_INLINE_RULES) {
-    const pairs = nonographPairsForMarker(source, rule.marker, claimed);
+  for (const rule of NOSTORGRAPH_INLINE_RULES) {
+    const pairs = nostorgraphPairsForMarker(source, rule.marker, claimed);
     for (const pair of pairs) {
       const openTag = rule.className
         ? `<${rule.tag} class="${rule.className}">`
@@ -142,11 +142,11 @@ function nonographEmphasisSpans(source, markerHtml = () => "") {
   return spans;
 }
 
-// Render `source` with Nonograph inline emphasis. Mirrors renderEmphasisMarkdown's
+// Render `source` with Nostorgraph inline emphasis. Mirrors renderEmphasisMarkdown's
 // output contract: escapes text, interleaves span HTML, and (via markerHtml) can
 // retain the raw delimiters for live editing.
-function renderNonographEmphasis(source, markerHtml = () => "") {
-  const spans = nonographEmphasisSpans(source, markerHtml);
+function renderNostorgraphEmphasis(source, markerHtml = () => "") {
+  const spans = nostorgraphEmphasisSpans(source, markerHtml);
   spans.sort((a, b) => a.from - b.from || b.to - a.to);
   let html = "";
   let cursor = 0;
@@ -253,7 +253,7 @@ function lineMarkerPairs(value, offset, allowEmpty = false) {
   }
   for (const entry of MARKER_PAIRS) {
     if (entry.marker === "`") continue;
-    for (const pair of nonographPairsForMarker(text, entry.marker, claimed, allowEmpty)) remember(pair, entry.marker);
+    for (const pair of nostorgraphPairsForMarker(text, entry.marker, claimed, allowEmpty)) remember(pair, entry.marker);
   }
   return pairs;
 }
@@ -488,7 +488,7 @@ function parseInlineLinkAt(text, start = 0) {
   return null;
 }
 
-// Nonograph bare bracket link: [https://example.com] renders as a link whose
+// Nostorgraph bare bracket link: [https://example.com] renders as a link whose
 // text is the URL itself. Mirrors process_links in src/parser.rs: only fires
 // when the bracket content starts with "http" and contains no line break, and
 // is not an image (`![...]`) or a `[label](url)`/`[label][ref]` link.
@@ -602,8 +602,8 @@ function isInlinePunctuation(char) {
   return Boolean(char) && /[\p{P}\p{S}]/u.test(char);
 }
 
-// Emphasis is handled by the Nonograph inline engine defined near the top of
-// this file (nonographEmphasisSpans / renderNonographEmphasis).
+// Emphasis is handled by the Nostorgraph inline engine defined near the top of
+// this file (nostorgraphEmphasisSpans / renderNostorgraphEmphasis).
 
 function htmlToMarkdown(html) {
   const template = document.createElement("template");
@@ -705,7 +705,7 @@ function collectInlineMarkdownRanges(source) {
       if (match.index === regex.lastIndex) regex.lastIndex += 1;
     }
   };
-  // Nonograph inline markers (see NONOGRAPH_INLINE_RULES).
+  // Nostorgraph inline markers (see NOSTORGRAPH_INLINE_RULES).
   addMatches(/\*\*([^*\n]+)\*\*/g, 2, 2);
   addMatches(/==([^=\n]+)==/g, 2, 2);
   addMatches(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, 1, 1, 2, 1);
@@ -896,7 +896,7 @@ function contentSourceRange(line, contentStart, content) {
   const from = (Number(line?.start) || 0) + start;
   return { from, to: from + body.length };
 }
-// Nonograph dividers are exactly ***, -*-, ---, or === on their own line
+// Nostorgraph dividers are exactly ***, -*-, ---, or === on their own line
 // (mirrors process_dividers in src/parser.rs). Note: **** (four stars, e.g. from
 // bolding an empty line) is intentionally NOT a divider.
 function isHorizontalRule(line) { const t = line.trim(); return t === "***" || t === "-*-" || t === "---" || t === "==="; }
@@ -1261,7 +1261,7 @@ function decorateInline(raw, opts = {}) {
     }
     prepared += text[i];
   }
-  const html = renderNonographEmphasis(prepared, token);
+  const html = renderNostorgraphEmphasis(prepared, token);
   let restored = html;
   for (const [placeholder, reserved] of tokens) {
     restored = restored.replaceAll(escapeHtml(placeholder), reserved).replaceAll(placeholder, reserved);
@@ -1323,7 +1323,7 @@ function renderInlineMarkdown(source, opts = {}) {
   text = text.replace(/(^|[\s(])((?:https?:\/\/)[^\s<]+[^\s<.,;:!?\])}])/g, (match, prefix, url) =>
     `${prefix}${reserve(`<a href="${escapeAttribute(safeHref(url))}">${escapeHtml(url)}</a>`)}`);
   text = text.replace(/(?: {2,}|\\)\n/g, () => `${reserve("<br>")}\n`);
-  text = renderNonographEmphasis(text);
+  text = renderNostorgraphEmphasis(text);
   for (const [token, html] of tokens) text = text.replaceAll(escapeHtml(token), html).replaceAll(token, html);
   return text;
 }

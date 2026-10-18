@@ -15,7 +15,7 @@ use crate::relays::{render_dealt_rows, render_nojs_relay_form};
 
 const OPEN_SEATS: usize = 3;
 const RELAY_CAP: usize = 6;
-pub(crate) const RELAY_LIST_COOKIE: &str = "nonograph_relays";
+pub(crate) const RELAY_LIST_COOKIE: &str = "nostorgraph_relays";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RelayCookie {
@@ -84,7 +84,7 @@ fn relays_page_html_with_csrf(path: &Path, csrf_token: &str, configured: &[Strin
     let mut body = render_dealt_rows(&dealt, &urls);
     body.push_str(&format!(
         "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\" />\n",
-        nonograph_parser::html_attr_escape(csrf_token)
+        nostorgraph_parser::html_attr_escape(csrf_token)
     ));
     relays_document(&body, true)
 }

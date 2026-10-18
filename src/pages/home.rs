@@ -18,15 +18,15 @@ fn home_content_field(
     nojs: bool,
     max_length: &str,
     content: &str,
-    options: &nonograph_parser::RenderOptions,
+    options: &nostorgraph_parser::RenderOptions,
 ) -> String {
     if nojs {
         format!(
             "<textarea name=\"content\" placeholder=\"Write something with markdown...\" maxlength=\"{max_length}\" title=\"Mind your opsec, be careful what you share.\" required>{}</textarea>",
-            nonograph_parser::html_escape(content)
+            nostorgraph_parser::html_escape(content)
         )
     } else {
-        let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
+        let theme = nostorgraph_parser::html_attr_escape(&options.syntax_theme);
         let external = if options.external_link_security {
             "true"
         } else {
@@ -719,7 +719,7 @@ fn publish_and_record(
 fn record_published(refused: &[String], accepted: &[String]) {
     let path = super::relays::relay_pool();
     if let Err(error) = crate::crawl::mark_publish(&path, refused, accepted) {
-        eprintln!("Nonograph: relay pool was not saved: {error}");
+        eprintln!("Nostorgraph: relay pool was not saved: {error}");
     }
 }
 

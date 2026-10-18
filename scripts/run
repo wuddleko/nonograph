@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Nonograph One-Click Deployment Script
-# Automatically sets up Nonograph with Tor hidden service on any Debian machine
+# Nostorgraph One-Click Deployment Script
+# Automatically sets up Nostorgraph with Tor hidden service on any Debian machine
 # Reuses existing onion addresses and fixes common issues automatically
 
 set -e
@@ -20,12 +20,12 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVICE_PORT=8009
-TOR_DATA_DIR="/var/lib/tor/nonograph"
+TOR_DATA_DIR="/var/lib/tor/nostorgraph"
 TORRC_PATH="/etc/tor/torrc"
-STATE_DIR="/var/lib/nonograph"
-ONION_BACKUP_DIR="/var/backups/nonograph"
-PID_FILE="$ROOT_DIR/nonograph.pid"
-BINARY="/usr/local/bin/nonograph"
+STATE_DIR="/var/lib/nostorgraph"
+ONION_BACKUP_DIR="/var/backups/nostorgraph"
+PID_FILE="$ROOT_DIR/nostorgraph.pid"
+BINARY="/usr/local/bin/nostorgraph"
 
 cd "$ROOT_DIR"
 
@@ -53,7 +53,7 @@ log_success() {
 show_banner() {
     echo -e "${LIGHT_PURPLE}"
     echo "╔════════════════════════════════════════════╗"
-    echo "║            Nonograph Runner                ║"
+    echo "║            Nostorgraph Runner                ║"
     echo "║      One-Click Anonymous Publishing        ║"
     echo "║                                            ║"
     echo "║  • Automatic setup on any Debian machine   ║"
@@ -157,14 +157,14 @@ install_rust() {
 }
 
 # The pid file is the only process this script will signal.
-pid_is_nonograph() {
+pid_is_nostorgraph() {
     local pid="$1"
     local exe
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
     exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
     exe=${exe% \(deleted\)}
-    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nonograph" ]
+    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nostorgraph" ]
 }
 
 check_existing_service() {
@@ -174,8 +174,8 @@ check_existing_service() {
         return 1
     fi
     pid=$(cat "$PID_FILE" 2>/dev/null)
-    if pid_is_nonograph "$pid"; then
-        log_info "Nonograph already running (PID: $pid)"
+    if pid_is_nostorgraph "$pid"; then
+        log_info "Nostorgraph already running (PID: $pid)"
         return 0
     fi
     log_debug "Stale PID file found, removing..."
@@ -185,18 +185,18 @@ check_existing_service() {
 
 # Stop existing service
 stop_service() {
-    log_info "Stopping existing Nonograph service..."
+    log_info "Stopping existing Nostorgraph service..."
 
-    if systemctl cat nonograph >/dev/null 2>&1; then
-        sudo systemctl stop nonograph 2>/dev/null || true
+    if systemctl cat nostorgraph >/dev/null 2>&1; then
+        sudo systemctl stop nostorgraph 2>/dev/null || true
     fi
 
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE" 2>/dev/null)
-        if pid_is_nonograph "$pid"; then
+        if pid_is_nostorgraph "$pid"; then
             kill "$pid"
             sleep 2
-            if pid_is_nonograph "$pid"; then
+            if pid_is_nostorgraph "$pid"; then
                 kill -9 "$pid"
                 sleep 1
             fi
@@ -207,22 +207,22 @@ stop_service() {
     log_success "Service stopped"
 }
 
-# Build Nonograph
+# Build Nostorgraph
 build_service() {
-    log_info "Building Nonograph..."
+    log_info "Building Nostorgraph..."
 
     if [ ! -f "Cargo.toml" ]; then
-        log_error "Cargo.toml not found. Make sure you're in the Nonograph directory"
+        log_error "Cargo.toml not found. Make sure you're in the Nostorgraph directory"
         exit 1
     fi
 
     # Build in release mode
     cargo build --release --locked || {
-        log_error "Failed to build Nonograph"
+        log_error "Failed to build Nostorgraph"
         exit 1
     }
 
-    log_success "Nonograph built successfully"
+    log_success "Nostorgraph built successfully"
 }
 
 # Check and preserve existing onion service
@@ -267,23 +267,23 @@ setup_tor() {
     # Stop Tor service
     sudo systemctl stop tor 2>/dev/null || true
 
-    # Remove existing Nonograph configuration from torrc
+    # Remove existing Nostorgraph configuration from torrc
     sudo awk '
-        /^# Nonograph Hidden Service$/ { skip=1; next }
-        skip && (/^HiddenService/ || /^# End Nonograph Hidden Service$/ || /^$/) { next }
+        /^# Nostorgraph Hidden Service$/ { skip=1; next }
+        skip && (/^HiddenService/ || /^# End Nostorgraph Hidden Service$/ || /^$/) { next }
         skip { skip=0 }
         { print }
     ' "$TORRC_PATH" | sudo tee "$TORRC_PATH.tmp" >/dev/null && sudo mv "$TORRC_PATH.tmp" "$TORRC_PATH"
 
     # Add new configuration
     echo "" | sudo tee -a "$TORRC_PATH" > /dev/null
-    echo "# Nonograph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "# Nostorgraph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServiceDir $TOR_DATA_DIR" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServicePort 80 127.0.0.1:$SERVICE_PORT" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServiceEnableIntroDoSDefense 1" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServiceEnableIntroDoSRatePerSec 25" | sudo tee -a "$TORRC_PATH" > /dev/null
     echo "HiddenServiceEnableIntroDoSBurstPerSec 200" | sudo tee -a "$TORRC_PATH" > /dev/null
-    echo "# End Nonograph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
+    echo "# End Nostorgraph Hidden Service" | sudo tee -a "$TORRC_PATH" > /dev/null
 
     # Create hidden service directory if it doesn't exist
     if ! sudo test -d "$TOR_DATA_DIR" 2>/dev/null; then
@@ -328,48 +328,48 @@ setup_tor() {
 }
 
 install_service() {
-    log_info "Installing the nonograph user and systemd unit..."
+    log_info "Installing the nostorgraph user and systemd unit..."
 
-    if ! id nonograph >/dev/null 2>&1; then
-        sudo useradd -r -s /usr/sbin/nologin -d "$STATE_DIR" nonograph
+    if ! id nostorgraph >/dev/null 2>&1; then
+        sudo useradd -r -s /usr/sbin/nologin -d "$STATE_DIR" nostorgraph
     fi
     sudo mkdir -p "$STATE_DIR/content"
-    sudo cp "$ROOT_DIR/target/release/nonograph" "$BINARY"
+    sudo cp "$ROOT_DIR/target/release/nostorgraph" "$BINARY"
     sudo chmod 755 "$BINARY"
     sudo cp "$ROOT_DIR/Config.toml" "$STATE_DIR/Config.toml"
     sudo rm -rf "$STATE_DIR/templates" "$STATE_DIR/pages"
     sudo cp -a "$ROOT_DIR/templates" "$STATE_DIR/templates"
     sudo cp -a "$ROOT_DIR/pages" "$STATE_DIR/pages"
-    sudo cp "$ROOT_DIR/scripts/nonograph.service" /etc/systemd/system/nonograph.service
-    sudo chown -R nonograph:nonograph "$STATE_DIR"
+    sudo cp "$ROOT_DIR/scripts/nostorgraph.service" /etc/systemd/system/nostorgraph.service
+    sudo chown -R nostorgraph:nostorgraph "$STATE_DIR"
     sudo systemctl daemon-reload
-    sudo systemctl enable nonograph
+    sudo systemctl enable nostorgraph
 }
 
-# Start Nonograph service
+# Start Nostorgraph service
 start_service() {
-    log_info "Starting Nonograph service..."
+    log_info "Starting Nostorgraph service..."
 
     install_service
-    sudo systemctl restart nonograph
+    sudo systemctl restart nostorgraph
 
     local pid=""
     local attempts=0
     while [ $attempts -lt 10 ]; do
-        pid=$(systemctl show -p MainPID --value nonograph 2>/dev/null || true)
-        if pid_is_nonograph "$pid"; then
+        pid=$(systemctl show -p MainPID --value nostorgraph 2>/dev/null || true)
+        if pid_is_nostorgraph "$pid"; then
             break
         fi
         sleep 1
         attempts=$((attempts + 1))
     done
-    if ! pid_is_nonograph "$pid"; then
-        log_error "Failed to start Nonograph"
-        log_info "Check logs: journalctl -u nonograph -n 50"
+    if ! pid_is_nostorgraph "$pid"; then
+        log_error "Failed to start Nostorgraph"
+        log_info "Check logs: journalctl -u nostorgraph -n 50"
         exit 1
     fi
     echo "$pid" > "$PID_FILE"
-    log_success "Nonograph started successfully (PID: $pid)"
+    log_success "Nostorgraph started successfully (PID: $pid)"
 
     if curl -s --max-time 5 "http://localhost:$SERVICE_PORT" > /dev/null 2>&1; then
         log_success "Service is responding on port $SERVICE_PORT"
@@ -384,13 +384,13 @@ show_status() {
     log_info "Service Status:"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Nonograph status
+    # Nostorgraph status
     if check_existing_service; then
         local pid=$(cat "$PID_FILE" 2>/dev/null)
-        echo -e "${GREEN}✅ Nonograph: RUNNING${NC} (PID: $pid)"
+        echo -e "${GREEN}✅ Nostorgraph: RUNNING${NC} (PID: $pid)"
         echo -e "${BLUE}🌐 Local Access: http://localhost:$SERVICE_PORT${NC}"
     else
-        echo -e "${RED}❌ Nonograph: NOT RUNNING${NC}"
+        echo -e "${RED}❌ Nostorgraph: NOT RUNNING${NC}"
     fi
 
     # Tor status
@@ -413,7 +413,7 @@ show_status() {
 
     # Show recent logs
     echo -e "${BLUE}📝 Recent logs:${NC}"
-    journalctl -u nonograph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || true
+    journalctl -u nostorgraph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || true
     echo
 
     # Show management commands
@@ -422,17 +422,17 @@ show_status() {
     echo "  ./scripts/run restart       - Restart the service"
     echo "  ./scripts/run logs          - View full logs"
     echo "  ./scripts/run status        - Show this status"
-    echo "  journalctl -u nonograph -f   - Follow logs in real-time"
+    echo "  journalctl -u nostorgraph -f   - Follow logs in real-time"
     echo
 }
 
 # Show logs
 show_logs() {
-    echo -e "${BLUE}📝 Nonograph Logs:${NC}"
+    echo -e "${BLUE}📝 Nostorgraph Logs:${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    journalctl -u nonograph --no-pager 2>/dev/null || log_warn "No journal entries for nonograph"
+    journalctl -u nostorgraph --no-pager 2>/dev/null || log_warn "No journal entries for nostorgraph"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "💡 Use 'journalctl -u nonograph -f' to follow logs in real-time"
+    echo "💡 Use 'journalctl -u nostorgraph -f' to follow logs in real-time"
 }
 
 # Health check and auto-fix issues
@@ -443,7 +443,7 @@ health_check() {
     # Check if ports are available
     if netstat -tuln 2>/dev/null | grep -q ":$SERVICE_PORT "; then
         if ! check_existing_service; then
-            log_warn "Port $SERVICE_PORT is in use and the pid file does not name Nonograph"
+            log_warn "Port $SERVICE_PORT is in use and the pid file does not name Nostorgraph"
         fi
     fi
 
@@ -485,11 +485,11 @@ main() {
         "stop")
             show_banner
             stop_service
-            log_success "Nonograph stopped"
+            log_success "Nostorgraph stopped"
             ;;
         "restart")
             show_banner
-            log_info "Restarting Nonograph..."
+            log_info "Restarting Nostorgraph..."
             stop_service
             sleep 2
             # Re-run the full startup process
@@ -509,7 +509,7 @@ main() {
 
             # Check if already running
             if check_existing_service; then
-                log_success "Nonograph is already running!"
+                log_success "Nostorgraph is already running!"
                 show_status
                 exit 0
             fi
@@ -545,7 +545,7 @@ main() {
             # Show final status
             show_status
 
-            log_success "Nonograph is now running as a Tor hidden service!"
+            log_success "Nostorgraph is now running as a Tor hidden service!"
             if [ "$has_existing_onion" = true ]; then
                 log_success "Reusing previous onion address: $EXISTING_ONION"
             fi

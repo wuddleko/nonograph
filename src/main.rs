@@ -15,7 +15,7 @@ pub(crate) mod template;
 pub(crate) mod tor_circuits;
 
 use config::Config;
-use nonograph_parser as parser;
+use nostorgraph_parser as parser;
 
 use chrono::{DateTime, Utc};
 use rocket::{
@@ -250,10 +250,10 @@ fn install_bundled_pages() {
         Ok(mut installed) => {
             installed.sort();
             for name in installed {
-                println!("Nonograph: Installed bundled page {name}");
+                println!("Nostorgraph: Installed bundled page {name}");
             }
         }
-        Err(error) => eprintln!("Nonograph: {error}"),
+        Err(error) => eprintln!("Nostorgraph: {error}"),
     }
 }
 
@@ -323,17 +323,17 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     let socks = match startup_socks(&config) {
         Ok(socks @ crate::nostr::RelaySocks::Proxy(addr)) => {
             crate::nostr::set_relay_socks(socks);
-            println!("Nonograph: Nostr relays via SOCKS {addr}");
+            println!("Nostorgraph: Nostr relays via SOCKS {addr}");
             socks
         }
         Ok(crate::nostr::RelaySocks::Direct) => {
             crate::nostr::set_relay_socks(crate::nostr::RelaySocks::Direct);
-            println!("Nonograph: Nostr relays connect directly (no SOCKS)");
+            println!("Nostorgraph: Nostr relays connect directly (no SOCKS)");
             crate::nostr::RelaySocks::Direct
         }
         Ok(crate::nostr::RelaySocks::Disabled) | Err(()) => {
             eprintln!(
-                "Nonograph: [nostr].socks is not a socket address; relay connections are disabled"
+                "Nostorgraph: [nostr].socks is not a socket address; relay connections are disabled"
             );
             std::process::exit(1);
         }
@@ -343,9 +343,9 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 
     let onion_url = config.resolve_onion_url();
     match &onion_url {
-        Some(url) => println!("Nonograph: Onion-Location advertising enabled: {}", url),
+        Some(url) => println!("Nostorgraph: Onion-Location advertising enabled: {}", url),
         None => {
-            println!("Nonograph: Onion-Location disabled (no onion URL configured or detected)")
+            println!("Nostorgraph: Onion-Location disabled (no onion URL configured or detected)")
         }
     }
 
@@ -353,11 +353,11 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
     let address = match config.listen_address(rocket_address.as_deref()) {
         Ok(address) => address,
         Err(error) => {
-            eprintln!("Nonograph: {error}");
+            eprintln!("Nostorgraph: {error}");
             std::process::exit(1);
         }
     };
-    println!("Nonograph: listening on {address}:{}", config.server.port);
+    println!("Nostorgraph: listening on {address}:{}", config.server.port);
 
     let mut rocket = rocket::build()
         .configure(rocket::Config {

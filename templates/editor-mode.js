@@ -1,5 +1,5 @@
 (function () {
-    var key = "nonograph-editor-mode";
+    var key = "nostorgraph-editor-mode";
     var editor = document.querySelector('writemark-editor[name="content"]');
     if (!editor) return;
 

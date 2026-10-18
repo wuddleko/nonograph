@@ -1,32 +1,32 @@
 <Container version="2">
   <!-- Delete this file if your repository does not ship Docker apps. -->
-  <Name>Nonograph</Name>
-  <Repository>ghcr.io/wuddleko/nonograph:latest</Repository>
-  <Registry>https://ghcr.io/wuddleko/nonograph</Registry>
+  <Name>Nostorgraph</Name>
+  <Repository>ghcr.io/wuddleko/nostorgraph:latest</Repository>
+  <Registry>https://ghcr.io/wuddleko/nostorgraph</Registry>
   <Network>bridge</Network>
 
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
 
   <!-- Optional but highly recommended: app icon -->
-  <Icon>https://raw.githubusercontent.com/wuddleko/nonograph/refs/heads/main/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/wuddleko/nostorgraph/refs/heads/main/icon.png</Icon>
 
   <!-- No WebUI link. That button opens in the browser viewing Unraid, and the
        host port is bound to this server's loopback. -->
   <ExtraParams>--read-only --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --security-opt=no-new-privileges:true --tmpfs=/tmp --tmpfs=/run</ExtraParams>
 
   <!-- Plain text description -->
-  <Overview>Nonograph is a simple anonymous publishing platform for anyone who wants their words to exist online without being tied to an identity. You write something, you get a shareable link, and you share your writing with whoever you'd like. No account creation, no profile, no analytics trail following readers around.</Overview>
+  <Overview>Nostorgraph is a simple anonymous publishing platform for anyone who wants their words to exist online without being tied to an identity. You write something, you get a shareable link, and you share your writing with whoever you'd like. No account creation, no profile, no analytics trail following readers around.</Overview>
 
   <!-- NOTE: Either Support or Project is REQUIRED -->
   <!-- Project page -->
-  <Project>https://github.com/wuddleko/nonograph</Project>
+  <Project>https://github.com/wuddleko/nostorgraph</Project>
 
   <!-- Raw URL to this exact template file -->
-  <TemplateURL>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/unraid/nonograph.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/unraid/nostorgraph.xml</TemplateURL>
 
   <!-- Readme first file -->
-  <ReadMe>https://raw.githubusercontent.com/wuddleko/nonograph/main/README.md</ReadMe>
+  <ReadMe>https://raw.githubusercontent.com/wuddleko/nostorgraph/main/README.md</ReadMe>
 
 
   <!-- Valid category entries can be generated from the Application Categorizer plugin available in Apps -->
@@ -67,7 +67,7 @@
 
   <!-- v2 templates should define ports/paths/variables with Config entries -->
   <Config Name="Web UI Port" Target="8009" Default="127.0.0.1:8009" Mode="tcp" Description="Host port for the web UI, bound to this server's loopback. Open it on the server, or put a reverse proxy on this host in front for HTTPS." Type="Port" Display="always" Required="true" Mask="false">127.0.0.1:8009</Config>
-  <Config Name="Content Directory" Target="/app/content" Default="/mnt/user/appdata/nonograph/content" Mode="rw" Description="Directory to store published content" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nonograph/content</Config>
-  <Config Name="Tor Data" Target="/var/lib/tor" Default="/mnt/user/appdata/nonograph/tor" Mode="rw" Description="Tor state, including the entry guard" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nonograph/tor</Config>
-  <Config Name="Tor Hidden Service" Target="/var/lib/tor/hidden_service" Default="/mnt/user/appdata/nonograph/onion" Mode="rw" Description="Hidden service directory (contains private keys)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nonograph/onion</Config>
+  <Config Name="Content Directory" Target="/app/content" Default="/mnt/user/appdata/nostorgraph/content" Mode="rw" Description="Directory to store published content" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nostorgraph/content</Config>
+  <Config Name="Tor Data" Target="/var/lib/tor" Default="/mnt/user/appdata/nostorgraph/tor" Mode="rw" Description="Tor state, including the entry guard" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nostorgraph/tor</Config>
+  <Config Name="Tor Hidden Service" Target="/var/lib/tor/hidden_service" Default="/mnt/user/appdata/nostorgraph/onion" Mode="rw" Description="Hidden service directory (contains private keys)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nostorgraph/onion</Config>
 </Container>

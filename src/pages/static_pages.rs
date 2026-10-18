@@ -91,7 +91,7 @@ pub(crate) fn build_static_page(page_name: &str, config: &Config, nojs: bool) ->
         ));
     };
     let rendered_content =
-        nonograph_parser::render_markdown_with_config(&raw_content, &render_options(config));
+        nostorgraph_parser::render_markdown_with_config(&raw_content, &render_options(config));
     let origin = config.normalized_public_origin().unwrap_or_default();
     let mut context = article_context(
         &title,

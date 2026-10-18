@@ -1,5 +1,5 @@
 use crate::nostr::public_relay_url;
-use nonograph_parser::{html_attr_escape, html_escape};
+use nostorgraph_parser::{html_attr_escape, html_escape};
 
 pub fn render_about_section(relays: &[String], nojs: bool) -> String {
     let mut html = String::from(

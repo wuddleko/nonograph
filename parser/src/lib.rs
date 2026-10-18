@@ -1418,7 +1418,7 @@ pub fn highlight_code_lines(language: &str, code: &str, syntax_theme: &str) -> V
 fn theme_for<'a>(themes: &'a ThemeSet, name: &str) -> &'a syntect::highlighting::Theme {
     themes.themes.get(name).unwrap_or_else(|| {
         eprintln!(
-            "Nonograph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
+            "Nostorgraph: Warning: Theme '{}' not found, falling back to 'base16-ocean.dark'",
             name
         );
         &themes.themes["base16-ocean.dark"]

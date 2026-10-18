@@ -1,5 +1,5 @@
 [package]
-name = "nonograph-page"
+name = "nostorgraph-page"
 version = "0.4.6"
 edition = "2021"
 license.workspace = true
@@ -8,6 +8,6 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-nonograph-nip44 = { path = "../nip44" }
-nonograph-parser = { path = "../parser" }
+nostorgraph-nip44 = { path = "../nip44" }
+nostorgraph-parser = { path = "../parser" }
 wasm-bindgen = "=0.2.100"

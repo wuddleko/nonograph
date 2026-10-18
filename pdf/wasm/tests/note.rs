@@ -1,4 +1,4 @@
-use nonograph_pdf::note_pdf;
+use nostorgraph_pdf::note_pdf;
 
 #[test]
 fn the_pdf_export_returns_the_note_pdf() {

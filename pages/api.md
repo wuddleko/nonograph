@@ -1,8 +1,8 @@
 ---
 title: API Documentation
 date: 2026-10-13
-author: nonograph
-generator: nonograph v0.4.6
+author: nostorgraph
+generator: nostorgraph v0.4.6
 ---
 
 Publishing does not write a file on this host. A note is sealed, then the ciphertext is sent to Nostr relays. The host does not keep a copy of the writing. The link you get carries the key.
@@ -28,9 +28,9 @@ The host seals the note and publishes it. The form on `/nojs` is this request.
 | `title` | Yes | Title. Trimmed. |
 | `content` | Yes | Markup. Not trimmed. |
 | `alias` | No | Optional name. Trimmed. |
-| `csrf_token` | When CSRF is on | Must match the `nonograph_csrf` cookie. |
+| `csrf_token` | When CSRF is on | Must match the `nostorgraph_csrf` cookie. |
 
-The relays are the `nonograph_relays` cookie, edited with `POST /nojs/relays`. A public relay is `wss://` on port 443, with no username or password, and not a local or private address. Private URLs in the cookie are skipped. At most 6 public relays are used.
+The relays are the `nostorgraph_relays` cookie, edited with `POST /nojs/relays`. A public relay is `wss://` on port 443, with no username or password, and not a local or private address. Private URLs in the cookie are skipped. At most 6 public relays are used.
 
 ### Success
 **Status:** `303` redirect to `/s/{locator}/{event-id}#key`
@@ -57,7 +57,7 @@ The browser seals the note, then posts the sealed event.
 }
 ```
 
-`event` must already be a sealed note (kind 30323) with a valid signature and stamp. This endpoint does not accept plaintext. `relays` are extra public relays. The instance relays come from `Config.toml` and take the slots first. At most 6 public relays are used, so a later extra relay is dropped. Private relay URLs are dropped. When CSRF is on, `csrf_token` must match the `nonograph_csrf` cookie.
+`event` must already be a sealed note (kind 30323) with a valid signature and stamp. This endpoint does not accept plaintext. `relays` are extra public relays. The instance relays come from `Config.toml` and take the slots first. At most 6 public relays are used, so a later extra relay is dropped. Private relay URLs are dropped. When CSRF is on, `csrf_token` must match the `nostorgraph_csrf` cookie.
 
 ### Success
 **Status:** `200`

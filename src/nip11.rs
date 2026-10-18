@@ -24,7 +24,7 @@ fn accepts_note_kind(limitation: &Map<String, Value>) -> bool {
     kinds.as_array().is_some_and(|kinds| {
         kinds
             .iter()
-            .any(|kind| kind.as_u64() == Some(u64::from(nonograph_nip44::KIND)))
+            .any(|kind| kind.as_u64() == Some(u64::from(nostorgraph_nip44::KIND)))
     })
 }
 

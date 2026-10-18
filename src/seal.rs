@@ -4,26 +4,26 @@ use secp256k1::{Keypair, SECP256K1};
 use crate::nostr::{hex_encode, now_secs, signed_event, SignedNote};
 
 pub(crate) struct SealMaterial {
-    pub secret: [u8; nonograph_nip44::SECRET_LEN],
+    pub secret: [u8; nostorgraph_nip44::SECRET_LEN],
     pub locator: String,
 }
 
 pub(crate) fn generate_seal_material() -> SealMaterial {
     let mut rng = thread_rng();
-    let mut raw = [0u8; nonograph_nip44::SECRET_LEN + nonograph_nip44::LOCATOR_LEN / 2];
+    let mut raw = [0u8; nostorgraph_nip44::SECRET_LEN + nostorgraph_nip44::LOCATOR_LEN / 2];
     for byte in &mut raw {
         *byte = rng.gen();
     }
-    let mut secret = [0u8; nonograph_nip44::SECRET_LEN];
-    secret.copy_from_slice(&raw[..nonograph_nip44::SECRET_LEN]);
+    let mut secret = [0u8; nostorgraph_nip44::SECRET_LEN];
+    secret.copy_from_slice(&raw[..nostorgraph_nip44::SECRET_LEN]);
     SealMaterial {
         secret,
-        locator: hex_encode(&raw[nonograph_nip44::SECRET_LEN..]),
+        locator: hex_encode(&raw[nostorgraph_nip44::SECRET_LEN..]),
     }
 }
 
 pub(crate) struct SealedPlaintext {
-    pub secret: [u8; nonograph_nip44::SECRET_LEN],
+    pub secret: [u8; nostorgraph_nip44::SECRET_LEN],
     pub locator: String,
     pub payload: String,
     pub signing_key: Keypair,
@@ -32,7 +32,7 @@ pub(crate) struct SealedPlaintext {
 
 #[derive(Debug)]
 pub(crate) enum SealPlaintextError {
-    Seal(nonograph_nip44::Error),
+    Seal(nostorgraph_nip44::Error),
     TooLong,
     Stamp,
 }
@@ -44,9 +44,9 @@ const JSON_ESCAPE_EXPANSION: usize = 6;
 
 pub(crate) fn sealed_payload_max(title_max: usize, alias_max: usize, content_max: usize) -> usize {
     worst_note_json_len(title_max, alias_max, content_max)
-        .and_then(nonograph_nip44::encrypted_len)
-        .map(|len| len.min(nonograph_nip44::MAX_PAYLOAD_CHARS))
-        .unwrap_or(nonograph_nip44::MAX_PAYLOAD_CHARS)
+        .and_then(nostorgraph_nip44::encrypted_len)
+        .map(|len| len.min(nostorgraph_nip44::MAX_PAYLOAD_CHARS))
+        .unwrap_or(nostorgraph_nip44::MAX_PAYLOAD_CHARS)
 }
 
 fn worst_note_json_len(title_max: usize, alias_max: usize, content_max: usize) -> Option<usize> {
@@ -55,7 +55,7 @@ fn worst_note_json_len(title_max: usize, alias_max: usize, content_max: usize) -
         .checked_add(expanded(title_max)?)?
         .checked_add(expanded(alias_max)?)?
         .checked_add(expanded(content_max)?)?
-        .checked_add(nonograph_nip44::LOCATOR_LEN)
+        .checked_add(nostorgraph_nip44::LOCATOR_LEN)
 }
 
 pub(crate) struct MinedStamp {
@@ -70,7 +70,7 @@ pub(crate) fn sealed_tags(locator: &str, nonce: &str) -> Vec<Vec<String>> {
         vec![
             "nonce".to_string(),
             nonce.to_string(),
-            nonograph_nip44::POW_BITS.to_string(),
+            nostorgraph_nip44::POW_BITS.to_string(),
         ],
     ]
 }
@@ -82,11 +82,11 @@ pub(crate) fn mine_stamp(
     content: &str,
     attempts: u32,
 ) -> Result<MinedStamp, SealPlaintextError> {
-    let kind = nonograph_nip44::KIND;
+    let kind = nostorgraph_nip44::KIND;
     for counter in 0..attempts {
         let tags = sealed_tags(locator, &counter.to_string());
-        let id = nonograph_nip44::event_id(pubkey_hex, created_at, kind, &tags, content);
-        if nonograph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok() {
+        let id = nostorgraph_nip44::event_id(pubkey_hex, created_at, kind, &tags, content);
+        if nostorgraph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok() {
             return Ok(MinedStamp {
                 id,
                 created_at,
@@ -111,7 +111,7 @@ pub(crate) fn seal_plaintext(
     for byte in &mut nonce {
         *byte = rng.gen();
     }
-    let payload = nonograph_nip44::seal(
+    let payload = nostorgraph_nip44::seal(
         title,
         author,
         content,
@@ -145,7 +145,7 @@ pub(crate) fn seal_plaintext(
 pub(crate) struct SignedSeal {
     pub note: SignedNote,
     pub locator: String,
-    pub secret: [u8; nonograph_nip44::SECRET_LEN],
+    pub secret: [u8; nostorgraph_nip44::SECRET_LEN],
     pub k: String,
 }
 
@@ -161,7 +161,7 @@ pub(crate) fn seal_and_sign(
     let note = signed_event(
         &sealed.signing_key,
         sealed.stamp.created_at,
-        nonograph_nip44::KIND,
+        nostorgraph_nip44::KIND,
         &sealed.stamp.tags,
         &sealed.payload,
     );

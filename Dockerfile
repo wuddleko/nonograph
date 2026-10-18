@@ -21,7 +21,7 @@ RUN cargo build --release --locked
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
-LABEL org.opencontainers.image.source=https://github.com/wuddleko/nonograph
+LABEL org.opencontainers.image.source=https://github.com/wuddleko/nostorgraph
 LABEL org.opencontainers.image.description="Anonymous publishing for the privacy-conscious web"
 LABEL org.opencontainers.image.licenses=Unlicense
 
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y \
 
 # Cookie auth is full Tor control (SETCONF, SIGNAL SHUTDOWN), not GETINFO
 # circuit-status. debian-tor group membership is the grant that lets
-# nonograph read the cookie. /run/tor-control is not writable by nonograph.
+# nostorgraph read the cookie. /run/tor-control is not writable by nostorgraph.
 RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
     echo "SocksPort 127.0.0.1:9050 IsolateSOCKSAuth" >> /etc/tor/torrc && \
     echo "SocksPolicy accept 127.0.0.1" >> /etc/tor/torrc && \
@@ -53,18 +53,18 @@ RUN echo "DataDirectory /var/lib/tor" > /etc/tor/torrc && \
       echo "HiddenServicePoWDefensesEnabled 1" >> /etc/tor/torrc; \
     fi
 
-RUN useradd -r -s /bin/false -u 1000 nonograph && \
-    usermod -aG debian-tor nonograph
+RUN useradd -r -s /bin/false -u 1000 nostorgraph && \
+    usermod -aG debian-tor nostorgraph
 RUN mkdir -p /app/content /app/templates /var/lib/tor /run/tor-control && \
     mkdir -p /var/lib/tor/hidden_service && \
     chmod 700 /var/lib/tor && \
     chmod 700 /var/lib/tor/hidden_service && \
-    chown -R nonograph:nonograph /app && \
+    chown -R nostorgraph:nostorgraph /app && \
     chown -R debian-tor:debian-tor /var/lib/tor && \
     chown debian-tor:debian-tor /run/tor-control && \
     chmod 750 /run/tor-control
 
-COPY --from=builder /app/target/release/nonograph /app/nonograph
+COPY --from=builder /app/target/release/nostorgraph /app/nostorgraph
 COPY Config.toml /app/Config.toml
 COPY templates/ /app/templates/
 COPY pages/ /app/pages/
@@ -72,7 +72,7 @@ COPY entrypoint.sh /app/entrypoint.sh
 
 RUN sed -i 's/address = "127.0.0.1"/address = "0.0.0.0"/' /app/Config.toml || true && \
     chmod +x /app/entrypoint.sh && \
-    chown -R nonograph:nonograph /app/pages /app/templates /app/Config.toml /app/nonograph
+    chown -R nostorgraph:nostorgraph /app/pages /app/templates /app/Config.toml /app/nostorgraph
 
 WORKDIR /app
 EXPOSE 8009

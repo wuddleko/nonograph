@@ -157,8 +157,8 @@ mod tests {
             "Location: /nojs/s/0123456789abcdef0123?k="
         );
         assert_eq!(
-            redact_k_values("Location: https://nonograph.example/nojs/s/abc?k=LOGSECRETVALUE"),
-            "Location: https://nonograph.example/nojs/s/abc?k="
+            redact_k_values("Location: https://nostorgraph.example/nojs/s/abc?k=LOGSECRETVALUE"),
+            "Location: https://nostorgraph.example/nojs/s/abc?k="
         );
         let plain = "GET /nojs?error=title_required";
         assert_eq!(redact_k_values(plain), plain);

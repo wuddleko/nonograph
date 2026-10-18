@@ -87,7 +87,7 @@ where
         let now = crate::nostr::now_secs();
         let crawled = crawl(now);
         if let Err(error) = &crawled {
-            eprintln!("Nonograph: relay pool was not saved: {error}");
+            eprintln!("Nostorgraph: relay pool was not saved: {error}");
         }
         let now = crate::nostr::now_secs();
         let wait = match &crawled {
@@ -385,7 +385,7 @@ pub(crate) fn usable_rows(path: &Path) -> Vec<Row> {
         Ok(rows) => rows,
         Err(error) => {
             eprintln!(
-                "Nonograph: relay pool {} was not read: {error}",
+                "Nostorgraph: relay pool {} was not read: {error}",
                 path.display()
             );
             Vec::new()
@@ -404,14 +404,14 @@ pub(crate) fn candidates(path: &Path, configured: &[String]) -> Vec<String> {
             .collect(),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             eprintln!(
-                "Nonograph: relay pool {} was not read: {error}",
+                "Nostorgraph: relay pool {} was not read: {error}",
                 path.display()
             );
             configured_relays(configured)
         }
         Err(error) => {
             eprintln!(
-                "Nonograph: relay pool {} was not read: {error}",
+                "Nostorgraph: relay pool {} was not read: {error}",
                 path.display()
             );
             Vec::new()
@@ -488,7 +488,7 @@ fn row_is_usable(row: &Row) -> bool {
     if !crate::nip11::document_is_public(document) {
         return false;
     }
-    let name = nonograph_nip44::KIND.to_string();
+    let name = nostorgraph_nip44::KIND.to_string();
     visit
         .probes
         .iter()

@@ -1,7 +1,7 @@
 services:
-  nonograph:
+  nostorgraph:
     build: .
-    container_name: nonograph_app
+    container_name: nostorgraph_app
     ports:
       - "127.0.0.1:8009:8009"
     read_only: true
@@ -19,9 +19,9 @@ services:
       - /tmp
       - /run
     volumes:
-      - ${HOME}/nonograph/content:/app/content
-      - ${HOME}/nonograph/tor:/var/lib/tor
-      - ${HOME}/nonograph/onion:/var/lib/tor/hidden_service
+      - ${HOME}/nostorgraph/content:/app/content
+      - ${HOME}/nostorgraph/tor:/var/lib/tor
+      - ${HOME}/nostorgraph/onion:/var/lib/tor/hidden_service
       - ./Config.toml:/app/Config.toml:ro
     environment:
       - ROCKET_ADDRESS=0.0.0.0
@@ -34,7 +34,7 @@ services:
       retries: 3
       start_period: 240s
     networks:
-      - nonograph_network
+      - nostorgraph_network
 
 networks:
-  nonograph_network:
+  nostorgraph_network:

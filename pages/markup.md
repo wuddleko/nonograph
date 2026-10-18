@@ -1,11 +1,11 @@
 ---
 title: Markup Help
 date: 2026-02-11
-author: nonograph
-generator: nonograph v0.2.8
+author: nostorgraph
+generator: nostorgraph v0.2.8
 ---
 
-Nonograph supports a lot of concise markup options to make pages fun and expressive. It's a dialect of markdown focused on speed and literal input.
+Nostorgraph supports a lot of concise markup options to make pages fun and expressive. It's a dialect of markdown focused on speed and literal input.
 
 What you type is ordinary markup. A published note is sealed, and this site does not keep a copy you can open as a raw file.
 
@@ -226,7 +226,7 @@ You can append a filetype immediately after the backticks (on the same line, no 
 ````md
 ```json
 {
-  "name": "nonograph",
+  "name": "nostorgraph",
   "version": "1.0.0",
   "settings": {
     "debug": true,

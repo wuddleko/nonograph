@@ -829,7 +829,7 @@ if (JSON.stringify(saved) !== JSON.stringify(expected)) {
 }
 "#,
     );
-    run_javascript("nonograph-relay-list", &program);
+    run_javascript("nostorgraph-relay-list", &program);
 }
 
 #[test]
@@ -860,7 +860,7 @@ if (dealt.indexOf("wss://pinned.example") !== -1) {
 }
 "#,
     );
-    run_javascript("nonograph-relay-deal", &program);
+    run_javascript("nostorgraph-relay-deal", &program);
 }
 
 #[test]
@@ -924,17 +924,17 @@ const cleared = {
     },
 };
 writeRelayList(cleared, { dealt: [], pinned: [] });
-const stored = cleared.getItem("nonograph_relays");
+const stored = cleared.getItem("nostorgraph_relays");
 const loadedEmpty = loadRelayList(cleared, candidates);
 if (loadedEmpty.dealt.length !== 0 || loadedEmpty.pinned.length !== 0) {
     throw new Error(JSON.stringify(loadedEmpty));
 }
-if (cleared.getItem("nonograph_relays") !== stored) {
-    throw new Error(cleared.getItem("nonograph_relays"));
+if (cleared.getItem("nostorgraph_relays") !== stored) {
+    throw new Error(cleared.getItem("nostorgraph_relays"));
 }
 "#,
     );
-    run_javascript("nonograph-relay-visit", &program);
+    run_javascript("nostorgraph-relay-visit", &program);
 }
 
 #[test]
@@ -1123,7 +1123,7 @@ if (posted.body.relays.some(function (relay) { return relay.indexOf("left.exampl
 }
 "#,
     );
-    run_javascript("nonograph-relay-paths", &program);
+    run_javascript("nostorgraph-relay-paths", &program);
 }
 
 #[test]
@@ -1179,7 +1179,7 @@ if (cleared.dealt.length !== 0 || cleared.pinned.length !== 0) {
 }
 "#,
     );
-    run_javascript("nonograph-relay-actions", &program);
+    run_javascript("nostorgraph-relay-actions", &program);
 }
 
 #[test]
@@ -1202,21 +1202,21 @@ for (let index = 0; index < 6; index += 1) {
     pinned.push("wss://pin" + index + ".example");
 }
 writeRelayList(memory, { dealt: [], pinned: pinned });
-const before = memory.getItem("nonograph_relays");
+const before = memory.getItem("nostorgraph_relays");
 const full = addRelayResult(memory, "wss://extra.example");
 if (full.error !== "Six relays are already pinned." || full.clear) {
     throw new Error("full pin list was accepted");
 }
-if (full.list.pinned.indexOf("wss://extra.example") !== -1 || memory.getItem("nonograph_relays") !== before) {
+if (full.list.pinned.indexOf("wss://extra.example") !== -1 || memory.getItem("nostorgraph_relays") !== before) {
     throw new Error("seventh pin was stored");
 }
 const again = addRelayResult(memory, "wss://pin0.example");
-if (again.error !== "" || !again.clear || memory.getItem("nonograph_relays") !== before) {
+if (again.error !== "" || !again.clear || memory.getItem("nostorgraph_relays") !== before) {
     throw new Error("pinned url was treated as new");
 }
 "#,
     );
-    run_javascript("nonograph-relay-full", &program);
+    run_javascript("nostorgraph-relay-full", &program);
 }
 
 fn run_javascript(prefix: &str, program: &str) {

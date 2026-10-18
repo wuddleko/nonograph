@@ -5,16 +5,16 @@ use crate::nostr::{decode_fixed_hex, hex_encode, sealed_locator, sealed_note_fro
 fn generate_seal_material_matches_the_browser_lengths() {
     let first = generate_seal_material();
     let second = generate_seal_material();
-    assert_eq!(first.secret.len(), nonograph_nip44::SECRET_LEN);
+    assert_eq!(first.secret.len(), nostorgraph_nip44::SECRET_LEN);
     assert_ne!(first.secret, second.secret);
     assert_ne!(first.locator, second.locator);
     for material in [&first, &second] {
         assert!(sealed_locator(&material.locator));
         assert_eq!(
-            decode_fixed_hex::<{ nonograph_nip44::LOCATOR_LEN / 2 }>(&material.locator)
+            decode_fixed_hex::<{ nostorgraph_nip44::LOCATOR_LEN / 2 }>(&material.locator)
                 .unwrap()
                 .len(),
-            nonograph_nip44::LOCATOR_LEN / 2
+            nostorgraph_nip44::LOCATOR_LEN / 2
         );
     }
 }
@@ -22,7 +22,7 @@ fn generate_seal_material_matches_the_browser_lengths() {
 #[test]
 fn seal_plaintext_opens_and_rejects_an_over_cap_ciphertext() {
     let sealed = seal_plaintext("Title", "Ada", "hello", 128, 32, 256_000).unwrap();
-    let note = nonograph_nip44::open(&sealed.payload, &sealed.secret, &sealed.locator).unwrap();
+    let note = nostorgraph_nip44::open(&sealed.payload, &sealed.secret, &sealed.locator).unwrap();
     assert_eq!(note.title, "Title");
     assert_eq!(note.author, "Ada");
     assert_eq!(note.content, "hello");
@@ -44,15 +44,15 @@ fn seal_plaintext_opens_and_rejects_an_over_cap_ciphertext() {
             vec![
                 "nonce".to_string(),
                 sealed.stamp.tags[1][1].clone(),
-                nonograph_nip44::POW_BITS.to_string(),
+                nostorgraph_nip44::POW_BITS.to_string(),
             ],
         ]
     );
-    assert!(nonograph_nip44::check_stamp(
+    assert!(nostorgraph_nip44::check_stamp(
         &sealed.stamp.id,
         &pubkey_hex,
         sealed.stamp.created_at,
-        nonograph_nip44::KIND,
+        nostorgraph_nip44::KIND,
         &sealed.stamp.tags,
         &sealed.payload,
     )
@@ -108,12 +108,12 @@ fn seal_and_sign_round_trips_through_open() {
         })
         .collect::<Vec<Vec<_>>>();
     assert!(
-        nonograph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok()
+        nostorgraph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok()
     );
     let (parsed, locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, signed.note.id);
     assert_eq!(locator, signed.locator);
-    let opened = nonograph_nip44::open(content, &signed.secret, &locator).unwrap();
+    let opened = nostorgraph_nip44::open(content, &signed.secret, &locator).unwrap();
     assert_eq!(opened.title, "Title");
     assert_eq!(opened.author, "Ada");
     assert_eq!(opened.content, "hello");
@@ -122,12 +122,12 @@ fn seal_and_sign_round_trips_through_open() {
 #[test]
 fn seal_and_sign_returns_a_signed_note_the_locator_and_the_secret() {
     let signed = seal_and_sign("Title", "Ada", "hello", 128, 32, 256_000).unwrap();
-    assert_eq!(signed.secret.len(), nonograph_nip44::SECRET_LEN);
+    assert_eq!(signed.secret.len(), nostorgraph_nip44::SECRET_LEN);
     let value: serde_json::Value = serde_json::from_str(&signed.note.event_json).unwrap();
     let (parsed, locator) = sealed_note_from_json(&value, 128, 32, 256_000).unwrap();
     assert_eq!(parsed.id, signed.note.id);
     assert_eq!(locator, signed.locator);
-    let opened = nonograph_nip44::open(
+    let opened = nostorgraph_nip44::open(
         value["content"].as_str().unwrap(),
         &signed.secret,
         &signed.locator,
@@ -136,7 +136,7 @@ fn seal_and_sign_returns_a_signed_note_the_locator_and_the_secret() {
     assert_eq!(opened.title, "Title");
     assert_eq!(opened.author, "Ada");
     assert_eq!(opened.content, "hello");
-    assert_eq!(value["kind"], nonograph_nip44::KIND);
+    assert_eq!(value["kind"], nostorgraph_nip44::KIND);
     assert_ne!(value["content"].as_str().unwrap(), "hello");
     assert_eq!(signed.k, base64url(&signed.secret));
     assert!(signed
@@ -200,10 +200,10 @@ fn sealed_payload_max_is_the_ciphertext_a_full_note_can_produce() {
     let key = [1u8; 32];
     let nonce = [2u8; 32];
     for len in [1usize, 32, 33, 65_535, 65_536] {
-        let payload = nonograph_nip44::encrypt(&"a".repeat(len), &key, &nonce).unwrap();
+        let payload = nostorgraph_nip44::encrypt(&"a".repeat(len), &key, &nonce).unwrap();
         assert_eq!(
             payload.len(),
-            nonograph_nip44::encrypted_len(len).unwrap(),
+            nostorgraph_nip44::encrypted_len(len).unwrap(),
             "{len}"
         );
     }
@@ -228,7 +228,7 @@ fn sealed_payload_max_is_the_ciphertext_a_full_note_can_produce() {
     );
     let secret = [3u8; 32];
     let sealed_payload =
-        nonograph_nip44::seal(&title, &author, &content, locator, &secret, &nonce).unwrap();
+        nostorgraph_nip44::seal(&title, &author, &content, locator, &secret, &nonce).unwrap();
     let cap = sealed_payload_max(title_max, alias_max, content_max);
     assert_eq!(sealed_payload.len(), cap);
     assert!(cap > content_max);
@@ -253,11 +253,11 @@ fn sealed_payload_max_is_the_ciphertext_a_full_note_can_produce() {
 fn sealed_payload_max_stops_at_the_payload_decrypt_accepts() {
     assert_eq!(
         sealed_payload_max(128, 32, 256_000),
-        nonograph_nip44::MAX_PAYLOAD_CHARS
+        nostorgraph_nip44::MAX_PAYLOAD_CHARS
     );
     assert_eq!(
         sealed_payload_max(usize::MAX, usize::MAX, usize::MAX),
-        nonograph_nip44::MAX_PAYLOAD_CHARS
+        nostorgraph_nip44::MAX_PAYLOAD_CHARS
     );
 
     let locator = "0123456789abcdef0123";
@@ -265,16 +265,16 @@ fn sealed_payload_max_stops_at_the_payload_decrypt_accepts() {
     let nonce = [2u8; 32];
     let ordinary = "a".repeat(256_000);
     let ordinary_payload =
-        nonograph_nip44::seal("T", "", &ordinary, locator, &secret, &nonce).unwrap();
+        nostorgraph_nip44::seal("T", "", &ordinary, locator, &secret, &nonce).unwrap();
     let cap = sealed_payload_max(128, 32, 256_000);
     assert!(ordinary_payload.len() > 256_000);
     assert!(ordinary_payload.len() <= cap);
-    assert!(nonograph_nip44::open(&ordinary_payload, &secret, locator).is_ok());
+    assert!(nostorgraph_nip44::open(&ordinary_payload, &secret, locator).is_ok());
 
     let controls = "\u{1}".repeat(109_215);
-    let over = nonograph_nip44::seal("T", "", &controls, locator, &secret, &nonce).unwrap();
+    let over = nostorgraph_nip44::seal("T", "", &controls, locator, &secret, &nonce).unwrap();
     assert!(over.len() > cap);
-    assert!(nonograph_nip44::open(&over, &secret, locator).is_err());
+    assert!(nostorgraph_nip44::open(&over, &secret, locator).is_err());
     match seal_plaintext("T", "", &controls, 128, 32, 256_000) {
         Err(SealPlaintextError::TooLong) => {}
         Err(SealPlaintextError::Seal(error)) => panic!("{error}"),

@@ -161,7 +161,7 @@ impl RelayPass {
             .is_err()
         {
             self.running.store(false, Ordering::Release);
-            eprintln!("Nonograph: could not start relay circuit assignment");
+            eprintln!("Nostorgraph: could not start relay circuit assignment");
         }
     }
 
@@ -554,7 +554,7 @@ pub(super) fn schedule_relay_assignments_via(
     let open: OpenRelay = Arc::new(move |relay: &str, timeout: Duration| {
         let deadline = Instant::now() + timeout;
         if let Err(error) = assign_relay(relay, deadline, socks) {
-            eprintln!("Nonograph: relay {relay} was not assigned a circuit: {error}");
+            eprintln!("Nostorgraph: relay {relay} was not assigned a circuit: {error}");
         }
     });
     let circuits: ReadCircuits = Arc::new(|| crate::tor_circuits::reported());

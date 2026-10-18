@@ -12,11 +12,11 @@ struct Bundle {
 }
 
 const PAGE: Bundle = Bundle {
-    package: "nonograph-page",
+    package: "nostorgraph-page",
     pkg_dir: "page/pkg",
-    js_name: "nonograph_page.js",
-    wasm_name: "nonograph_page_bg.wasm",
-    artifact: "nonograph_page.wasm",
+    js_name: "nostorgraph_page.js",
+    wasm_name: "nostorgraph_page_bg.wasm",
+    artifact: "nostorgraph_page.wasm",
     watched: &[
         "page/src/lib.rs",
         "page/Cargo.toml",
@@ -29,11 +29,11 @@ const PAGE: Bundle = Bundle {
 };
 
 const PDF: Bundle = Bundle {
-    package: "nonograph-pdf",
+    package: "nostorgraph-pdf",
     pkg_dir: "pdf/pkg",
-    js_name: "nonograph_pdf.js",
-    wasm_name: "nonograph_pdf_bg.wasm",
-    artifact: "nonograph_pdf.wasm",
+    js_name: "nostorgraph_pdf.js",
+    wasm_name: "nostorgraph_pdf_bg.wasm",
+    artifact: "nostorgraph_pdf.wasm",
     watched: &[
         "pdf/wasm/src/lib.rs",
         "pdf/wasm/Cargo.toml",
@@ -63,8 +63,8 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=NONOGRAPH_REBUILD_PAGE");
-    let force = std::env::var_os("NONOGRAPH_REBUILD_PAGE").is_some();
+    println!("cargo:rerun-if-env-changed=NOSTORGRAPH_REBUILD_PAGE");
+    let force = std::env::var_os("NOSTORGRAPH_REBUILD_PAGE").is_some();
     // Both browser bundles share this directory so the wasm32 dependencies
     // compile once. The page bundle is the one that already lives here.
     let wasm_target = manifest_dir.join("target/wasm-page");

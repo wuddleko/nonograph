@@ -51,4 +51,4 @@ jobs:
         run: cargo deny check
 
       - name: Fence render stays under a second
-        run: cargo test -p nonograph-parser --release --locked -- --ignored --exact tests::a_full_size_fence_note_renders_within_a_second
+        run: cargo test -p nostorgraph-parser --release --locked -- --ignored --exact tests::a_full_size_fence_note_renders_within_a_second

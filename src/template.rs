@@ -1,4 +1,4 @@
-use nonograph_parser::html_attr_escape;
+use nostorgraph_parser::html_attr_escape;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -41,7 +41,7 @@ impl TemplateEngine {
         // Check for any remaining unreplaced variables and warn
         if unreplaced {
             eprintln!(
-                "Nonograph: Warning: Template {} contains unreplaced variables",
+                "Nostorgraph: Warning: Template {} contains unreplaced variables",
                 template_name
             );
         }

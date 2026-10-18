@@ -17,7 +17,7 @@ help:
 	@echo "Note: All commands will automatically check for Docker and offer to install it if missing."
 	@echo ""
 	@echo "Native Debian install: ./scripts/run"
-	@echo "Native service control: ./scripts/nonograph.sh"
+	@echo "Native service control: ./scripts/nostorgraph.sh"
 	@echo "Native status: ./scripts/status.sh"
 
 # Check if Docker and Docker Compose are installed
@@ -25,7 +25,7 @@ check-docker:
 	@echo "Checking Docker installation..."
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "❌ Docker is not installed on this system."; \
-		echo "You need Docker to run Nonograph. Would you like to install it? (y/N)"; \
+		echo "You need Docker to run Nostorgraph. Would you like to install it? (y/N)"; \
 		read -r response; \
 		if [ "$$response" = "y" ] || [ "$$response" = "Y" ]; then \
 			$(MAKE) install-docker; \
@@ -39,7 +39,7 @@ check-docker:
 	fi
 	@if ! command -v docker compose >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then \
 		echo "❌ Docker Compose is not installed on this system."; \
-		echo "You need Docker Compose to run Nonograph. Would you like to install it? (y/N)"; \
+		echo "You need Docker Compose to run Nostorgraph. Would you like to install it? (y/N)"; \
 		read -r response; \
 		if [ "$$response" = "y" ] || [ "$$response" = "Y" ]; then \
 			$(MAKE) install-docker-compose; \
@@ -114,11 +114,11 @@ install-docker-compose:
 
 # Production targets
 build: check-docker
-	@echo "Building Nonograph Docker images..."
+	@echo "Building Nostorgraph Docker images..."
 	sudo docker compose build
 
 up: check-docker
-	@echo "Starting Nonograph application..."
+	@echo "Starting Nostorgraph application..."
 	sudo docker compose up -d
 	@echo "Application started! Access it at:"
 	@echo "  Local: http://localhost:8009"
@@ -127,19 +127,19 @@ up: check-docker
 	@echo "Waiting for Tor to bootstrap (this may take 30-60 seconds)..."
 	@sleep 30
 	@echo "Your .onion address:"
-	@sudo docker exec -u debian-tor nonograph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "Tor address not ready yet, check logs with 'make logs'"
+	@sudo docker exec -u debian-tor nostorgraph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "Tor address not ready yet, check logs with 'make logs'"
 	@echo ""
 	@echo "Save this address to share your anonymous publishing platform!"
 
 down: check-docker
-	@echo "Stopping Nonograph application..."
+	@echo "Stopping Nostorgraph application..."
 	sudo docker compose down
 
 logs: check-docker
 	sudo docker compose logs -f
 
 restart: check-docker
-	@echo "Restarting Nonograph application..."
+	@echo "Restarting Nostorgraph application..."
 	sudo docker compose restart
 	@echo "Application restarted!"
 
@@ -150,11 +150,11 @@ status: check-docker
 	@echo ""
 	@echo "Tor Hidden Service Address:"
 	@echo "=========================="
-	@sudo docker exec -u debian-tor nonograph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "No Tor address found"
+	@sudo docker exec -u debian-tor nostorgraph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "No Tor address found"
 
 # Development targets
 dev: check-docker
-	@echo "Starting Nonograph development environment..."
+	@echo "Starting Nostorgraph development environment..."
 	sudo docker compose -f docker-compose.dev.yml up -d
 	@echo "Development environment started!"
 	@echo "  Application: http://localhost:8009"
@@ -171,9 +171,9 @@ dev-logs: check-docker
 clean: check-docker
 	@echo "Removing this project's containers, images, and volumes..."
 	sudo docker compose down -v --rmi local --remove-orphans
-	@echo "Nonograph containers, images, and volumes removed."
+	@echo "Nostorgraph containers, images, and volumes removed."
 
 # Show .onion address
 onion: check-docker
 	@echo "Your .onion address:"
-	@sudo docker exec -u debian-tor nonograph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "No .onion address found"
+	@sudo docker exec -u debian-tor nostorgraph_app cat /var/lib/tor/hidden_service/hostname 2>/dev/null || echo "No .onion address found"

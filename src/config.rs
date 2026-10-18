@@ -225,7 +225,7 @@ impl Config {
     pub fn load_with_logging() -> Result<Self, String> {
         match Self::load() {
             Ok(config) => {
-                println!("Nonograph: ✅ Configuration loaded successfully");
+                println!("Nostorgraph: ✅ Configuration loaded successfully");
                 println!("   Title limit: {} chars", config.limits.title_max_length);
                 println!("   Alias limit: {} chars", config.limits.alias_max_length);
                 println!(
@@ -235,7 +235,7 @@ impl Config {
                 Ok(config)
             }
             Err(error) => {
-                eprintln!("Nonograph: ⚠️  Configuration error: {}", error);
+                eprintln!("Nostorgraph: ⚠️  Configuration error: {}", error);
                 Err(error)
             }
         }

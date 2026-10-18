@@ -70,7 +70,7 @@ pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> Signed
     signed_event(
         &keypair,
         mined.created_at,
-        nonograph_nip44::KIND,
+        nostorgraph_nip44::KIND,
         &mined.tags,
         content,
     )
@@ -78,7 +78,7 @@ pub fn sign_sealed_note(content: &str, locator: &str, created_at: i64) -> Signed
 
 #[cfg(test)]
 fn v2_payload(locator: &str, mark: u8) -> String {
-    nonograph_nip44::seal("Title", "", "body", locator, &[1u8; 32], &[mark; 32])
+    nostorgraph_nip44::seal("Title", "", "body", locator, &[1u8; 32], &[mark; 32])
         .expect("v2 payload")
 }
 
@@ -128,7 +128,7 @@ fn sealed_note_capped(
     if !verify_sig(&parsed) {
         return None;
     }
-    if nonograph_nip44::check_stamp(
+    if nostorgraph_nip44::check_stamp(
         &parsed.id,
         &parsed.pubkey_hex,
         parsed.created_at,
@@ -140,7 +140,7 @@ fn sealed_note_capped(
     {
         return None;
     }
-    if parsed.content.len() > payload_max || !nonograph_nip44::is_v2_payload(&parsed.content) {
+    if parsed.content.len() > payload_max || !nostorgraph_nip44::is_v2_payload(&parsed.content) {
         return None;
     }
     let locator = stamp_locator(&parsed.tags)?;
@@ -232,7 +232,7 @@ fn publish_to_relays_inner(
                 match send_event(&relay, &event_json, &event_id, deadline, public_only) {
                     Ok(()) => Some(Ok(relay)),
                     Err(SendFailure::Refused(error)) => {
-                        eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
+                        eprintln!("Nostorgraph: relay {relay} did not accept the note: {error}");
                         if durable_refusal(&error) {
                             Some(Err(relay))
                         } else {
@@ -240,7 +240,7 @@ fn publish_to_relays_inner(
                         }
                     }
                     Err(SendFailure::Unanswered(error)) => {
-                        eprintln!("Nonograph: relay {relay} did not accept the note: {error}");
+                        eprintln!("Nostorgraph: relay {relay} did not accept the note: {error}");
                         None
                     }
                 }
@@ -329,18 +329,18 @@ fn send_event(
 
 fn minimal_probe_note(created_at: i64) -> SignedNote {
     let keypair = Keypair::new(SECP256K1, &mut thread_rng());
-    signed_event(&keypair, created_at, nonograph_nip44::KIND, &[], "")
+    signed_event(&keypair, created_at, nostorgraph_nip44::KIND, &[], "")
 }
 
 fn probe_result(sent: Result<(), String>) -> crawler::ProbeResult {
     match sent {
         Ok(()) => crawler::ProbeResult {
-            name: nonograph_nip44::KIND.to_string(),
+            name: nostorgraph_nip44::KIND.to_string(),
             accepted: true,
             detail: "OK".to_owned(),
         },
         Err(reason) => crawler::ProbeResult {
-            name: nonograph_nip44::KIND.to_string(),
+            name: nostorgraph_nip44::KIND.to_string(),
             accepted: false,
             detail: reason,
         },
@@ -434,7 +434,7 @@ fn fetch_from_relays(
                 Ok(note) => note,
                 Err(error) => {
                     if error != RELAY_TIMEOUT {
-                        eprintln!("Nonograph: relay {relay} did not return the note: {error}");
+                        eprintln!("Nostorgraph: relay {relay} did not return the note: {error}");
                     }
                     None
                 }
@@ -702,7 +702,7 @@ fn limit_sealed_socket<Stream>(socket: &mut tungstenite::WebSocket<Stream>, cont
 }
 
 pub(crate) fn sealed_locator(locator: &str) -> bool {
-    locator.len() == nonograph_nip44::LOCATOR_LEN
+    locator.len() == nostorgraph_nip44::LOCATOR_LEN
         && locator
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
@@ -763,7 +763,7 @@ pub(crate) fn signed_event(
 ) -> SignedNote {
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
-    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, tags, content);
+    let id = nostorgraph_nip44::event_id(&pubkey_hex, created_at, kind, tags, content);
     let sig = SECP256K1.sign_schnorr(&Message::from_digest(id), keypair);
     let event_json = event_wire(
         &hex_encode(&id),
@@ -791,20 +791,20 @@ fn event_wire(
     sig_hex: Option<&str>,
 ) -> String {
     let mut out = String::from("{\"id\":");
-    nonograph_nip44::push_json_string(&mut out, id_hex);
+    nostorgraph_nip44::push_json_string(&mut out, id_hex);
     out.push_str(",\"pubkey\":");
-    nonograph_nip44::push_json_string(&mut out, pubkey_hex);
+    nostorgraph_nip44::push_json_string(&mut out, pubkey_hex);
     out.push_str(",\"created_at\":");
     out.push_str(&created_at.to_string());
     out.push_str(",\"kind\":");
     out.push_str(&kind.to_string());
     out.push_str(",\"tags\":");
-    nonograph_nip44::push_tags(&mut out, tags);
+    nostorgraph_nip44::push_tags(&mut out, tags);
     out.push_str(",\"content\":");
-    nonograph_nip44::push_json_string(&mut out, content);
+    nostorgraph_nip44::push_json_string(&mut out, content);
     if let Some(sig_hex) = sig_hex {
         out.push_str(",\"sig\":");
-        nonograph_nip44::push_json_string(&mut out, sig_hex);
+        nostorgraph_nip44::push_json_string(&mut out, sig_hex);
     }
     out.push('}');
     out

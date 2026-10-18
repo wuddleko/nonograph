@@ -1,8 +1,8 @@
 ---
 title: Legal Information & Privacy Policy
 date: 2026-02-11
-author: nonograph
-generator: nonograph v0.2.8
+author: nostorgraph
+generator: nostorgraph v0.2.8
 ---
 
 ## What This Service Does
@@ -67,11 +67,11 @@ Any content that sexualizes, exploits, or fetishizes children is strictly prohib
 We may need to update this policy occasionally. If we make significant changes, we'll update the date at the top of this page. By continuing to use the service after changes are made, you're agreeing to the updated terms.
 
 ## Getting Help
-This is an open-source project available on GitHub at https://github.com/wuddleko/nonograph. If you have questions about the SOFTWARE (read: NOT legal complaints!), found a bug, or need technical help, please create an issue in that repository.
+This is an open-source project available on GitHub at https://github.com/wuddleko/nostorgraph. If you have questions about the SOFTWARE (read: NOT legal complaints!), found a bug, or need technical help, please create an issue in that repository.
 
 ## Notes for law enforcement
-This server is running Nonograph, which is open-source software that anyone can download and host. For legal requests, you should attempt to contact the hosting provider of the particular server you're inquiring about, NOT the creator of the Nonograph software.
-The creator of Nonograph does NOT host any instances nor has any control over what users choose to do with copies of the Nonograph software. No backdoors and no secret mechanisms.
+This server is running Nostorgraph, which is open-source software that anyone can download and host. For legal requests, you should attempt to contact the hosting provider of the particular server you're inquiring about, NOT the creator of the Nostorgraph software.
+The creator of Nostorgraph does NOT host any instances nor has any control over what users choose to do with copies of the Nostorgraph software. No backdoors and no secret mechanisms.
 
 ---
 

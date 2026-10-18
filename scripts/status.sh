@@ -3,21 +3,21 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "╔══════════════════════════════════════╗"
-echo "║         Nonograph Status             ║"
+echo "║         Nostorgraph Status             ║"
 echo "║    Anonymous Publishing Service      ║"
 echo "╚══════════════════════════════════════╝"
 echo
 
-# Check if Nonograph is running
-PID_FILE="$ROOT_DIR/nonograph.pid"
-NONOGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
-NONOGRAPH_EXE=$(readlink "/proc/$NONOGRAPH_PID/exe" 2>/dev/null || true)
-NONOGRAPH_EXE=${NONOGRAPH_EXE% \(deleted\)}
-if [ -n "$NONOGRAPH_PID" ] && kill -0 "$NONOGRAPH_PID" 2>/dev/null && { [ "$NONOGRAPH_EXE" = "/usr/local/bin/nonograph" ] || [ "$NONOGRAPH_EXE" = "$ROOT_DIR/target/release/nonograph" ]; }; then
-    echo "✅ Nonograph Status: RUNNING (PID: $NONOGRAPH_PID)"
+# Check if Nostorgraph is running
+PID_FILE="$ROOT_DIR/nostorgraph.pid"
+NOSTORGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
+NOSTORGRAPH_EXE=$(readlink "/proc/$NOSTORGRAPH_PID/exe" 2>/dev/null || true)
+NOSTORGRAPH_EXE=${NOSTORGRAPH_EXE% \(deleted\)}
+if [ -n "$NOSTORGRAPH_PID" ] && kill -0 "$NOSTORGRAPH_PID" 2>/dev/null && { [ "$NOSTORGRAPH_EXE" = "/usr/local/bin/nostorgraph" ] || [ "$NOSTORGRAPH_EXE" = "$ROOT_DIR/target/release/nostorgraph" ]; }; then
+    echo "✅ Nostorgraph Status: RUNNING (PID: $NOSTORGRAPH_PID)"
     echo "🌐 Local Access: http://localhost:8009"
 else
-    echo "❌ Nonograph Status: NOT RUNNING"
+    echo "❌ Nostorgraph Status: NOT RUNNING"
 fi
 
 echo
@@ -28,12 +28,12 @@ if [ "$TOR_STATUS" = "active" ]; then
     echo "✅ Tor Service: RUNNING"
 
     # Check if hidden service directory exists
-    if sudo test -d "/var/lib/tor/nonograph" 2>/dev/null; then
+    if sudo test -d "/var/lib/tor/nostorgraph" 2>/dev/null; then
         echo "✅ Hidden Service: CONFIGURED"
 
         # Get onion address
-        if sudo test -f "/var/lib/tor/nonograph/hostname" 2>/dev/null; then
-            ONION_ADDRESS=$(sudo cat /var/lib/tor/nonograph/hostname 2>/dev/null)
+        if sudo test -f "/var/lib/tor/nostorgraph/hostname" 2>/dev/null; then
+            ONION_ADDRESS=$(sudo cat /var/lib/tor/nostorgraph/hostname 2>/dev/null)
             if [ -n "$ONION_ADDRESS" ]; then
                 echo "🧅 Onion Address: http://$ONION_ADDRESS"
                 echo "📋 Copy command: echo 'http://$ONION_ADDRESS' | xclip -selection clipboard"
@@ -54,7 +54,7 @@ echo
 
 # Show recent log entries
 echo "📝 Recent Log Entries:"
-journalctl -u nonograph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || echo "   No journal entries found"
+journalctl -u nostorgraph -n 5 --no-pager 2>/dev/null | sed 's/^/   /' || echo "   No journal entries found"
 
 echo
 
@@ -76,8 +76,8 @@ fi
 echo
 
 echo "Commands:"
-echo "  Start Nonograph: sudo systemctl start nonograph"
-echo "  Stop Nonograph:  sudo systemctl stop nonograph"
+echo "  Start Nostorgraph: sudo systemctl start nostorgraph"
+echo "  Stop Nostorgraph:  sudo systemctl stop nostorgraph"
 echo "  Start Tor:          sudo systemctl start tor"
 echo "  Stop Tor:           sudo systemctl stop tor"
-echo "  View logs:          tail -f $ROOT_DIR/nonograph.log"
+echo "  View logs:          tail -f $ROOT_DIR/nostorgraph.log"

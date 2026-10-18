@@ -1,5 +1,5 @@
 [package]
-name = "nonograph-nip44"
+name = "nostorgraph-nip44"
 version = "0.4.6"
 edition = "2021"
 license.workspace = true

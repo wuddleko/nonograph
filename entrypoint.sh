@@ -2,7 +2,7 @@
 
 # Create content directory if it doesn't exist, then fix permissions
 mkdir -p /app/content
-chown -R nonograph:nonograph /app/content
+chown -R nostorgraph:nostorgraph /app/content
 
 mkdir -p /var/lib/tor/hidden_service
 chown debian-tor:debian-tor /var/lib/tor
@@ -105,6 +105,6 @@ if grep -q "Bootstrapped 100%" "$TOR_LOG" 2>/dev/null; then
     echo "Tor is bootstrapped."
 fi
 
-# Drop to nonograph user and launch the app. setpriv replaces this process,
+# Drop to nostorgraph user and launch the app. setpriv replaces this process,
 # so the app is pid 1 and does not keep the entrypoint's capabilities.
-exec setpriv --reuid nonograph --regid nonograph --init-groups --inh-caps=-all -- /app/nonograph
+exec setpriv --reuid nostorgraph --regid nostorgraph --init-groups --inh-caps=-all -- /app/nostorgraph

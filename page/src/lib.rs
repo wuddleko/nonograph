@@ -11,13 +11,13 @@ pub fn seal(
 ) -> Result<String, JsError> {
     let secret = bytes32(secret, "invalid secret").map_err(JsError::new)?;
     let nonce = bytes32(nonce, "invalid nonce").map_err(JsError::new)?;
-    nonograph_nip44::seal(title, author, content, locator, &secret, &nonce).map_err(js_error)
+    nostorgraph_nip44::seal(title, author, content, locator, &secret, &nonce).map_err(js_error)
 }
 
 #[wasm_bindgen]
 pub fn open(payload: &str, secret: &[u8], d_tag: &str) -> Result<Note, JsError> {
     let secret = bytes32(secret, "invalid secret").map_err(JsError::new)?;
-    let note = nonograph_nip44::open(payload, &secret, d_tag).map_err(js_error)?;
+    let note = nostorgraph_nip44::open(payload, &secret, d_tag).map_err(js_error)?;
     Ok(Note {
         title: note.title,
         author: note.author,
@@ -61,7 +61,7 @@ fn bytes32(bytes: &[u8], message: &'static str) -> Result<[u8; 32], &'static str
     bytes.try_into().map_err(|_| message)
 }
 
-fn js_error(error: nonograph_nip44::Error) -> JsError {
+fn js_error(error: nostorgraph_nip44::Error) -> JsError {
     JsError::new(&error.to_string())
 }
 
@@ -82,28 +82,28 @@ pub fn render_markdown(
     max_url_length: u32,
     external_link_security: bool,
 ) -> String {
-    let options = nonograph_parser::RenderOptions {
+    let options = nostorgraph_parser::RenderOptions {
         max_url_length: max_url_length as usize,
         external_link_security,
         syntax_theme: syntax_theme.to_string(),
     };
-    nonograph_parser::render_markdown_with_config(markdown, &options)
+    nostorgraph_parser::render_markdown_with_config(markdown, &options)
 }
 
 #[wasm_bindgen]
 pub fn render_inline(markdown: &str, max_url_length: u32, external_link_security: bool) -> String {
-    let mut options = nonograph_parser::RenderOptions::default();
+    let mut options = nostorgraph_parser::RenderOptions::default();
     options.max_url_length = max_url_length as usize;
     options.external_link_security = external_link_security;
-    nonograph_parser::render_inline_with_config(markdown, &options)
+    nostorgraph_parser::render_inline_with_config(markdown, &options)
 }
 
 #[wasm_bindgen]
 pub fn highlight_code_line(language: &str, line: &str, syntax_theme: &str) -> String {
-    nonograph_parser::highlight_code_line(language, line, syntax_theme)
+    nostorgraph_parser::highlight_code_line(language, line, syntax_theme)
 }
 
 #[wasm_bindgen]
 pub fn highlight_code_lines(language: &str, code: &str, syntax_theme: &str) -> Vec<String> {
-    nonograph_parser::highlight_code_lines(language, code, syntax_theme)
+    nostorgraph_parser::highlight_code_lines(language, code, syntax_theme)
 }

@@ -1,20 +1,20 @@
 [Unit]
-Description=Nonograph
+Description=Nostorgraph
 After=network-online.target tor.service
 Wants=tor.service
 
 [Service]
 Type=simple
-User=nonograph
-Group=nonograph
-WorkingDirectory=/var/lib/nonograph
-ExecStart=/usr/local/bin/nonograph
+User=nostorgraph
+Group=nostorgraph
+WorkingDirectory=/var/lib/nostorgraph
+ExecStart=/usr/local/bin/nostorgraph
 Restart=on-failure
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/nonograph
+ReadWritePaths=/var/lib/nostorgraph
 
 [Install]
 WantedBy=multi-user.target

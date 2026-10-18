@@ -1,6 +1,6 @@
 function savedRelayUrls(storage) {
     try {
-        const raw = storage.getItem("nonograph_relays");
+        const raw = storage.getItem("nostorgraph_relays");
         if (raw == null || raw === "") {
             return [];
         }
@@ -101,7 +101,7 @@ function paintSavedRelayLists(doc, storage) {
                 return savedRelayUrls(localStorage).length > 0;
             }
 
-            globalThis.nonographPublishPublicNote = async function (fields) {
+            globalThis.nostorgraphPublishPublicNote = async function (fields) {
                 const { publishPublicNote } = await loadNostr();
                 const timeoutMs = Number(form.dataset.timeout) || 10_000;
                 return publishPublicNote({
@@ -529,7 +529,7 @@ function paintSavedRelayLists(doc, storage) {
                 setPublishBusy(true);
                 let leaveBusy = false;
                 try {
-                    const result = await nonographPublishPublicNote({
+                    const result = await nostorgraphPublishPublicNote({
                         title,
                         author: form.alias.value.trim(),
                         content,
@@ -730,8 +730,8 @@ function paintSavedRelayLists(doc, storage) {
                 function loadPdfModule() {
                     if (pdfModule) return Promise.resolve(pdfModule);
                     if (!loadPdfModule.pending) {
-                        const js = new URL("./pdf/nonograph_pdf.js", import.meta.url);
-                        const wasm = new URL("./pdf/nonograph_pdf_bg.wasm", import.meta.url);
+                        const js = new URL("./pdf/nostorgraph_pdf.js", import.meta.url);
+                        const wasm = new URL("./pdf/nostorgraph_pdf_bg.wasm", import.meta.url);
                         loadPdfModule.pending = import(js.href)
                             .then((module) =>
                                 module.default({ module_or_path: wasm }).then(() => module),

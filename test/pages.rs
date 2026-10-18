@@ -95,7 +95,7 @@ fn nojs_home_omits_scripts() {
     assert!(scripts.contains("/home.js?v="));
     assert!(scripts.contains("<link rel=\"modulepreload\" href=\"/writemark.js?v="));
     assert!(scripts.contains("<link rel=\"modulepreload\" href=\"/writemark-live.js?v="));
-    assert!(scripts.contains("<link rel=\"preload\" href=\"/page/nonograph_page_bg.wasm?v="));
+    assert!(scripts.contains("<link rel=\"preload\" href=\"/page/nostorgraph_page_bg.wasm?v="));
     assert!(
         scripts.find("<script src=\"/editor-mode.js?v=").unwrap()
             < scripts.find("<script type=\"module\" src=\"/writemark.js?v=").unwrap()
@@ -104,7 +104,7 @@ fn nojs_home_omits_scripts() {
         scripts.find("<script src=\"/relays.js?v=").unwrap()
             < scripts.find("<script type=\"module\" src=\"/home.js?v=").unwrap()
     );
-    assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
+    assert!(include_str!("../templates/editor-mode.js").contains("nostorgraph-editor-mode"));
     let field = js.get("content_field").unwrap();
     assert!(field.contains("<writemark-editor"));
     assert!(field.contains("data-syntax-theme=\"ocean&quot;dark\""));
@@ -121,8 +121,8 @@ fn nojs_home_omits_scripts() {
         .map(|offset| load + offset)
         .unwrap();
     let loader = &writemark[load..load_end];
-    assert!(loader.contains("./page/nonograph_page.js"));
-    assert!(loader.contains("./page/nonograph_page_bg.wasm"));
+    assert!(loader.contains("./page/nostorgraph_page.js"));
+    assert!(loader.contains("./page/nostorgraph_page_bg.wasm"));
     assert!(loader.contains("module.default({ module_or_path: wasm })"));
     assert!(writemark.contains("new URL(\"./writemark.css\", import.meta.url)"));
     assert!(writemark.contains("spacer.style.blockSize"));
@@ -155,7 +155,7 @@ fn the_home_form_stores_one_csrf_token_in_the_cookie_and_the_field() {
     let first = client.get("/").dispatch();
     assert_eq!(first.status(), Status::Ok);
     let header = first.headers().get_one("Set-Cookie").unwrap().to_string();
-    assert!(header.starts_with("nonograph_csrf="));
+    assert!(header.starts_with("nostorgraph_csrf="));
     assert!(header.contains("HttpOnly"));
     assert!(header.contains("SameSite=Lax"));
     assert!(header.contains("Path=/"));
@@ -180,10 +180,10 @@ fn the_home_form_stores_one_csrf_token_in_the_cookie_and_the_field() {
         .collect();
     assert!(set_cookies
         .iter()
-        .any(|header| header.starts_with("nonograph_relays=")));
+        .any(|header| header.starts_with("nostorgraph_relays=")));
     assert!(set_cookies
         .iter()
-        .all(|header| !header.starts_with("nonograph_csrf=")));
+        .all(|header| !header.starts_with("nostorgraph_csrf=")));
     let again_body = again.into_string().unwrap();
     assert!(again_body.contains(&format!("value=\"{token}\"")));
 
@@ -310,7 +310,7 @@ fn the_home_form_stores_one_csrf_token_in_the_cookie_and_the_field() {
     .unwrap();
     let replaced = fresh
         .get("/")
-        .cookie(("nonograph_csrf", "not-a-token"))
+        .cookie(("nostorgraph_csrf", "not-a-token"))
         .dispatch();
     let replaced_header = replaced.headers().get_one("Set-Cookie").unwrap();
     assert!(replaced_header.contains("HttpOnly"));
@@ -354,10 +354,10 @@ fn the_home_form_stores_one_csrf_token_in_the_cookie_and_the_field() {
         .collect();
     assert!(open_cookies
         .iter()
-        .any(|header| header.starts_with("nonograph_relays=")));
+        .any(|header| header.starts_with("nostorgraph_relays=")));
     assert!(open_cookies
         .iter()
-        .all(|header| !header.starts_with("nonograph_csrf=")));
+        .all(|header| !header.starts_with("nostorgraph_csrf=")));
     let open_body = open_post.into_string().unwrap();
     assert!(open_body.contains("A title is required."));
     assert!(!open_body.contains("The publish form expired. Try again."));
@@ -751,7 +751,7 @@ fn post_scripts_do_not_load_the_wasm_renderer() {
     let scripts = post_scripts("abc");
     assert!(scripts.contains("/post.js?v=abc"));
     assert!(!scripts.contains("wasm"));
-    assert!(!scripts.contains("nonograph_page"));
+    assert!(!scripts.contains("nostorgraph_page"));
 }
 
 #[test]
@@ -821,7 +821,7 @@ fn public_origin_is_optional_and_a_bad_one_is_fatal() {
         .unwrap();
     assert!(home.contains("rel=\"canonical\" href=\"/\""));
     assert!(home.contains("property=\"og:url\" content=\"/\""));
-    assert!(!home.contains("nonograph.com"));
+    assert!(!home.contains("nostorgraph.com"));
 
     let mut named = crate::config::Config::default();
     named.server.public_origin = "https://example.com".to_string();
@@ -830,7 +830,7 @@ fn public_origin_is_optional_and_a_bad_one_is_fatal() {
         .unwrap();
     assert!(home.contains("rel=\"canonical\" href=\"https://example.com/\""));
     assert!(home.contains("property=\"og:url\" content=\"https://example.com/\""));
-    assert!(!home.contains("nonograph.com"));
+    assert!(!home.contains("nostorgraph.com"));
     let about = match build_static_page("about", &named, false) {
         BuiltPage::Ready(html) => html,
         other => panic!("about page did not render: {other:?}"),
@@ -949,8 +949,8 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
     assert!(js.contains(">save</button>"));
     assert!(js.contains("class=\"save-status\" role=\"status\" hidden"));
     assert!(js.contains("<script src=\"/theme.js?v="));
-    assert!(include_str!("../templates/theme.js").contains("nonograph-theme"));
-    assert!(include_str!("../templates/editor-mode.js").contains("nonograph-editor-mode"));
+    assert!(include_str!("../templates/theme.js").contains("nostorgraph-theme"));
+    assert!(include_str!("../templates/editor-mode.js").contains("nostorgraph-editor-mode"));
     assert!(!js.contains("&lt;script"));
     let nojs = engine
         .render("home", &home_context(&config, true, None, None))
@@ -988,8 +988,8 @@ fn save_reads_the_note_in_the_tab_and_names_the_file_from_the_title() {
     assert!(save.contains("showSaveError(\"PDF is not ready.\");"));
     assert!(save.contains("showSaveError(\"Could not save the PDF.\");"));
     assert!(save.contains("page.render_markdown("));
-    assert!(save.contains("./pdf/nonograph_pdf.js"));
-    assert!(save.contains("./pdf/nonograph_pdf_bg.wasm"));
+    assert!(save.contains("./pdf/nostorgraph_pdf.js"));
+    assert!(save.contains("./pdf/nostorgraph_pdf_bg.wasm"));
     assert!(save.contains("module.default({ module_or_path: wasm })"));
     let rendered = save.find("page.render_markdown(").unwrap();
     let loaded = save.find("await loadPdfModule()").unwrap();
@@ -1044,7 +1044,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(html.contains("type=\"button\">Open</button>"));
     assert!(html.contains("The key is the part of the address after #."));
     assert!(html.contains("Run locally to read the note."));
-    assert!(html.contains("https://github.com/wuddleko/nonograph"));
+    assert!(html.contains("https://github.com/wuddleko/nostorgraph"));
     assert!(!html.contains("name=\"k\""));
     assert!(!html.contains("method=\"post\""));
     assert!(!html.contains("action="));
@@ -1194,7 +1194,7 @@ fn nojs_sealed_route_sets_no_referrer_and_no_store() {
     assert!(local.headers().get_one("Location").is_none());
     let body = local.into_string().unwrap();
     assert!(body.contains("<h1>Run locally to read the note</h1>"));
-    assert!(body.contains("https://github.com/wuddleko/nonograph"));
+    assert!(body.contains("https://github.com/wuddleko/nostorgraph"));
     assert!(body.contains("http-equiv=\"refresh\""));
     assert!(body.contains("name=\"referrer\" content=\"no-referrer\""));
     assert!(!body.contains("LOGSECRETVALUE"));
@@ -1243,9 +1243,9 @@ fn nojs_sealed_address_says_to_run_locally() {
     let body = page.into_string().unwrap();
     assert!(body.contains("<h1>Run locally to read the note</h1>"));
     assert!(body.contains(
-        "http-equiv=\"refresh\" content=\"0; url=https://github.com/wuddleko/nonograph\""
+        "http-equiv=\"refresh\" content=\"0; url=https://github.com/wuddleko/nostorgraph\""
     ));
-    assert!(body.contains("<a href=\"https://github.com/wuddleko/nonograph\">source code</a>"));
+    assert!(body.contains("<a href=\"https://github.com/wuddleko/nostorgraph\">source code</a>"));
     assert!(!body.contains(&key));
     assert!(!body.contains("hint.example"));
     assert!(!body.contains(&format!("/s/{locator}/{event_id}")));
@@ -2249,7 +2249,7 @@ if (href !== expected) {{
 }}
 "##
     ));
-    run_javascript("nonograph-share-link", &program);
+    run_javascript("nostorgraph-share-link", &program);
 
     let nostr = include_str!("../templates/nostr.js");
     let returned = nostr
@@ -2594,8 +2594,8 @@ fn compose_page_posts_its_relays_and_still_paints_paths() {
 #[test]
 fn seal_material_comes_from_get_random_values() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!("SECRET_LEN = {}", nonograph_nip44::SECRET_LEN)));
-    assert!(nostr.contains(&format!("LOCATOR_LEN = {}", nonograph_nip44::LOCATOR_LEN)));
+    assert!(nostr.contains(&format!("SECRET_LEN = {}", nostorgraph_nip44::SECRET_LEN)));
+    assert!(nostr.contains(&format!("LOCATOR_LEN = {}", nostorgraph_nip44::LOCATOR_LEN)));
     let start = nostr.find("function generateSealMaterial()").unwrap();
     let end = nostr[start..]
         .find("\nlet pageModule")
@@ -2611,10 +2611,10 @@ fn seal_material_comes_from_get_random_values() {
 fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
     let content = "hello";
     let locator = "0123456789abcdef0123";
-    let secret = [4u8; nonograph_nip44::SECRET_LEN];
+    let secret = [4u8; nostorgraph_nip44::SECRET_LEN];
     let nonce = [5u8; 32];
-    let payload = nonograph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
-    let opened = nonograph_nip44::open(&payload, &secret, locator).unwrap();
+    let payload = nostorgraph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
+    let opened = nostorgraph_nip44::open(&payload, &secret, locator).unwrap();
     assert_eq!(opened.content, content);
     let limit = content.len();
     assert!(
@@ -2634,8 +2634,8 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
         .map(|offset| load + offset)
         .unwrap();
     let loader = &nostr[load..load_end];
-    assert!(loader.contains("./page/nonograph_page.js"));
-    assert!(loader.contains("./page/nonograph_page_bg.wasm"));
+    assert!(loader.contains("./page/nostorgraph_page.js"));
+    assert!(loader.contains("./page/nostorgraph_page_bg.wasm"));
     assert!(loader.contains("module.default({ module_or_path: wasm })"));
     assert!(!loader.contains("subtle"));
 
@@ -2661,8 +2661,8 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
 #[test]
 fn seal_pow_bits_match_the_crate() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!("POW_BITS = {}", nonograph_nip44::POW_BITS)));
-    assert!(nostr.contains(&format!("KIND_SEAL = {}", nonograph_nip44::KIND)));
+    assert!(nostr.contains(&format!("POW_BITS = {}", nostorgraph_nip44::POW_BITS)));
+    assert!(nostr.contains(&format!("KIND_SEAL = {}", nostorgraph_nip44::KIND)));
     let start = nostr.find("function mineSeal(").unwrap();
     let end = nostr[start..]
         .find("\nfunction ")
@@ -2709,29 +2709,29 @@ fn seal_pow_bits_match_the_crate() {
         vec![
             "nonce".to_string(),
             NONCE.to_string(),
-            nonograph_nip44::POW_BITS.to_string(),
+            nostorgraph_nip44::POW_BITS.to_string(),
         ],
     ];
     let mut rebuilt = String::from("[0,");
-    nonograph_nip44::push_json_string(&mut rebuilt, PUBKEY);
+    nostorgraph_nip44::push_json_string(&mut rebuilt, PUBKEY);
     rebuilt.push(',');
     rebuilt.push_str(&CREATED_AT.to_string());
     rebuilt.push(',');
-    rebuilt.push_str(&nonograph_nip44::KIND.to_string());
+    rebuilt.push_str(&nostorgraph_nip44::KIND.to_string());
     rebuilt.push(',');
-    nonograph_nip44::push_tags(&mut rebuilt, &tags);
+    nostorgraph_nip44::push_tags(&mut rebuilt, &tags);
     rebuilt.push(',');
-    nonograph_nip44::push_json_string(&mut rebuilt, CONTENT);
+    nostorgraph_nip44::push_json_string(&mut rebuilt, CONTENT);
     rebuilt.push(']');
     assert_eq!(rebuilt, CANONICAL);
-    let id = nonograph_nip44::event_id(PUBKEY, CREATED_AT, nonograph_nip44::KIND, &tags, CONTENT);
+    let id = nostorgraph_nip44::event_id(PUBKEY, CREATED_AT, nostorgraph_nip44::KIND, &tags, CONTENT);
     let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(hex, ID);
-    assert!(nonograph_nip44::check_stamp(
+    assert!(nostorgraph_nip44::check_stamp(
         &id,
         PUBKEY,
         CREATED_AT,
-        nonograph_nip44::KIND,
+        nostorgraph_nip44::KIND,
         &tags,
         CONTENT,
     )
@@ -2809,7 +2809,7 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
 #[test]
 fn homepage_js_can_send_a_public_long_form_note() {
     let nostr = include_str!("../templates/nostr.js");
-    assert!(nostr.contains(&format!("KIND_SEAL = {}", nonograph_nip44::KIND)));
+    assert!(nostr.contains(&format!("KIND_SEAL = {}", nostorgraph_nip44::KIND)));
     let publish_at = nostr.find("async function publishPublicNote(").unwrap();
     let publish_end = nostr[publish_at..]
         .find("\nfunction xOnlyPubkey")
@@ -2842,7 +2842,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!nostr.contains("wrap"));
 
     let home = include_str!("../templates/home.js");
-    let helper = home.find("nonographPublishPublicNote").unwrap();
+    let helper = home.find("nostorgraphPublishPublicNote").unwrap();
     let imported = home.find("await import").unwrap();
     assert!(helper < imported);
     assert!(home.contains("./nostr.js"));
@@ -2873,9 +2873,9 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("syncNostrButtons"));
     assert!(home.contains("savedRelayUrls(localStorage)"));
     assert!(home.contains("bindRelayActions(localStorage"));
-    assert!(include_str!("../templates/relays.js").contains("nonograph_extra_relays"));
+    assert!(include_str!("../templates/relays.js").contains("nostorgraph_extra_relays"));
     assert!(home.contains("nostr.MAX_FETCH_RELAYS"));
-    assert!(!home.contains("nonograph_extra_relays"));
+    assert!(!home.contains("nostorgraph_extra_relays"));
     assert!(!home.contains("mergePublishRelays"));
     assert!(!home.contains("MAX_EXTRA_RELAYS"));
     assert!(home.contains("hints.includes(key)"));
@@ -2956,7 +2956,7 @@ fn the_homepage_omits_the_configured_names() {
     );
     assert_eq!(
         js.get("seal_max").unwrap(),
-        &nonograph_nip44::MAX_PAYLOAD_CHARS.to_string()
+        &nostorgraph_nip44::MAX_PAYLOAD_CHARS.to_string()
     );
     assert!(js.get("scripts").unwrap().contains("/home.js?v="));
     assert!(!js.get("scripts").unwrap().contains("/nostr.js"));
@@ -3098,7 +3098,7 @@ const document = {
 };
 const storage = {
     getItem(key) {
-        if (key !== "nonograph_relays") {
+        if (key !== "nostorgraph_relays") {
             return null;
         }
         return JSON.stringify({
@@ -3135,7 +3135,7 @@ if (!user.classList.contains("relay-list-user") || user.children.length !== 0) {
 }
 "##,
     );
-    run_javascript("nonograph-saved-rows", &program);
+    run_javascript("nostorgraph-saved-rows", &program);
 }
 
 #[test]
@@ -3149,7 +3149,7 @@ fn publish_sends_the_saved_relays() {
         .map(|offset| urls_at + offset)
         .expect("paint saved lists");
     let publish_at = home
-        .find("globalThis.nonographPublishPublicNote")
+        .find("globalThis.nostorgraphPublishPublicNote")
         .expect("publish helper");
     let publish_end = home[publish_at..]
         .find("\n            async function loadNostr(")
@@ -3159,7 +3159,7 @@ fn publish_sends_the_saved_relays() {
         .find("function hasAnyPublishRelay()")
         .expect("publish gate");
     let ready_end = home[ready_at..]
-        .find("\n            globalThis.nonographPublishPublicNote")
+        .find("\n            globalThis.nostorgraphPublishPublicNote")
         .map(|offset| ready_at + offset)
         .expect("publish helper follows the gate");
     let path_at = home
@@ -3192,7 +3192,7 @@ const bags = {
 };
 const localStorage = {
     getItem(key) {
-        if (key === "nonograph_relays") {
+        if (key === "nostorgraph_relays") {
             return bags.saved;
         }
         return null;
@@ -3235,7 +3235,7 @@ let circuitsTracked = false;
 (async () => {
     try {
     const expected = ["wss://pin.example", "wss://dealt.example"];
-    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    await nostorgraphPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     if (JSON.stringify(sent) !== JSON.stringify(expected)) {
         throw new Error(JSON.stringify(sent));
     }
@@ -3272,7 +3272,7 @@ let circuitsTracked = false;
         throw new Error(JSON.stringify(posted));
     }
     bags.saved = null;
-    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    await nostorgraphPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     if (JSON.stringify(sent) !== JSON.stringify([])) {
         throw new Error(JSON.stringify(sent));
     }
@@ -3296,7 +3296,7 @@ let circuitsTracked = false;
 })();
 "##,
     );
-    run_javascript("nonograph-publish-saved", &program);
+    run_javascript("nostorgraph-publish-saved", &program);
 }
 
 #[test]
@@ -3311,7 +3311,7 @@ fn the_home_script_deals_three_and_publishes_the_saved_list() {
         .map(|offset| urls_at + offset)
         .expect("paint saved lists");
     let publish_at = home
-        .find("globalThis.nonographPublishPublicNote")
+        .find("globalThis.nostorgraphPublishPublicNote")
         .expect("publish helper");
     let publish_end = home[publish_at..]
         .find("\n            async function loadNostr(")
@@ -3502,7 +3502,7 @@ var document = {
 };
 const localStorage = {
     values: {
-        nonograph_extra_relays: JSON.stringify(["wss://extra.example"]),
+        nostorgraph_extra_relays: JSON.stringify(["wss://extra.example"]),
     },
     getItem(key) {
         return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
@@ -3545,7 +3545,7 @@ const circuitByRelay = new Map();
 let circuitsTracked = false;
 function syncPublishButtons() {}
 bindRelayActions(localStorage, sidebar);
-const saved = JSON.parse(localStorage.getItem("nonograph_relays"));
+const saved = JSON.parse(localStorage.getItem("nostorgraph_relays"));
 const firstThree = ["wss://a.example", "wss://b.example", "wss://c.example"];
 if (JSON.stringify(saved.dealt) !== JSON.stringify(firstThree)) {
     throw new Error(JSON.stringify(saved));
@@ -3553,7 +3553,7 @@ if (JSON.stringify(saved.dealt) !== JSON.stringify(firstThree)) {
 if (JSON.stringify(saved.pinned) !== JSON.stringify(["wss://extra.example"])) {
     throw new Error(JSON.stringify(saved));
 }
-if (localStorage.getItem("nonograph_extra_relays") != null) {
+if (localStorage.getItem("nostorgraph_extra_relays") != null) {
     throw new Error("extra list was kept");
 }
 const painted = sidebar.querySelector(".relay-list");
@@ -3563,7 +3563,7 @@ if (!painted || painted.children.length !== 4) {
 input.value = "wss://hand.example";
 add.listeners.click();
 reshuffle.listeners.click();
-const after = JSON.parse(localStorage.getItem("nonograph_relays"));
+const after = JSON.parse(localStorage.getItem("nostorgraph_relays"));
 if (after.pinned.indexOf("wss://hand.example") === -1) {
     throw new Error(JSON.stringify(after));
 }
@@ -3576,7 +3576,7 @@ if (after.pinned.indexOf("wss://extra.example") === -1) {
         .find("function hasAnyPublishRelay()")
         .expect("publish gate");
     let gate_end = home[gate_at..]
-        .find("\n            globalThis.nonographPublishPublicNote")
+        .find("\n            globalThis.nostorgraphPublishPublicNote")
         .map(|offset| gate_at + offset)
         .expect("publish helper follows the gate");
     let path_at = home
@@ -3601,7 +3601,7 @@ if (after.pinned.indexOf("wss://extra.example") === -1) {
 globalThis.refreshRelayCircuits = refreshRelayCircuits;
 (async () => {
     try {
-    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    await nostorgraphPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     const expected = after.pinned.concat(after.dealt);
     if (JSON.stringify(sent) !== JSON.stringify(expected)) {
         throw new Error(JSON.stringify(sent));
@@ -3660,7 +3660,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     });
     sidebar.listeners.click({ target: remove });
     await refreshPromise;
-    const savedNow = JSON.parse(localStorage.getItem("nonograph_relays"));
+    const savedNow = JSON.parse(localStorage.getItem("nostorgraph_relays"));
     const nextList = savedNow.pinned.concat(savedNow.dealt);
     if (nextList.indexOf("wss://hand.example") !== -1) {
         throw new Error(JSON.stringify(nextList));
@@ -3743,7 +3743,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     const pollPost = calls.filter(function (call) {
         return call.method === "POST";
     }).pop();
-    const listed = JSON.parse(localStorage.getItem("nonograph_relays"));
+    const listed = JSON.parse(localStorage.getItem("nostorgraph_relays"));
     const currentList = listed.pinned.concat(listed.dealt);
     if (JSON.stringify(JSON.parse(pollPost.body).relays) !== JSON.stringify(currentList)) {
         throw new Error(JSON.stringify(pollPost.body));
@@ -3852,9 +3852,9 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
     if (releasePost.length !== 1 || readsAfterPost !== 0) {
         throw new Error("the circuit read started before its post");
     }
-    const savedList = JSON.parse(localStorage.getItem("nonograph_relays"));
+    const savedList = JSON.parse(localStorage.getItem("nostorgraph_relays"));
     savedList.pinned.push("wss://late.example");
-    localStorage.setItem("nonograph_relays", JSON.stringify(savedList));
+    localStorage.setItem("nostorgraph_relays", JSON.stringify(savedList));
     const later = refreshCircuits({ force: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (readsAfterPost !== 0 || releasePost.length !== 1) {
@@ -3888,7 +3888,7 @@ globalThis.refreshRelayCircuits = refreshRelayCircuits;
 })();
 "##,
     );
-    run_javascript("nonograph-home-deal", &program);
+    run_javascript("nostorgraph-home-deal", &program);
 }
 
 fn run_javascript(prefix: &str, program: &str) {
@@ -4561,7 +4561,7 @@ fn an_empty_saved_list_sends_no_relays() {
         .map(|offset| urls_at + offset)
         .expect("paint saved lists");
     let publish_at = home
-        .find("globalThis.nonographPublishPublicNote")
+        .find("globalThis.nostorgraphPublishPublicNote")
         .expect("publish helper");
     let publish_end = home[publish_at..]
         .find("\n            async function loadNostr(")
@@ -4571,7 +4571,7 @@ fn an_empty_saved_list_sends_no_relays() {
         .find("function hasAnyPublishRelay()")
         .expect("publish gate");
     let ready_end = home[ready_at..]
-        .find("\n            globalThis.nonographPublishPublicNote")
+        .find("\n            globalThis.nostorgraphPublishPublicNote")
         .map(|offset| ready_at + offset)
         .expect("publish helper follows the gate");
     let mut program = home[urls_at..urls_end].to_string();
@@ -4579,7 +4579,7 @@ fn an_empty_saved_list_sends_no_relays() {
         r##"
 const localStorage = {
     getItem(key) {
-        if (key === "nonograph_relays") {
+        if (key === "nostorgraph_relays") {
             return JSON.stringify({ pinned: [], dealt: [] });
         }
         return null;
@@ -4617,14 +4617,14 @@ async function loadNostr() {
     if (hasAnyPublishRelay()) {
         throw new Error("an empty saved list should hide publish");
     }
-    await nonographPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
+    await nostorgraphPublishPublicNote({ title: "Hello", author: "Ada", content: "hi" });
     if (JSON.stringify(sent) !== "[]") {
         throw new Error(JSON.stringify(sent));
     }
 })();
 "##,
     );
-    run_javascript("nonograph-empty-saved", &program);
+    run_javascript("nostorgraph-empty-saved", &program);
 
     let note = crate::nostr::sign_v2_note("0123456789abcdef0123", 1_700_000_000);
     let event: serde_json::Value = serde_json::from_str(&note.event_json).unwrap();

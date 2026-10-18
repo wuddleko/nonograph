@@ -6,10 +6,10 @@ use sha2::{Digest, Sha256};
 
 use crate::template;
 
-pub const PAGE_JS_PATH: &str = "/page/nonograph_page.js";
-pub const PAGE_WASM_PATH: &str = "/page/nonograph_page_bg.wasm";
-pub const PDF_JS_PATH: &str = "/pdf/nonograph_pdf.js";
-pub const PDF_WASM_PATH: &str = "/pdf/nonograph_pdf_bg.wasm";
+pub const PAGE_JS_PATH: &str = "/page/nostorgraph_page.js";
+pub const PAGE_WASM_PATH: &str = "/page/nostorgraph_page_bg.wasm";
+pub const PDF_JS_PATH: &str = "/pdf/nostorgraph_pdf.js";
+pub const PDF_WASM_PATH: &str = "/pdf/nostorgraph_pdf_bg.wasm";
 pub const PDF_LICENSE_PATH: &str = "/pdf/LICENSE";
 pub const HOME_CSS_PATH: &str = "/home.css";
 pub const HOME_JS_PATH: &str = "/home.js";
@@ -27,10 +27,10 @@ pub const THEME_JS_PATH: &str = "/theme.js";
 pub const EDITOR_MODE_JS_PATH: &str = "/editor-mode.js";
 pub const RELAYS_JS_PATH: &str = "/relays.js";
 
-pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_page.js"));
-const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_page_bg.wasm"));
-pub(crate) const PDF_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nonograph_pdf.js"));
-const PDF_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nonograph_pdf_bg.wasm"));
+pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nostorgraph_page.js"));
+const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_page_bg.wasm"));
+pub(crate) const PDF_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf.js"));
+const PDF_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf_bg.wasm"));
 const PDF_LICENSE: &str = include_str!("../../pdf/fonts/LICENSE");
 
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
@@ -153,11 +153,11 @@ struct Assets {
 }
 
 pub fn warm() {
-    nonograph_parser::warm();
+    nostorgraph_parser::warm();
     let _ = assets();
     let _ = page_asset_tags();
     if let Err(error) = template::shared().preload(&["home", "post"]) {
-        eprintln!("Nonograph: {error}");
+        eprintln!("Nostorgraph: {error}");
     }
 }
 
@@ -166,7 +166,7 @@ fn assets() -> &'static Assets {
     ASSETS.get_or_init(|| {
         let read = |name: &str| -> String {
             std::fs::read_to_string(format!("templates/{name}")).unwrap_or_else(|error| {
-                panic!("Nonograph: failed to read templates/{name}: {error}")
+                panic!("Nostorgraph: failed to read templates/{name}: {error}")
             })
         };
         let home_css = read("home.css");
@@ -207,7 +207,7 @@ fn assets() -> &'static Assets {
             1,
         );
         if writemark_js == writemark_source {
-            panic!("Nonograph: writemark.js does not import writemark-live.js");
+            panic!("Nostorgraph: writemark.js does not import writemark-live.js");
         }
         Assets {
             version,
@@ -246,7 +246,7 @@ pub(super) fn version() -> &'static str {
 
 pub(super) fn home_scripts(version: &str) -> String {
     format!(
-        "<link rel=\"modulepreload\" href=\"/writemark.js?v={version}\" />\n<link rel=\"modulepreload\" href=\"/writemark-live.js?v={version}\" />\n<link rel=\"preload\" href=\"/page/nonograph_page_bg.wasm?v={version}\" as=\"fetch\" crossorigin />\n<script src=\"/relays.js?v={version}\"></script>\n<script src=\"/editor-mode.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
+        "<link rel=\"modulepreload\" href=\"/writemark.js?v={version}\" />\n<link rel=\"modulepreload\" href=\"/writemark-live.js?v={version}\" />\n<link rel=\"preload\" href=\"/page/nostorgraph_page_bg.wasm?v={version}\" as=\"fetch\" crossorigin />\n<script src=\"/relays.js?v={version}\"></script>\n<script src=\"/editor-mode.js?v={version}\"></script>\n<script type=\"module\" src=\"/writemark.js?v={version}\"></script>\n<script type=\"module\" src=\"/home.js?v={version}\"></script>"
     )
 }
 
@@ -254,22 +254,22 @@ pub(crate) fn post_scripts(version: &str) -> String {
     format!("<script src=\"/post.js?v={version}\"></script>")
 }
 
-#[get("/page/nonograph_page.js")]
+#[get("/page/nostorgraph_page.js")]
 pub fn parser_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, PAGE_JS)
 }
 
-#[get("/page/nonograph_page_bg.wasm")]
+#[get("/page/nostorgraph_page_bg.wasm")]
 pub fn parser_wasm() -> (ContentType, &'static [u8]) {
     (ContentType::new("application", "wasm"), PAGE_WASM)
 }
 
-#[get("/pdf/nonograph_pdf.js")]
+#[get("/pdf/nostorgraph_pdf.js")]
 pub fn pdf_js() -> (ContentType, &'static str) {
     (ContentType::JavaScript, PDF_JS)
 }
 
-#[get("/pdf/nonograph_pdf_bg.wasm")]
+#[get("/pdf/nostorgraph_pdf_bg.wasm")]
 pub fn pdf_wasm() -> (ContentType, &'static [u8]) {
     (ContentType::new("application", "wasm"), PDF_WASM)
 }

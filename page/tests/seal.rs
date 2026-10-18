@@ -1,4 +1,4 @@
-use nonograph_page::{open, seal};
+use nostorgraph_page::{open, seal};
 
 const LOCATOR: &str = "0123456789abcdef0123";
 

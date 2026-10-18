@@ -1918,7 +1918,7 @@ fn test_markup_md_specific_case() {
 fn test_manual_comment_verification() {
     let test_content = r#"# Test File for Comment Functionality
 
-This is a test file to verify that comments work correctly in Nonograph.
+This is a test file to verify that comments work correctly in Nostorgraph.
 
 // This is a comment that should not appear in HTML output
 // But should be visible in the .md version
@@ -1934,13 +1934,13 @@ Here is some **bold text** after a comment.
 This paragraph contains normal text.
 
 ```javascript
-// This is NOT a Nonograph comment, it's JavaScript code
+// This is NOT a Nostorgraph comment, it's JavaScript code
 function hello() {
     console.log("Hello world");
 }
 ```
 
-// But this IS a Nonograph comment outside the code block
+// But this IS a Nostorgraph comment outside the code block
 
 Final paragraph with normal text."#;
 
@@ -1954,7 +1954,7 @@ Final paragraph with normal text."#;
     assert!(!html_output.contains("// But should be visible in the .md version"));
     assert!(!html_output.contains("// Another comment here"));
     assert!(!html_output.contains("// Comment in a section"));
-    assert!(!html_output.contains("// But this IS a Nonograph comment"));
+    assert!(!html_output.contains("// But this IS a Nostorgraph comment"));
 
     // Verify normal formatting still works
     assert!(html_output.contains("<strong>bold text</strong>"));
@@ -1965,7 +1965,7 @@ Final paragraph with normal text."#;
         ));
 
     // Verify code block comments are preserved (they're inside code blocks)
-    assert!(html_output.contains("// This is NOT a Nonograph comment"));
+    assert!(html_output.contains("// This is NOT a Nostorgraph comment"));
 
     println!("✅ All manual verification tests passed!");
 }
@@ -2110,7 +2110,7 @@ fn writemark_render_prefix() -> String {
 fn editor_inline_json(samples: &[&str]) -> String {
     let source = include_str!("../../templates/writemark-live.js");
     let start = source
-        .find("const NONOGRAPH_INLINE_RULES")
+        .find("const NOSTORGRAPH_INLINE_RULES")
         .expect("editor inline rules");
     let end = source
         .find("function escapeAttribute")
@@ -2121,18 +2121,18 @@ fn editor_inline_json(samples: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     let program = format!(
-        "{slice}\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => renderNonographEmphasis(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
+        "{slice}\nconst samples = [{listed}];\nconst rendered = JSON.stringify(samples.map((sample) => renderNostorgraphEmphasis(sample)));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
         slice = &source[start..end],
         listed = listed,
     );
-    run_javascript("nonograph-inline", &program)
+    run_javascript("nostorgraph-inline", &program)
 }
 
 #[test]
 fn inline_markers_edit_like_brackets() {
     let source = include_str!("../../templates/writemark-live.js");
     let start = source
-        .find("const NONOGRAPH_INLINE_RULES")
+        .find("const NOSTORGRAPH_INLINE_RULES")
         .expect("editor inline rules");
     let end = source[start..]
         .find("\nfunction now(")
@@ -2209,7 +2209,7 @@ fn inline_markers_edit_like_brackets() {
         "{slice}\nconst cases = [{listed}];\nconst rendered = JSON.stringify(cases.map((item) => {{\n  const edit = markerPairEdit(item.value, item.start, item.end, item.key, item.action);\n  if (!edit) return \"noop\";\n  const next = item.value.slice(0, edit.from) + edit.insert + item.value.slice(edit.to);\n  return next + \"|\" + edit.start + \"|\" + edit.end;\n}}));\nif (typeof process !== \"undefined\" && process.stdout) {{\n  process.stdout.write(rendered);\n}} else {{\n  rendered;\n}}\n",
         slice = &source[start..end],
     );
-    let rendered = run_javascript("nonograph-marker-pairs", &program);
+    let rendered = run_javascript("nostorgraph-marker-pairs", &program);
     let expected = format!(
         "[{}]",
         cases
@@ -2313,7 +2313,7 @@ fn writemark_line_cursors(cases: &[(Option<i64>, Option<i64>, Option<i64>, i64, 
         slice = source,
         listed = listed,
     );
-    let text = run_javascript("nonograph-line-cursor", &program);
+    let text = run_javascript("nostorgraph-line-cursor", &program);
     let mut chars = text.trim().chars().peekable();
     assert_eq!(chars.next(), Some('['), "cursor json: {text}");
     let mut values = Vec::new();
@@ -2351,7 +2351,7 @@ fn writemark_editor_line_html(html: &[String]) -> Vec<String> {
         slice = source,
         listed = listed,
     );
-    parse_json_string_array(&run_javascript("nonograph-line-html", &program))
+    parse_json_string_array(&run_javascript("nostorgraph-line-html", &program))
 }
 
 fn inline_lookup_keys(markdown: &str) -> Vec<String> {
@@ -2480,7 +2480,7 @@ fn writemark_fixture_columns(
         listed = listed,
         listed_names = listed_names,
     );
-    let columns = parse_json_string_array(&run_javascript("nonograph-render", &program));
+    let columns = parse_json_string_array(&run_javascript("nostorgraph-render", &program));
     assert_eq!(columns.len(), samples.len() * 2);
     columns
         .chunks(2)

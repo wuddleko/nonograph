@@ -443,21 +443,21 @@ export function generateSealMaterial() {
 let pageModule;
 
 async function loadPage() {
-    if (globalThis.nonographPageModule) return globalThis.nonographPageModule;
+    if (globalThis.nostorgraphPageModule) return globalThis.nostorgraphPageModule;
     if (!pageModule) {
         const search = new URL(import.meta.url).search;
-        const js = new URL("./page/nonograph_page.js" + search, import.meta.url);
-        const wasm = new URL("./page/nonograph_page_bg.wasm" + search, import.meta.url);
+        const js = new URL("./page/nostorgraph_page.js" + search, import.meta.url);
+        const wasm = new URL("./page/nostorgraph_page_bg.wasm" + search, import.meta.url);
         pageModule = import(js.href)
             .then((module) =>
                 module.default({ module_or_path: wasm }).then(() => module),
             )
             .catch((error) => {
                 pageModule = undefined;
-                globalThis.nonographPageModule = null;
+                globalThis.nostorgraphPageModule = null;
                 throw error;
             });
-        globalThis.nonographPageModule = pageModule;
+        globalThis.nostorgraphPageModule = pageModule;
     }
     return pageModule;
 }
@@ -810,7 +810,7 @@ export function sealedReadingFooter() {
         ["/", "write your own"],
         ["/legal", "legal"],
         ["/api", "api"],
-        ["https://github.com/wuddleko/nonograph", "source code"],
+        ["https://github.com/wuddleko/nostorgraph", "source code"],
     ];
     for (const [href, label] of links) {
         const link = document.createElement("a");

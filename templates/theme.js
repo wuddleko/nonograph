@@ -1,5 +1,5 @@
 (function () {
-    var key = "nonograph-theme";
+    var key = "nostorgraph-theme";
     var root = document.documentElement;
     var query = matchMedia("(prefers-color-scheme: dark)");
     root.classList.add("js");

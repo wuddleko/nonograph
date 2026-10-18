@@ -371,12 +371,12 @@ function rememberPageModule(module) {
 }
 function clearPageLoad(pending, shared) {
   if (loadPageModule.pending === pending) loadPageModule.pending = null;
-  if (globalThis.nonographPageModule === shared) globalThis.nonographPageModule = null;
+  if (globalThis.nostorgraphPageModule === shared) globalThis.nostorgraphPageModule = null;
 }
 async function loadPageModule() {
   if (pageModule) return pageModule;
   if (!loadPageModule.pending) {
-    const shared = globalThis.nonographPageModule;
+    const shared = globalThis.nostorgraphPageModule;
     if (shared) {
       let pending;
       pending = Promise.resolve(shared).then(rememberPageModule).catch((error) => {
@@ -386,8 +386,8 @@ async function loadPageModule() {
       loadPageModule.pending = pending;
     } else {
       const search = new URL(import.meta.url).search;
-      const js = new URL("./page/nonograph_page.js" + search, import.meta.url);
-      const wasm = new URL("./page/nonograph_page_bg.wasm" + search, import.meta.url);
+      const js = new URL("./page/nostorgraph_page.js" + search, import.meta.url);
+      const wasm = new URL("./page/nostorgraph_page_bg.wasm" + search, import.meta.url);
       let pending;
       pending = import(js.href)
         .then((module) => module.default({ module_or_path: wasm }).then(() => module))
@@ -397,7 +397,7 @@ async function loadPageModule() {
           throw error;
         });
       loadPageModule.pending = pending;
-      globalThis.nonographPageModule = pending;
+      globalThis.nostorgraphPageModule = pending;
     }
   }
   return loadPageModule.pending;
@@ -4347,7 +4347,7 @@ class WritemarkEditorElement extends HTMLElement {
     r({ id: "block.table", label: "Table", group: "Insert", aliases: ["table", "grid"], visibleInSlash: true, run: (ctx, args = {}) => this._insertTable(ctx, args) });
     r({ id: "inline.secret", label: "Hidden text", group: "Inline", aliases: ["secret", "spoiler", "hidden"], visibleInSlash: true, run: ctx => this._wrapInline(ctx, "#", "#", "Hidden text") });
     r({ id: "block.horizontalRule", label: "Divider", group: "Insert", aliases: ["hr", "divider", "rule"], visibleInSlash: true, run: ctx => this._insertHorizontalRule(ctx) });
-    // Available as actions/shortcuts but not surfaced in the slash menu (not part of nonograph's set).
+    // Available as actions/shortcuts but not surfaced in the slash menu (not part of nostorgraph's set).
     r({ id: "block.paragraph", label: "Paragraph", group: "Blocks", aliases: ["p", "text", "clear"], run: ctx => this._toggleParagraph(ctx) });
     r({ id: "block.taskDone", label: "Toggle task done", group: "Blocks", aliases: ["done", "check"], run: ctx => this._toggleTaskDone(ctx) });    r({ id: "view.live", label: "Live mode", group: "View", viewSafe: true, readonlySafe: true, run: () => { this.mode = "live"; return okNoop("Live mode."); } });
     r({ id: "view.source", label: "Source mode", group: "View", viewSafe: true, readonlySafe: true, run: () => { this.mode = "source"; return okNoop("Source mode."); } });

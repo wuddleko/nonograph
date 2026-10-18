@@ -1,5 +1,5 @@
 [package]
-name = "nonograph-pdf"
+name = "nostorgraph-pdf"
 version = "0.4.6"
 edition = "2021"
 license.workspace = true

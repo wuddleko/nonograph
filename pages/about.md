@@ -1,13 +1,13 @@
 ---
-title: About Nonograph
+title: About Nostorgraph
 date: 2026-02-11
-author: nonograph
-generator: nonograph v0.2.8
+author: nostorgraph
+generator: nostorgraph v0.2.8
 ---
 
 **A Minimalist Publishing Platform**
 
-Nonograph is a clean, simple publishing tool built in Rust with a focus on simplicity, speed, and elegance.
+Nostorgraph is a clean, simple publishing tool built in Rust with a focus on simplicity, speed, and elegance.
 
 **Philosophy**
 
@@ -44,7 +44,7 @@ Every design decision prioritizes:
 
 **Open Source**
 
-Nonograph is free and open source software. The complete source code is available on GitHub for transparency, contributions, and self-hosting.
+Nostorgraph is free and open source software. The complete source code is available on GitHub for transparency, contributions, and self-hosting.
 
 **Inspiration**
 

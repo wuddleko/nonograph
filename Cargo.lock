@@ -1202,7 +1202,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "nonograph"
+name = "nostorgraph"
 version = "0.4.6"
 dependencies = [
  "ammonia",
@@ -1213,8 +1213,8 @@ dependencies = [
  "libc",
  "log",
  "native-tls",
- "nonograph-nip44",
- "nonograph-parser",
+ "nostorgraph-nip44",
+ "nostorgraph-parser",
  "rand 0.8.8",
  "rocket",
  "secp256k1",
@@ -1231,7 +1231,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nonograph-nip44"
+name = "nostorgraph-nip44"
 version = "0.4.6"
 dependencies = [
  "base64 0.22.1",
@@ -1244,16 +1244,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "nonograph-page"
+name = "nostorgraph-page"
 version = "0.4.6"
 dependencies = [
- "nonograph-nip44",
- "nonograph-parser",
+ "nostorgraph-nip44",
+ "nostorgraph-parser",
  "wasm-bindgen",
 ]
 
 [[package]]
-name = "nonograph-parser"
+name = "nostorgraph-parser"
 version = "0.4.6"
 dependencies = [
  "ammonia",
@@ -1263,7 +1263,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nonograph-pdf"
+name = "nostorgraph-pdf"
 version = "0.4.6"
 dependencies = [
  "pdf",

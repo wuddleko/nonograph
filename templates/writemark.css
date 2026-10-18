@@ -194,7 +194,7 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; } }
 
-/* Nonograph theme: make the live document and slash menu resemble the
+/* Nostorgraph theme: make the live document and slash menu resemble the
    published post output. Values track the editor's CSS custom properties
    so the host can still retheme via --md-editor-*. */
 .live-editor { caret-color: var(--md-editor-fg); }

@@ -1,4 +1,4 @@
-const RELAY_LIST_KEY = "nonograph_relays";
+const RELAY_LIST_KEY = "nostorgraph_relays";
 
 function emptyRelayList() {
     return { dealt: [], pinned: [] };
@@ -277,7 +277,7 @@ function reshuffleRelays(storage, candidates, count) {
 }
 
 function pinExtraRelays(storage) {
-    const raw = storage.getItem("nonograph_extra_relays");
+    const raw = storage.getItem("nostorgraph_extra_relays");
     if (raw == null) {
         return readRelayList(storage);
     }
@@ -297,7 +297,7 @@ function pinExtraRelays(storage) {
         list = addRelay(storage, extras[index]);
     }
     if (typeof storage.removeItem === "function") {
-        storage.removeItem("nonograph_extra_relays");
+        storage.removeItem("nostorgraph_extra_relays");
     }
     return list;
 }

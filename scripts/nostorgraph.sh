@@ -1,27 +1,27 @@
 #!/bin/bash
 
-# Nonograph Management Script
-# This script helps manage the Nonograph service and Tor hidden service
+# Nostorgraph Management Script
+# This script helps manage the Nostorgraph service and Tor hidden service
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PID_FILE="$ROOT_DIR/nonograph.pid"
-BINARY="/usr/local/bin/nonograph"
+PID_FILE="$ROOT_DIR/nostorgraph.pid"
+BINARY="/usr/local/bin/nostorgraph"
 cd "$ROOT_DIR"
 
-pid_is_nonograph() {
+pid_is_nostorgraph() {
     local pid="$1"
     local exe
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
     exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
     exe=${exe% \(deleted\)}
-    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nonograph" ]
+    [ "$exe" = "$BINARY" ] || [ "$exe" = "$ROOT_DIR/target/release/nostorgraph" ]
 }
 
 show_header() {
     echo "╔══════════════════════════════════════╗"
-    echo "║         Nonograph Manager            ║"
+    echo "║         Nostorgraph Manager            ║"
     echo "║    Anonymous Publishing Service      ║"
     echo "╚══════════════════════════════════════╝"
     echo
@@ -32,9 +32,9 @@ show_help() {
     echo "Usage: $0 [command]"
     echo
     echo "Commands:"
-    echo "  start       Start Nonograph service"
-    echo "  stop        Stop Nonograph service"
-    echo "  restart     Restart Nonograph service"
+    echo "  start       Start Nostorgraph service"
+    echo "  stop        Stop Nostorgraph service"
+    echo "  restart     Restart Nostorgraph service"
     echo "  status      Show service status"
     echo "  logs        Show recent logs"
     echo "  onion       Show onion address"
@@ -48,66 +48,66 @@ show_help() {
 }
 
 start_service() {
-    echo "🚀 Starting Nonograph..."
+    echo "🚀 Starting Nostorgraph..."
 
-    if ! systemctl cat nonograph >/dev/null 2>&1; then
+    if ! systemctl cat nostorgraph >/dev/null 2>&1; then
         echo "❌ The systemd unit is not installed"
         echo "💡 Install it with: ./scripts/run"
         return 1
     fi
 
-    sudo systemctl start nonograph
+    sudo systemctl start nostorgraph
     local pid=""
     local attempts=0
     while [ $attempts -lt 10 ]; do
-        pid=$(systemctl show -p MainPID --value nonograph 2>/dev/null || true)
-        if pid_is_nonograph "$pid"; then
+        pid=$(systemctl show -p MainPID --value nostorgraph 2>/dev/null || true)
+        if pid_is_nostorgraph "$pid"; then
             break
         fi
         sleep 1
         attempts=$((attempts + 1))
     done
-    if ! pid_is_nonograph "$pid"; then
-        echo "❌ Failed to start Nonograph"
-        echo "📝 Check logs: journalctl -u nonograph -n 50"
+    if ! pid_is_nostorgraph "$pid"; then
+        echo "❌ Failed to start Nostorgraph"
+        echo "📝 Check logs: journalctl -u nostorgraph -n 50"
         return 1
     fi
     echo "$pid" > "$PID_FILE"
-    echo "✅ Nonograph started successfully"
+    echo "✅ Nostorgraph started successfully"
     echo "🌐 Local access: http://localhost:8009"
 }
 
 stop_service() {
-    echo "🛑 Stopping Nonograph..."
+    echo "🛑 Stopping Nostorgraph..."
 
     local pid=""
     if [ -f "$PID_FILE" ]; then
         pid=$(cat "$PID_FILE" 2>/dev/null)
     fi
-    if ! pid_is_nonograph "$pid" && ! systemctl is-active --quiet nonograph 2>/dev/null; then
-        echo "⚠️  Nonograph is not running"
+    if ! pid_is_nostorgraph "$pid" && ! systemctl is-active --quiet nostorgraph 2>/dev/null; then
+        echo "⚠️  Nostorgraph is not running"
         rm -f "$PID_FILE"
         return 1
     fi
 
-    sudo systemctl stop nonograph 2>/dev/null || true
-    if pid_is_nonograph "$pid"; then
+    sudo systemctl stop nostorgraph 2>/dev/null || true
+    if pid_is_nostorgraph "$pid"; then
         kill "$pid" 2>/dev/null || true
         sleep 2
-        if pid_is_nonograph "$pid"; then
+        if pid_is_nostorgraph "$pid"; then
             kill -9 "$pid" 2>/dev/null || true
         fi
     fi
     rm -f "$PID_FILE"
-    if pid_is_nonograph "$pid"; then
-        echo "❌ Failed to stop Nonograph"
+    if pid_is_nostorgraph "$pid"; then
+        echo "❌ Failed to stop Nostorgraph"
         return 1
     fi
-    echo "✅ Nonograph stopped successfully"
+    echo "✅ Nostorgraph stopped successfully"
 }
 
 restart_service() {
-    echo "🔄 Restarting Nonograph..."
+    echo "🔄 Restarting Nostorgraph..."
     stop_service
     sleep 1
     start_service
@@ -119,12 +119,12 @@ show_status() {
     else
         show_header
 
-        # Check Nonograph status
-        NONOGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
-        if pid_is_nonograph "$NONOGRAPH_PID"; then
-            echo "✅ Nonograph Status: RUNNING (PID: $NONOGRAPH_PID)"
+        # Check Nostorgraph status
+        NOSTORGRAPH_PID=$(cat "$PID_FILE" 2>/dev/null)
+        if pid_is_nostorgraph "$NOSTORGRAPH_PID"; then
+            echo "✅ Nostorgraph Status: RUNNING (PID: $NOSTORGRAPH_PID)"
         else
-            echo "❌ Nonograph Status: NOT RUNNING"
+            echo "❌ Nostorgraph Status: NOT RUNNING"
         fi
 
         # Check Tor status
@@ -140,19 +140,19 @@ show_status() {
 }
 
 show_logs() {
-    echo "📝 Recent Nonograph logs:"
+    echo "📝 Recent Nostorgraph logs:"
     echo "────────────────────────────────────"
-    journalctl -u nonograph -n 20 --no-pager 2>/dev/null || echo "No journal entries found"
+    journalctl -u nostorgraph -n 20 --no-pager 2>/dev/null || echo "No journal entries found"
     echo "────────────────────────────────────"
-    echo "💡 Use 'journalctl -u nonograph -f' to follow logs in real-time"
+    echo "💡 Use 'journalctl -u nostorgraph -f' to follow logs in real-time"
 }
 
 show_onion() {
     echo "🧅 Tor Hidden Service Information:"
     echo "──────────────────────────────────"
 
-    if sudo test -f "/var/lib/tor/nonograph/hostname" 2>/dev/null; then
-        ONION_ADDRESS=$(sudo cat /var/lib/tor/nonograph/hostname 2>/dev/null)
+    if sudo test -f "/var/lib/tor/nostorgraph/hostname" 2>/dev/null; then
+        ONION_ADDRESS=$(sudo cat /var/lib/tor/nostorgraph/hostname 2>/dev/null)
         if [ -n "$ONION_ADDRESS" ]; then
             echo "Onion Address: http://$ONION_ADDRESS"
             echo
@@ -171,7 +171,7 @@ show_onion() {
 }
 
 build_project() {
-    echo "🔨 Building Nonograph..."
+    echo "🔨 Building Nostorgraph..."
     cargo build --release --locked
     if [ $? -eq 0 ]; then
         echo "✅ Build completed successfully"

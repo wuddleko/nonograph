@@ -23,7 +23,7 @@ type ViewErr = (
 
 const SEALED_TITLE: &str = "Sealed note";
 const SEALED_PREVIEW: &str = "A note sealed in the browser.";
-const SOURCE: &str = "https://github.com/wuddleko/nonograph";
+const SOURCE: &str = "https://github.com/wuddleko/nostorgraph";
 
 fn sealed_key_box() -> &'static str {
     "<div id=\"sealed-open\">\
@@ -41,7 +41,7 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         super::layout::theme_boot(version)
     };
     let options = render_options(config);
-    let theme = nonograph_parser::html_attr_escape(&options.syntax_theme);
+    let theme = nostorgraph_parser::html_attr_escape(&options.syntax_theme);
     let external = if options.external_link_security {
         "true"
     } else {

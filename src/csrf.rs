@@ -7,7 +7,7 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const COOKIE_NAME: &str = "nonograph_csrf";
+pub const COOKIE_NAME: &str = "nostorgraph_csrf";
 pub const TOKEN_TTL_SECS: u64 = 86_400;
 
 pub fn generate_csrf_token_with_timestamp() -> String {

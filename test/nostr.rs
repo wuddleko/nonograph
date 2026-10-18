@@ -191,13 +191,13 @@ fn a_title_tag_is_dropped_on_the_sealed_fetch_path() {
     let titled = signed_event(
         &Keypair::new(SECP256K1, &mut thread_rng()),
         1_700_000_000,
-        nonograph_nip44::KIND,
+        nostorgraph_nip44::KIND,
         &[
             vec!["d".to_string(), locator.to_string()],
             vec![
                 "nonce".to_string(),
                 "1".to_string(),
-                nonograph_nip44::POW_BITS.to_string(),
+                nostorgraph_nip44::POW_BITS.to_string(),
             ],
             vec!["title".to_string(), "Visible".to_string()],
         ],
@@ -1446,7 +1446,7 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
     assert!(sealed_note_from_json(&bad_sig, 128, 32, 256_000).is_none());
 
     let keypair = Keypair::new(SECP256K1, &mut thread_rng());
-    let kind = nonograph_nip44::KIND;
+    let kind = nostorgraph_nip44::KIND;
     let weak = signed_without_enough_zero_bits(&keypair, created_at, kind, locator, &content);
     let weak_value: serde_json::Value = serde_json::from_str(&weak.event_json).unwrap();
     assert!(sealed_note_from_json(&weak_value, 128, 32, 256_000).is_none());
@@ -1460,7 +1460,7 @@ fn sealed_note_from_json_checks_signature_stamp_tags_locator_and_size() {
             vec![
                 "nonce".to_string(),
                 "1".to_string(),
-                nonograph_nip44::POW_BITS.to_string(),
+                nostorgraph_nip44::POW_BITS.to_string(),
             ],
             vec!["title".to_string(), "Visible".to_string()],
         ],
@@ -1490,10 +1490,10 @@ fn signed_without_enough_zero_bits(
     let pubkey_hex = hex_encode(&keypair.x_only_public_key().0.serialize());
     for nonce in 0..1_000_000u32 {
         let tags = crate::seal::sealed_tags(locator, &nonce.to_string());
-        let id = nonograph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
+        let id = nostorgraph_nip44::event_id(&pubkey_hex, created_at, kind, &tags, content);
         if matches!(
-            nonograph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content),
-            Err(nonograph_nip44::Error::Stamp)
+            nostorgraph_nip44::check_stamp(&id, &pubkey_hex, created_at, kind, &tags, content),
+            Err(nostorgraph_nip44::Error::Stamp)
         ) {
             return signed_event(keypair, created_at, kind, &tags, content);
         }
@@ -1723,7 +1723,7 @@ fn assert_signature(note: &SignedNote) {
                 .collect()
         })
         .collect::<Vec<Vec<String>>>();
-    let recomputed = nonograph_nip44::event_id(
+    let recomputed = nostorgraph_nip44::event_id(
         parsed["pubkey"].as_str().unwrap(),
         parsed["created_at"].as_i64().unwrap(),
         parsed["kind"].as_u64().unwrap() as u32,
@@ -1766,7 +1766,7 @@ fn tab_long_form_signature_verifies() {
     ];
     let pubkey = keypair.x_only_public_key().0.serialize();
     let pubkey_hex = hex_encode(&pubkey);
-    let id = nonograph_nip44::event_id(&pubkey_hex, created_at, 30023, &tags, content);
+    let id = nostorgraph_nip44::event_id(&pubkey_hex, created_at, 30023, &tags, content);
     let sig = SECP256K1.sign_schnorr_with_aux_rand(&Message::from_digest(id), &keypair, &[0u8; 32]);
     let json = event_wire(
         &hex_encode(&id),
@@ -1797,7 +1797,7 @@ fn homepage_js_signed_note_verifies() {
 }
 
 fn event_id_matches(parsed: &ParsedEvent) -> bool {
-    nonograph_nip44::event_id(
+    nostorgraph_nip44::event_id(
         &parsed.pubkey_hex,
         parsed.created_at,
         parsed.kind,

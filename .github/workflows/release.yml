@@ -67,7 +67,7 @@ jobs:
 
       - name: Create build info file
         run: |
-          echo "Build Information for nonograph ${{ github.ref_name }}" > build-info-${{ matrix.target }}.txt
+          echo "Build Information for nostorgraph ${{ github.ref_name }}" > build-info-${{ matrix.target }}.txt
           echo "=================================================" >> build-info-${{ matrix.target }}.txt
           echo "Target: ${{ matrix.target }}" >> build-info-${{ matrix.target }}.txt
           echo "OS: ${{ matrix.os }}" >> build-info-${{ matrix.target }}.txt
@@ -82,44 +82,44 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/nonograph${{ matrix.binary-suffix }} release/nonograph${{ matrix.binary-suffix }}
+          cp target/${{ matrix.target }}/release/nostorgraph${{ matrix.binary-suffix }} release/nostorgraph${{ matrix.binary-suffix }}
           cp README.md LICENSE Config.toml release/
           cp -r pages templates release/
           mkdir -p release/scripts
-          cp scripts/run scripts/nonograph.sh scripts/status.sh release/scripts/
+          cp scripts/run scripts/nostorgraph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
-          tar -czf ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
+          tar -czf ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
 
       - name: Prepare release files (macOS)
         if: runner.os == 'macOS'
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/nonograph${{ matrix.binary-suffix }} release/nonograph${{ matrix.binary-suffix }}
+          cp target/${{ matrix.target }}/release/nostorgraph${{ matrix.binary-suffix }} release/nostorgraph${{ matrix.binary-suffix }}
           cp README.md LICENSE Config.toml release/
           cp -r pages templates release/
           mkdir -p release/scripts
-          cp scripts/run scripts/nonograph.sh scripts/status.sh release/scripts/
+          cp scripts/run scripts/nostorgraph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
-          zip -r ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
+          zip -r ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
 
       - name: Prepare release files (Windows)
         if: runner.os == 'Windows'
         run: |
           mkdir release
-          Copy-Item "target\${{ matrix.target }}\release\nonograph${{ matrix.binary-suffix }}" "release\nonograph${{ matrix.binary-suffix }}"
+          Copy-Item "target\${{ matrix.target }}\release\nostorgraph${{ matrix.binary-suffix }}" "release\nostorgraph${{ matrix.binary-suffix }}"
           Copy-Item README.md, LICENSE, Config.toml -Destination release
           Copy-Item pages, templates, scripts -Destination release -Recurse
           Copy-Item build-info-${{ matrix.target }}.txt -Destination release
           cd release
-          Compress-Archive -Path * -DestinationPath ../nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }}
+          Compress-Archive -Path * -DestinationPath ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }}
     
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} ./nonograph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} --clobber
+          gh release upload ${{ github.ref_name }} ./nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} --clobber
 
   create-combined-build-info:
     name: Create Combined Build Info
@@ -135,7 +135,7 @@ jobs:
 
       - name: Create combined build info
         run: |
-          echo "Combined Build Information for nonograph ${{ github.ref_name }}" > combined-build-info.txt
+          echo "Combined Build Information for nostorgraph ${{ github.ref_name }}" > combined-build-info.txt
           echo "===============================================================" >> combined-build-info.txt
           echo "Release Date: $(date)" >> combined-build-info.txt
           echo "Release Tag: ${{ github.ref_name }}" >> combined-build-info.txt
