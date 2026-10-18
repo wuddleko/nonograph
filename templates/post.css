@@ -996,7 +996,8 @@
             }
             .footer .theme-toggle {
                 display: none;
-                margin: 0 12px;
+                /* Same set-off as the writing page's editing mode. */
+                margin: 0 12px 0 28px;
                 padding: 0;
                 border: 0;
                 border-radius: 0;
@@ -1042,6 +1043,73 @@
                     display: inline;
                 }
             }
+            .footer .save-note {
+                display: inline-block;
+                position: relative;
+                margin-left: 28px;
+                margin-right: 12px;
+                vertical-align: baseline;
+            }
+            .footer .save-note[hidden] {
+                display: none;
+            }
+            .footer .save-formats {
+                position: absolute;
+                left: 100%;
+                top: 0;
+                white-space: nowrap;
+            }
+            .footer .save-formats[hidden] {
+                display: none;
+            }
+            .footer .save-status {
+                margin-left: 12px;
+                color: #9a3b3b;
+            }
+            .footer .save-status[hidden] {
+                display: none;
+            }
+            .footer .view-mode-bar {
+                margin: 0 0.42em;
+                color: var(--quiet);
+                user-select: none;
+            }
+            .footer .save-note button,
+            .footer .save-note button:hover,
+            .footer .save-note button:focus,
+            .footer .save-note button:focus-visible,
+            .footer .save-note button:active {
+                display: inline;
+                margin: 0;
+                padding: 0;
+                border: 0;
+                border-radius: 0;
+                background: none;
+                box-shadow: none;
+                color: var(--quiet);
+                font-family: inherit;
+                font-size: inherit;
+                font-weight: 400;
+                letter-spacing: 0;
+                line-height: inherit;
+                text-transform: none;
+                white-space: nowrap;
+                vertical-align: baseline;
+                cursor: pointer;
+                -webkit-appearance: none;
+                appearance: none;
+            }
+            .footer .save-note button:hover,
+            .footer .save-note button:focus-visible {
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .footer .save-note button[aria-expanded="true"],
+            .footer .save-note button[aria-expanded="true"]:hover,
+            .footer .save-note button[aria-expanded="true"]:active {
+                color: var(--ink);
+                text-decoration: none;
+            }
             .footer a.nostr-id {
                 overflow-wrap: anywhere;
                 word-break: break-all;
@@ -1052,6 +1120,128 @@
             .run-locally {
                 display: none;
             }
+            .bottom-sheet-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0, 0, 0, 0.5);
+                z-index: 200;
+                opacity: 0;
+                visibility: hidden;
+                transition:
+                    opacity 0.3s,
+                    visibility 0.3s;
+            }
+            .bottom-sheet-overlay:target,
+            .bottom-sheet-overlay.is-open {
+                opacity: 1;
+                visibility: visible;
+            }
+            .bottom-sheet {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                background: var(--ground);
+                border-radius: 0;
+                max-height: 80vh;
+                transform: translateY(100%);
+                transition: transform 0.3s ease-out;
+                z-index: 201;
+                overflow-y: auto;
+                text-align: left;
+            }
+            .bottom-sheet-overlay:target .bottom-sheet,
+            .bottom-sheet-overlay.is-open .bottom-sheet {
+                transform: translateY(0);
+            }
+            .bottom-sheet-overlay:target::before,
+            .bottom-sheet-overlay.is-open::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: -1;
+            }
+            .bottom-sheet-header {
+                padding: 20px max(20px, calc((100% - 38rem) / 2)) 10px;
+                border-bottom: 1px solid var(--ink);
+                position: sticky;
+                top: 0;
+                background: var(--ground);
+                z-index: 1;
+            }
+            .bottom-sheet-title {
+                margin: 0;
+                font-size: 18px;
+                font-weight: 600;
+                color: var(--ink);
+            }
+            .bottom-sheet-close {
+                position: absolute;
+                top: 16px;
+                right: 16px;
+                background: none;
+                border: none;
+                font-size: 24px;
+                color: var(--ink);
+                text-decoration: none;
+                cursor: pointer;
+                padding: 4px;
+                border-radius: 0;
+                width: 32px;
+                height: 32px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .bottom-sheet-close:hover {
+                background-color: color-mix(in srgb, var(--ink) 8%, var(--ground));
+            }
+            .bottom-sheet-content {
+                padding: 20px max(20px, calc((100% - 38rem) / 2));
+            }
+            .help-section {
+                margin-bottom: 24px;
+            }
+            .help-section h3 {
+                margin: 0 0 12px 0;
+                font-size: 16px;
+                font-weight: 600;
+                color: var(--ink);
+            }
+            .help-section p {
+                margin: 0 0 8px 0;
+                line-height: 1.5;
+                color: var(--ink);
+            }
+            .help-section ul {
+                margin: 8px 0;
+                padding-left: 20px;
+                color: var(--ink);
+            }
+            .help-section li {
+                margin-bottom: 4px;
+                line-height: 1.4;
+            }
+            .help-section a {
+                color: var(--ink);
+                text-decoration: underline;
+            }
+            .help-section code {
+                background: var(--ground);
+                padding: 2px 4px;
+                border-radius: 3px;
+                font-family: "Courier New", monospace;
+                font-size: 13px;
+            }
+            .format-markdown {
+                display: none;
+            }
             @media (max-width: 768px) {
                 .footer {
                     font-size: 15px;
@@ -1060,5 +1250,12 @@
                 .footer a,
                 .footer .theme-toggle {
                     margin: 0 8px;
+                }
+                .footer .theme-toggle {
+                    margin-left: 12px;
+                }
+                .footer .save-note {
+                    margin-left: 12px;
+                    margin-right: 8px;
                 }
             }

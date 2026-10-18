@@ -161,7 +161,7 @@ fn relays_document(body: &str, relay_script: bool) -> String {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Relays</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/png" href="/logo.png?v={version}" />
     <script src="/theme.js?v={version}"></script>
     <link rel="stylesheet" href="/home.css?v={version}" />
 </head>

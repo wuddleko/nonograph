@@ -26,12 +26,14 @@ pub const NOTICE_CSS_PATH: &str = "/notice.css";
 pub const THEME_JS_PATH: &str = "/theme.js";
 pub const EDITOR_MODE_JS_PATH: &str = "/editor-mode.js";
 pub const RELAYS_JS_PATH: &str = "/relays.js";
+pub const LOGO_PNG_PATH: &str = "/logo.png";
 
 pub(crate) const PAGE_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nostorgraph_page.js"));
 const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_page_bg.wasm"));
 pub(crate) const PDF_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf.js"));
 const PDF_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf_bg.wasm"));
 const PDF_LICENSE: &str = include_str!("../../pdf/fonts/LICENSE");
+const LOGO_PNG: &[u8] = include_bytes!("../../logo-proposals/favicon-nt-bw.png");
 
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "public, no-cache";
@@ -72,7 +74,8 @@ pub fn cache_control_for_path(path: &str) -> &'static str {
         | NOTICE_CSS_PATH
         | THEME_JS_PATH
         | EDITOR_MODE_JS_PATH
-        | RELAYS_JS_PATH => LONG_CACHE,
+        | RELAYS_JS_PATH
+        | LOGO_PNG_PATH => LONG_CACHE,
         _ => "no-store, max-age=0",
     }
 }
@@ -277,6 +280,11 @@ pub fn pdf_wasm() -> (ContentType, &'static [u8]) {
 #[get("/pdf/LICENSE")]
 pub fn pdf_license() -> (ContentType, &'static str) {
     (ContentType::Plain, PDF_LICENSE)
+}
+
+#[get("/logo.png")]
+pub fn logo_png() -> (ContentType, &'static [u8]) {
+    (ContentType::PNG, LOGO_PNG)
 }
 
 #[get("/home.css")]

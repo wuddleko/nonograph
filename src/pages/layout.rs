@@ -152,7 +152,7 @@ pub(super) fn centered_notice(document_title: &str, heading: &str, body: &str) -
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{document_title}</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/png" href="/logo.png?v={version}" />
     <link rel="stylesheet" href="/notice.css?v={version}" />
 </head>
 <body>

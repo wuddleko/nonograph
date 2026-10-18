@@ -24,6 +24,42 @@ type ViewErr = (
 const SEALED_TITLE: &str = "Sealed note";
 const SEALED_PREVIEW: &str = "A note sealed in the browser.";
 const SOURCE: &str = "https://github.com/wuddleko/nostorgraph";
+const SEALED_ABOUT: &str = r##"<div class="bottom-sheet-overlay" id="help-sheet">
+<div class="bottom-sheet">
+<div class="bottom-sheet-header">
+<h2 class="bottom-sheet-title">About Nostorgraph</h2>
+<a href="#" class="bottom-sheet-close"> &times; </a>
+</div>
+<div class="bottom-sheet-content">
+<div class="help-section">
+<h3>What's this?</h3>
+<p>Nostorgraph is for writing things you want to exist somewhere permanent without that somewhere being attached to you, or to a single central entity.<br>A thought, an essay, a rant, class notes, up to you. You write it, you get a link. Share the link with whoever you'd like, or keep it to yourself.</p>
+<p>Your post is encrypted in your browser the moment you click STORE.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format.<br>You can also save a copy on this device as markdown or a PDF.</p>
+<p>Notes are stored on <a href="https://nostr.com/info" target="_blank" rel="noopener noreferrer">nostr relays</a>. They are reached through Tor, so nobody sees who posted a note or who read it.</p>
+</div>
+<div class="help-section">
+<h3>Principles</h3>
+<ul>
+<li>Posts cannot be edited or deleted after publishing</li>
+<li>No accounts, no tracking, no analytics</li>
+<li>Open to all, no political or social biases</li>
+<li>Open source, self-hostable</li>
+</ul>
+</div>
+<div class="help-section">
+<h3>Source code</h3>
+<p>It's entirely open source. The code is at <a href="https://github.com/wuddleko/nostorgraph" target="_blank" rel="noopener noreferrer">github.com/wuddleko/nostorgraph</a>. You can read it, run it yourself, and host for others easily.</p>
+<p>PDF text uses the <a href="/pdf/LICENSE">DejaVu fonts</a>.</p>
+</div>
+<div class="help-section">
+<h3>Formatting</h3>
+<p class="format-with-slash">Type <code>/</code> for a menu of formatting options, or use markdown directly.</p>
+<p class="format-markdown">Use markdown directly.</p>
+</div>
+</div>
+</div>
+</div>"##;
+const SEALED_SAVE: &str = "<span class=\"save-note\" hidden><button type=\"button\" class=\"save-open\" aria-expanded=\"false\" aria-controls=\"save-formats\">save</button><span class=\"save-formats\" id=\"save-formats\" role=\"group\" aria-label=\"Save format\" hidden><span class=\"view-mode-bar\" aria-hidden=\"true\">|</span><button type=\"button\" data-save=\"markdown\">markdown</button><span class=\"view-mode-bar\" aria-hidden=\"true\">|</span><button type=\"button\" data-save=\"pdf\">pdf</button><span class=\"save-status\" role=\"status\" hidden></span></span></span>";
 
 fn sealed_key_box() -> &'static str {
     "<div id=\"sealed-open\">\
@@ -56,14 +92,14 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         )
     };
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     {theme_boot}
     <title>{title}</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/png" href="/logo.png?v={version}" />
     <meta property="og:title" content="{title}" />
     <meta property="og:type" content="website" />
     <meta property="og:description" content="{preview}" />
@@ -90,17 +126,20 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
             ></div>
         </div>
     </div>
+        {about}
     <div class="footer">
         <button type="button" id="sealed-copy">Copy link</button>
         <a href="/">write your own</a>
+        <a href="#help-sheet">about</a>
         <a href="/legal">legal</a>
         <a href="/api">api</a>
         <a href="{source}">source code</a>
         <button type="button" class="theme-toggle" aria-label="Dark mode"><span class="theme-to-dark">dark</span><span class="theme-to-light">light</span></button>
+        {save}
     </div>
     {event}
 </body>
-</html>"#,
+</html>"##,
         title = SEALED_TITLE,
         preview = SEALED_PREVIEW,
         source = SOURCE,
@@ -111,6 +150,8 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         theme = theme,
         max_url = options.max_url_length,
         external = external,
+        save = if event_json.is_empty() { "" } else { SEALED_SAVE },
+        about = SEALED_ABOUT,
     )
 }
 
@@ -195,7 +236,7 @@ fn run_locally_page() -> String {
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="refresh" content="0; url={source}" />
     <title>Run locally to read the note</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/png" href="/logo.png?v={version}" />
     <link rel="stylesheet" href="/notice.css?v={version}" />
 </head>
 <body>

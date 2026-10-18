@@ -1,5 +1,5 @@
 <div align="center">
-  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo.png" />
+  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
 </div>
 
 <h1 align="center">Nostorgraph</h1>
@@ -23,11 +23,13 @@
 
 </div>
 
+这是 [du82](https://github.com/du82) 的 [nonograph](https://github.com/du82/nonograph) 的一个分支。
+
 Nostorgraph 是一个简单的匿名发布平台，适合想把文字放到网上、却不想带上身份、也不想让单一实体持有自己想法的人。
 
 你写下内容，点击存储，笔记被加密，你得到一个链接。别人打开这个链接，由他们的浏览器解密。
 
-实例把加密后的笔记发到 [nostr 中继](https://nostr.com/info)。中继看到的是来自 Tor 出口的密文。
+实例通过 Tor 把加密后的笔记存在 [nostr 中继](https://nostr.com/info)上。因此中继看到的是来自 Tor 出口的密文。
 
 没有账号，没有个人主页，也不会有分析工具跟着读者和作者。
 

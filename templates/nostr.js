@@ -655,9 +655,11 @@ function renderOpenedNote(note, page) {
     const external = content.getAttribute("data-external-links") !== "false";
     content.innerHTML = page.render_markdown(note.content, theme, maxUrl, external);
     const heading = document.getElementById("sealed-title");
+    const noteTitle = note.title ? String(note.title) : "Untitled";
     if (heading) {
-        heading.textContent = note.title ? String(note.title) : "Untitled";
+        heading.textContent = noteTitle;
     }
+    document.title = noteTitle;
     const preview = document.getElementById("sealed-preview");
     if (preview) {
         preview.hidden = true;
@@ -672,6 +674,166 @@ function renderOpenedNote(note, page) {
     if (form) {
         form.hidden = true;
     }
+    showSealedSave(note, page);
+}
+
+let sealedSave = null;
+let pdfModule = null;
+
+export function showSealedSave(note, page) {
+    const content = document.getElementById("CONTENT");
+    const theme = content?.getAttribute("data-syntax-theme") || "base16-ocean.dark";
+    const parsedLimit = Number(content?.getAttribute("data-max-url-length"));
+    const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
+    const external = content?.getAttribute("data-external-links") !== "false";
+    sealedSave = { note, page, theme, maxUrl, external };
+    const root = document.querySelector(".save-note");
+    if (root) root.hidden = false;
+}
+
+function sealedNoteFields() {
+    const note = sealedSave?.note;
+    if (!note) return null;
+    return {
+        title: note.title ? String(note.title) : "",
+        alias: note.author ? String(note.author) : "",
+        content: typeof note.content === "string" ? note.content : "",
+    };
+}
+
+function sealedNoteIsEmpty(fields) {
+    return !fields || (!fields.title.trim() && !fields.alias.trim() && !fields.content.trim());
+}
+
+function sealedSaveFilename(title, extension) {
+    const cleaned = String(title ?? "")
+        .trim()
+        .replace(/[\u0000-\u001f\\/:*?"<>|]/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/[. ]+$/g, "")
+        .trim();
+    return (cleaned || "note") + extension;
+}
+
+function downloadSavedNote(filename, body, type) {
+    const blob = new Blob([body], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function sealedSaveStatus() {
+    return document.querySelector(".save-note .save-status");
+}
+
+function showSealedSaveError(message) {
+    const status = sealedSaveStatus();
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = message;
+}
+
+function clearSealedSaveError() {
+    const status = sealedSaveStatus();
+    if (!status) return;
+    status.textContent = "";
+    status.hidden = true;
+}
+
+function saveSealedMarkdown(fields) {
+    downloadSavedNote(
+        sealedSaveFilename(fields.title, ".md"),
+        fields.content,
+        "text/markdown;charset=utf-8",
+    );
+}
+
+function loadPdfModule() {
+    if (pdfModule) return Promise.resolve(pdfModule);
+    if (!loadPdfModule.pending) {
+        const js = new URL("./pdf/nostorgraph_pdf.js", import.meta.url);
+        const wasm = new URL("./pdf/nostorgraph_pdf_bg.wasm", import.meta.url);
+        loadPdfModule.pending = import(js.href)
+            .then((module) => module.default({ module_or_path: wasm }).then(() => module))
+            .then((module) => {
+                pdfModule = module;
+                return module;
+            })
+            .catch((error) => {
+                loadPdfModule.pending = null;
+                throw error;
+            });
+    }
+    return loadPdfModule.pending;
+}
+
+async function saveSealedPdf(fields) {
+    const saved = sealedSave;
+    const page = saved?.page;
+    if (!page || typeof page.render_markdown !== "function") {
+        showSealedSaveError("PDF is not ready.");
+        return;
+    }
+    try {
+        const html = page.render_markdown(fields.content, saved.theme, saved.maxUrl, saved.external);
+        const pdf = await loadPdfModule();
+        if (typeof pdf.note_pdf !== "function") {
+            showSealedSaveError("PDF is not ready.");
+            return;
+        }
+        const bytes = pdf.note_pdf(fields.title.trim(), fields.alias.trim(), html);
+        downloadSavedNote(sealedSaveFilename(fields.title, ".pdf"), bytes, "application/pdf");
+        clearSealedSaveError();
+    } catch (error) {
+        showSealedSaveError("Could not save the PDF.");
+    }
+}
+
+function setSealedSaveOpen(open) {
+    const root = document.querySelector(".save-note");
+    const opener = root?.querySelector(".save-open");
+    const formats = root?.querySelector(".save-formats");
+    if (!formats || !opener) return;
+    formats.hidden = !open;
+    opener.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function bindSealedSave() {
+    const root = document.querySelector(".save-note");
+    if (!root || root.dataset.bound === "true") return;
+    root.dataset.bound = "true";
+    const opener = root.querySelector(".save-open");
+    const formats = root.querySelector(".save-formats");
+    if (opener) {
+        opener.addEventListener("click", () => {
+            if (formats && !formats.hidden) {
+                setSealedSaveOpen(false);
+                clearSealedSaveError();
+                return;
+            }
+            if (sealedNoteIsEmpty(sealedNoteFields())) return;
+            setSealedSaveOpen(true);
+        });
+    }
+    root.addEventListener("click", (event) => {
+        const choice = event.target?.closest?.("[data-save]");
+        if (!choice || !root.contains(choice)) return;
+        const fields = sealedNoteFields();
+        if (sealedNoteIsEmpty(fields)) return;
+        const kind = choice.getAttribute("data-save");
+        if (kind === "markdown") {
+            clearSealedSaveError();
+            saveSealedMarkdown(fields);
+            return;
+        }
+        if (kind !== "pdf") return;
+        saveSealedPdf(fields);
+    });
 }
 
 async function verifySealedEvent(event) {
@@ -808,6 +970,7 @@ export function sealedReadingFooter() {
     }
     const links = [
         ["/", "write your own"],
+        ["#help-sheet", "about"],
         ["/legal", "legal"],
         ["/api", "api"],
         ["https://github.com/wuddleko/nostorgraph", "source code"],
@@ -861,6 +1024,27 @@ function showSealedKeyError(message) {
     }
 }
 
+function bindSealedAbout() {
+    if (!document.getElementById("sealed-open")) return;
+    const sheet = document.getElementById("help-sheet");
+    if (!sheet) return;
+    document.addEventListener("click", (event) => {
+        const about = event.target?.closest?.('a[href="#help-sheet"]');
+        if (about) {
+            event.preventDefault();
+            sheet.classList.add("is-open");
+            return;
+        }
+        const close = event.target?.closest?.(".bottom-sheet-close");
+        if (close && sheet.contains(close)) {
+            event.preventDefault();
+            sheet.classList.remove("is-open");
+            return;
+        }
+        if (event.target === sheet) sheet.classList.remove("is-open");
+    });
+}
+
 if (typeof document !== "undefined") {
     const form = document.getElementById("sealed-open");
     const sealedEvent = document.getElementById("sealed-event");
@@ -868,6 +1052,8 @@ if (typeof document !== "undefined") {
         form.hidden = true;
     }
     sealedReadingFooter();
+    bindSealedSave();
+    bindSealedAbout();
     prefillSealedKey();
     const copy = document.getElementById("sealed-copy");
     if (copy) {

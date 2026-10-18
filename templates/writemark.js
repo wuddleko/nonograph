@@ -597,7 +597,11 @@ class WritemarkEditorElement extends HTMLElement {
     this._selection = { start: s, end: e, direction };
     this._structuredSelection = (!this._isSourceActive() && s !== e) ? { start: s, end: e, direction, label: "selection" } : null;
     if (this._sourceTextarea && this._isSourceActive()) this._sourceTextarea.setSelectionRange(s, e, direction);
-    if (this._liveEditor && !this._isSourceActive()) { this._ignoreSelectionChangeCount = 2; this._restoreLiveSelection(this._selection); }
+    if (this._liveEditor && !this._isSourceActive()) {
+      this._ignoreSelectionChangeCount = 2;
+      if (this._virtualState?.active) this._markVirtualCaret();
+      this._restoreLiveSelection(this._selection);
+    }
     this._emitSelectionChange();
     this._scheduleCompletionUpdate();
     this._syncSourceForm();
@@ -1427,13 +1431,15 @@ class WritemarkEditorElement extends HTMLElement {
   _metrics() {
     const editor = this._liveEditor;
     const width = editor?.clientWidth || 0;
-    if (this._metricsCache && this._metricsWidth === width) return this._metricsCache;
-    if (this._metricsWidth != null && width && this._metricsWidth !== width) {
+    const style = globalThis.getComputedStyle?.(editor || this);
+    const fontSize = Number.parseFloat(style?.fontSize || "") || 16;
+    const line = Math.max(18, this._computedLineHeight(editor || this));
+    const cached = this._metricsCache;
+    if (cached && this._metricsWidth === width && cached.fontSize === fontSize && Math.abs(cached.line - line) < 0.5) return cached;
+    if (cached) {
       this._blockHeights?.clear();
       this._heightTops = null;
     }
-    const style = globalThis.getComputedStyle?.(editor || this);
-    const fontSize = Number.parseFloat(style?.fontSize || "") || 16;
     const gap = style?.getPropertyValue?.("--md-editor-paragraph-gap")?.trim?.() || "";
     let blank = fontSize * 1.1;
     if (gap.endsWith("px")) blank = Number.parseFloat(gap) || blank;
@@ -1443,7 +1449,7 @@ class WritemarkEditorElement extends HTMLElement {
     this._metricsCache = {
       fontSize,
       blank,
-      line: Math.max(18, this._computedLineHeight(editor || this)),
+      line,
       chars: Math.max(8, Math.floor(((width || 640) - pad) / Math.max(1, fontSize * 0.5))),
       fenceLine: 20,
       fenceLead: 20,
@@ -1704,7 +1710,7 @@ class WritemarkEditorElement extends HTMLElement {
     nodes.forEach((node, i) => {
       node.dataset.virtualBlock = String(index);
       const size = tail && i === nodes.length - 1 ? tail : Math.max(1, total - tail);
-      node.style.setProperty("--md-virtual-size", `${Math.round(size)}px`);
+      node.dataset.virtualSize = String(Math.round(size));
     });
     return template.innerHTML;
   }
@@ -1723,6 +1729,7 @@ class WritemarkEditorElement extends HTMLElement {
       this._clearOffsetMap();
       this._liveEditor.innerHTML = html.join("");
       this._paintGapSpacers();
+      this._paintVirtualSizes();
       this._liveEditor.prepend(this._virtualSpacer(Math.max(0, Math.round(tops[start] || 0))));
       this._liveEditor.append(this._virtualSpacer(Math.max(0, Math.round((tops[total] || 0) - (tops[end] || 0)))));
       this._virtualState = { active: true, start, end, total, lineHeight: this._metrics().line, slices, sliceKey };
@@ -1849,6 +1856,11 @@ class WritemarkEditorElement extends HTMLElement {
   _paintGapSpacers() {
     for (const spacer of this._liveEditor.querySelectorAll(".md-virtual-spacer[data-block-size]")) {
       spacer.style.blockSize = `${spacer.dataset.blockSize}px`;
+    }
+  }
+  _paintVirtualSizes() {
+    for (const node of this._liveEditor.querySelectorAll("[data-virtual-size]")) {
+      node.style.setProperty("--md-virtual-size", `${node.dataset.virtualSize}px`);
     }
   }
   _sliceCovers(slice, offset) {

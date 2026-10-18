@@ -278,7 +278,7 @@ fn about_durability(nojs: bool) -> &'static str {
     if nojs {
         "The host encrypts the note and does not keep a copy.<br>Only you, and anyone with the link, can read it.<br>The writing is ordinary markup, not a proprietary format."
     } else {
-        "Your post is encrypted in your browser the moment you click Store.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format."
+        "Your post is encrypted in your browser the moment you click STORE.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format.<br>You can also save a copy on this device as markdown or a PDF."
     }
 }
 

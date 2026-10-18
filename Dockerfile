@@ -10,6 +10,7 @@ RUN rustup target add wasm32-unknown-unknown
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock build.rs robots.txt ./
+COPY logo-proposals/favicon-nt-bw.png ./logo-proposals/favicon-nt-bw.png
 COPY parser ./parser
 COPY page ./page
 COPY nip44 ./nip44

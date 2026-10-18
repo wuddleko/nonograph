@@ -410,6 +410,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::theme_js,
                 pages::editor_mode_js,
                 pages::relays_js,
+                pages::logo_png,
             ],
         );
 

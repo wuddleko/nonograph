@@ -774,6 +774,24 @@
 
                 .sidebar-relays .relay-remove {
                     order: 3;
+                    position: absolute;
+                    top: 50%;
+                    right: 0;
+                    z-index: 4;
+                    width: 16px;
+                    height: 16px;
+                    margin: 0;
+                    padding: 0;
+                    transform: translateY(-50%);
+                }
+
+                body.nojs .sidebar-relays .relay-remove {
+                    position: static;
+                    top: auto;
+                    right: auto;
+                    width: auto;
+                    height: auto;
+                    transform: none;
                 }
 
                 .sidebar-relays .relay-circuit {
@@ -793,6 +811,11 @@
                 .sidebar-relays .relay-list li:focus-within {
                     z-index: 3;
                     background: color-mix(in srgb, var(--ink) 10%, var(--ground));
+                }
+
+                body:not(.nojs) .sidebar-relays .relay-list li:hover,
+                body:not(.nojs) .sidebar-relays .relay-list li:focus-within {
+                    padding-right: 18px;
                 }
 
                 .sidebar-relays .relay-list li:hover .relay-circuit,

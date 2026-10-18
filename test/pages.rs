@@ -20,6 +20,7 @@ fn static_assets_are_cacheable_and_html_is_not() {
         THEME_JS_PATH,
         EDITOR_MODE_JS_PATH,
         RELAYS_JS_PATH,
+        LOGO_PNG_PATH,
     ] {
         assert_eq!(
             cache_control_for_path(path),
@@ -466,7 +467,7 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs.contains("stored as plaintext markup"));
     assert!(!js.contains("stored as plaintext markup"));
     assert!(js.contains(
-        "Your post is encrypted in your browser the moment you click Store.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format."
+        "Your post is encrypted in your browser the moment you click STORE.<br>Only you, and anyone with the link, can read it.<br>This host does not keep a copy.<br>The writing is ordinary markup, not a proprietary format.<br>You can also save a copy on this device as markdown or a PDF."
     ));
     assert!(nojs.contains("class=\"nojs-file-note\""));
     assert!(js.contains("class=\"nojs-file-note\""));
@@ -931,6 +932,7 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
         .render("home", &home_context(&config, false, None, None))
         .unwrap();
     assert!(js.contains("class=\"theme-toggle\""));
+    assert!(js.contains("rel=\"icon\" type=\"image/png\" href=\"/logo.png?v="));
     assert!(js.contains("class=\"view-mode\""));
     assert!(js.contains("data-editor-mode=\"live\""));
     assert!(js.contains("data-editor-mode=\"source\""));
@@ -961,6 +963,7 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
 
     let post = engine.render("post", &sample_post_context(false)).unwrap();
     assert!(post.contains("<script src=\"/theme.js?v="));
+    assert!(post.contains("rel=\"icon\" type=\"image/png\" href=\"/logo.png?v="));
     assert!(!post.contains("class=\"save-note\""));
     let post_nojs = engine.render("post", &sample_post_context(true)).unwrap();
     assert!(post_nojs.contains("class=\"theme-toggle\""));
@@ -1021,6 +1024,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     config.security.external_link_security = false;
     let html = sealed_shell(&event, &config);
     assert!(html.contains("<title>Sealed note</title>"));
+    assert!(html.contains("rel=\"icon\" type=\"image/png\" href=\"/logo.png?v="));
     assert!(html.contains("property=\"og:title\" content=\"Sealed note\""));
     assert!(html.contains("property=\"og:description\" content=\"A note sealed in the browser.\""));
     assert!(html.contains("name=\"description\" content=\"A note sealed in the browser.\""));
@@ -1050,9 +1054,22 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(!html.contains("action="));
     assert!(!html.contains("/nojs/s/"));
     assert!(!html.contains("?k="));
+    assert!(html.contains("href=\"#help-sheet\">about</a>"));
+    assert!(html.contains("id=\"help-sheet\""));
+    assert!(html.contains("About Nostorgraph"));
+    assert!(html.contains("What's this?"));
+    assert!(html.contains("encrypted in your browser"));
+    assert!(!html.contains("href=\"/about\">about</a>"));
     assert!(html.contains(">legal</a>"));
     assert!(html.contains(">api</a>"));
     assert!(html.contains(">source code</a>"));
+    assert!(html.contains("class=\"save-note\" hidden"));
+    assert!(html.contains("data-save=\"markdown\""));
+    assert!(html.contains("data-save=\"pdf\""));
+    assert!(html.contains(">save</button>"));
+    assert!(include_str!("../templates/post.css").contains(
+        ".footer .save-formats {\n                position: absolute;\n                left: 100%;\n                top: 0;"
+    ));
     assert!(!html.contains("location.href"));
     assert!(!html.contains("location.hash"));
     assert!(!html.contains("</script><script"));
@@ -1087,8 +1104,18 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(draw_body.contains("page.render_markdown(note.content, theme, maxUrl, external)"));
     assert!(draw_body.contains("content.innerHTML"));
     assert!(draw_body.contains("heading.textContent"));
+    assert!(draw_body.contains("document.title = noteTitle"));
+    assert!(draw_body.contains("showSealedSave(note, page)"));
     assert!(!draw_body.contains("location.hash"));
     assert!(!draw_body.contains("event.content"));
+    assert!(nostr.contains("sealedSaveFilename(fields.title, \".md\")"));
+    assert!(nostr.contains("fields.content,"));
+    assert!(nostr.contains("pdf.note_pdf(fields.title.trim(), fields.alias.trim(), html)"));
+    assert!(nostr.contains("./pdf/nostorgraph_pdf.js"));
+    assert!(nostr.contains("./pdf/nostorgraph_pdf_bg.wasm"));
+    assert!(nostr.contains("root.hidden = false"));
+    let locked_shell = sealed_shell("", &config);
+    assert!(!locked_shell.contains("save-note"));
     assert!(PAGE_JS.contains(
         "export function render_markdown(markdown, syntax_theme, max_url_length, external_link_security)"
     ));
@@ -1126,6 +1153,16 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(prefill < load);
     let footer_body = &nostr[footer..prefill];
     assert!(footer_body.contains(".footer a[href=\"/api\"]"));
+    assert!(footer_body.contains("[\"#help-sheet\", \"about\"]"));
+    let about = nostr.find("function bindSealedAbout(").unwrap();
+    let about_end = nostr[about..].find("\nif (typeof document").unwrap();
+    let about_body = &nostr[about..about + about_end];
+    assert!(about_body.contains("getElementById(\"sealed-open\")"));
+    assert!(about_body.contains("event.preventDefault()"));
+    assert!(about_body.contains("classList.add(\"is-open\")"));
+    assert!(about_body.contains("classList.remove(\"is-open\")"));
+    assert!(!about_body.contains("location.hash"));
+    assert!(!about_body.contains("location.href"));
     assert!(!footer_body.contains("?k="));
     assert!(!footer_body.contains("/nojs/s/"));
     assert!(!footer_body.contains("secretFromFragment"));
@@ -1136,6 +1173,8 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(!prefill_body.contains("?k="));
     assert!(!prefill_body.contains("/nojs/s/"));
     let load_body = &nostr[load..];
+    assert!(load_body.contains("bindSealedSave()"));
+    assert!(load_body.contains("bindSealedAbout()"));
     assert!(load_body.contains("prefillSealedKey()"));
     assert!(load_body.contains("secretFromFragment(location.hash)"));
     let hidden = load_body.find("form.hidden = true").unwrap();

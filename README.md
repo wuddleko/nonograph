@@ -1,5 +1,5 @@
 <div align="center">
-  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo.png" />
+  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
 </div>
 
 <h1 align="center">Nostorgraph</h1>
@@ -23,11 +23,13 @@ English | [简体中文](README.zh.md) | [Français](README.fr.md)
 
 </div>
 
+A fork of [nonograph](https://github.com/du82/nonograph) by [du82](https://github.com/du82).
+
 Nostorgraph is a simple anonymous publishing platform for anyone who wants their words online without an identity, and without a single entity holding their thoughts.  
 
 You write, you click STORE, the note is encrypted, and you get a link. Someone opens that link, and their browser decrypts it.  
 
-The instance sends the encrypted note to [nostr relays](https://nostr.com/info). A relay sees ciphertext from a Tor exit.
+The instance stores the encrypted note on [nostr relays](https://nostr.com/info) through Tor. Thus a relay sees ciphertext from a Tor exit.
 
 No account, no profile, no analytics following readers and writers around.  
 
