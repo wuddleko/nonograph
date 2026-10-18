@@ -86,7 +86,8 @@ pub(crate) fn mine_stamp(
     for counter in 0..attempts {
         let tags = sealed_tags(locator, &counter.to_string());
         let id = nostorgraph_nip44::event_id(pubkey_hex, created_at, kind, &tags, content);
-        if nostorgraph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok() {
+        if nostorgraph_nip44::check_stamp(&id, pubkey_hex, created_at, kind, &tags, content).is_ok()
+        {
             return Ok(MinedStamp {
                 id,
                 created_at,

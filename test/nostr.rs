@@ -160,6 +160,25 @@ fn a_sealed_fetch_sizes_the_event_not_the_frame() {
 }
 
 #[test]
+fn a_sealed_event_matches_the_locator_when_no_id_is_required() {
+    let locator = "0123456789abcdef0123";
+    let payload_max = crate::seal::sealed_payload_max(0, 0, 4);
+    let note = sign_sealed_note(&v2_payload(locator, 2), locator, 1_700_000_000);
+    let message = format!(r#"["EVENT","sub",{}]"#, note.event_json);
+    let (created_at, event_json) =
+        accepted_sealed_event(&message, locator, None, payload_max).unwrap();
+    assert_eq!(created_at, 1_700_000_000);
+    assert_eq!(event_json, note.event_json);
+    assert!(
+        accepted_sealed_event(&message, locator, Some(&"ab".repeat(32)), payload_max).is_none()
+    );
+    assert!(accepted_sealed_event(&message, "ffffffffffffffff0000", None, payload_max).is_none());
+    let (_, matched) =
+        accepted_sealed_event(&message, locator, Some(&note.id_hex()), payload_max).unwrap();
+    assert_eq!(matched, note.event_json);
+}
+
+#[test]
 fn a_sealed_fetch_keeps_the_requested_event() {
     let locator = "0123456789abcdef0123";
     let older_body = v2_payload(locator, 2);

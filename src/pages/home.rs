@@ -461,12 +461,12 @@ pub(super) fn nojs_sealed_location(
         return None;
     }
     let hints = share_link_hints(&published.accepted, configured);
-    Some(super::layout::js_seal_href(
-        &published.locator,
-        &published.event_id,
-        &published.k,
-        &hints,
-    ))
+    Some(super::layout::seal_href(&super::layout::SealAddress {
+        locator: &published.locator,
+        event_id: Some(&published.event_id),
+        key: &published.k,
+        hints: &hints,
+    }))
 }
 
 fn relays_for_nojs_write(relay_cookie: Option<&str>) -> Option<Vec<String>> {

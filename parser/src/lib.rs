@@ -212,14 +212,20 @@ pub fn render_markdown_with_config(content: &str, config: &RenderOptions) -> Str
 
     working_content = apply_emphasis(&working_content);
 
-    working_content = restore_media_and_links(&working_content, &media_blocks, &link_blocks, &marks);
+    working_content =
+        restore_media_and_links(&working_content, &media_blocks, &link_blocks, &marks);
     working_content = process_images_and_links(&working_content, config);
     working_content = process_tables(&working_content);
     working_content = process_lists(&working_content, &marks);
     working_content = process_dividers(&working_content);
     working_content = format_paragraphs_with_headers(&working_content, &marks);
-    working_content =
-        restore_rendered_blocks(&working_content, &fenced_blocks, &code_blocks, config, &marks);
+    working_content = restore_rendered_blocks(
+        &working_content,
+        &fenced_blocks,
+        &code_blocks,
+        config,
+        &marks,
+    );
     working_content = restore_footnotes(&working_content, &marks);
 
     finish_html(content, working_content, &marks)
@@ -1097,25 +1103,21 @@ fn restore_rendered_blocks(
     let theme = theme_for(themes, &config.syntax_theme);
     let fence = marks.prefix('F');
     let code = marks.prefix('C');
-    expand_indexed(
-        text,
-        &[(&fence, "z"), (&code, "z")],
-        |prefix, index| {
-            if prefix == fence {
-                fenced_blocks
-                    .get(index)
-                    .map(|(language, code, line_count)| {
-                        render_code_block(syntax_set, theme, language, code, *line_count, marks)
-                    })
-            } else if prefix == code {
-                code_blocks
-                    .get(index)
-                    .map(|code| format!("<code>{}</code>", html_escape(code)))
-            } else {
-                None
-            }
-        },
-    )
+    expand_indexed(text, &[(&fence, "z"), (&code, "z")], |prefix, index| {
+        if prefix == fence {
+            fenced_blocks
+                .get(index)
+                .map(|(language, code, line_count)| {
+                    render_code_block(syntax_set, theme, language, code, *line_count, marks)
+                })
+        } else if prefix == code {
+            code_blocks
+                .get(index)
+                .map(|code| format!("<code>{}</code>", html_escape(code)))
+        } else {
+            None
+        }
+    })
 }
 
 fn finish_html(source: &str, html: String, marks: &Marks) -> String {
@@ -1335,7 +1337,8 @@ fn format_paragraphs_with_headers(text: &str, marks: &Marks) -> String {
             for line in lines {
                 let line_trimmed = line.trim();
 
-                if line_trimmed.starts_with(&marks.prefix('F')) || line_trimmed.starts_with("<table>")
+                if line_trimmed.starts_with(&marks.prefix('F'))
+                    || line_trimmed.starts_with("<table>")
                 {
                     if !current_paragraph.is_empty() {
                         result.push_str(&format!("<p>{}</p>\n", current_paragraph.trim_start()));

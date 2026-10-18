@@ -1221,7 +1221,8 @@ if (again.error !== "" || !again.clear || memory.getItem("nostorgraph_relays") !
 
 fn run_javascript(prefix: &str, program: &str) {
     let path = std::env::temp_dir().join(format!("{prefix}-{}.js", std::process::id()));
-    std::fs::write(&path, format!("{}\n{program}", script_shim())).expect("write relay list fixture");
+    std::fs::write(&path, format!("{}\n{program}", script_shim()))
+        .expect("write relay list fixture");
     let output = script_output(&path);
     let _ = std::fs::remove_file(&path);
     assert!(

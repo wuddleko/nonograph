@@ -118,10 +118,21 @@ fn query_escape(text: &str) -> String {
     out
 }
 
-pub(super) fn js_seal_href(locator: &str, event_id: &str, k: &str, hints: &[String]) -> String {
-    let mut href = format!("/s/{locator}/{event_id}");
+pub(super) struct SealAddress<'a> {
+    pub locator: &'a str,
+    pub event_id: Option<&'a str>,
+    pub key: &'a str,
+    pub hints: &'a [String],
+}
+
+pub(super) fn seal_href(address: &SealAddress<'_>) -> String {
+    let mut href = format!("/s/{}", address.locator);
+    if let Some(event_id) = address.event_id {
+        href.push('/');
+        href.push_str(event_id);
+    }
     let mut first = true;
-    for relay in hints {
+    for relay in address.hints {
         let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
             continue;
         };
@@ -131,7 +142,7 @@ pub(super) fn js_seal_href(locator: &str, event_id: &str, k: &str, hints: &[Stri
         href.push_str(&query_escape(&relay));
     }
     href.push('#');
-    href.push_str(k);
+    href.push_str(address.key);
     href
 }
 

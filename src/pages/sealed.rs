@@ -150,7 +150,11 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         theme = theme,
         max_url = options.max_url_length,
         external = external,
-        save = if event_json.is_empty() { "" } else { SEALED_SAVE },
+        save = if event_json.is_empty() {
+            ""
+        } else {
+            SEALED_SAVE
+        },
         about = SEALED_ABOUT,
     )
 }

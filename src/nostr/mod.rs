@@ -629,7 +629,7 @@ fn note_for_query(
     locator: &str,
     payload_max: usize,
 ) -> Option<String> {
-    sealed_from_relay_message(message, event_id_hex, locator, payload_max)
+    accepted_sealed_event(message, locator, Some(event_id_hex), payload_max)
         .map(|(_created_at, event_json)| event_json)
 }
 
@@ -655,6 +655,15 @@ fn sealed_from_relay_message(
     locator: &str,
     payload_max: usize,
 ) -> Option<(i64, String)> {
+    accepted_sealed_event(message, locator, Some(event_id), payload_max)
+}
+
+fn accepted_sealed_event(
+    message: &str,
+    locator: &str,
+    event_id: Option<&str>,
+    payload_max: usize,
+) -> Option<(i64, String)> {
     if message.len() > sealed_frame_max(payload_max) {
         return None;
     }
@@ -663,8 +672,10 @@ fn sealed_from_relay_message(
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(&event_json).ok()?;
-    if value.get("id")?.as_str()? != event_id {
-        return None;
+    if let Some(event_id) = event_id {
+        if value.get("id")?.as_str()? != event_id {
+            return None;
+        }
     }
     let (_, found) = sealed_note_capped(&value, payload_max)?;
     if found != locator {

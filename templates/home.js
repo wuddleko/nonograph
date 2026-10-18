@@ -482,18 +482,23 @@ function paintSavedRelayLists(doc, storage) {
                 return hints;
             }
 
-            function openedSealHref(result) {
-                const query = acceptedRelayHints(result.hints)
+            function sealHref(locator, eventId, key, hints) {
+                let href = "/s/" + locator;
+                if (eventId) {
+                    href += "/" + eventId;
+                }
+                const query = hints
                     .map((relay) => "r=" + encodeURIComponent(relay))
                     .join("&");
-                return (
-                    "/s/" +
-                    result.locator +
-                    "/" +
-                    result.event.id +
-                    (query ? "?" + query : "") +
-                    "#" +
-                    result.key
+                return href + (query ? "?" + query : "") + "#" + key;
+            }
+
+            function openedSealHref(result) {
+                return sealHref(
+                    result.locator,
+                    result.event.id,
+                    result.key,
+                    acceptedRelayHints(result.hints),
                 );
             }
 

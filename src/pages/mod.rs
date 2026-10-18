@@ -9,14 +9,15 @@ mod sealed;
 mod static_pages;
 
 pub use assets::{
-    cache_control_for_path, cache_control_for_request, editor_mode_js, entity_tag_for_path, home_css, home_js,
-    home_noscript_css, if_none_match_matches, nostr_js, notice_css, parser_js, parser_wasm, pdf_js,
-    pdf_license, pdf_wasm, post_css, post_js, post_noscript_css, relays_js, robots_txt,
-    secp256k1_js, theme_js, warm, writemark_css, writemark_js, writemark_live_js, logo_png,
-    EDITOR_MODE_JS_PATH, HOME_CSS_PATH, HOME_JS_PATH, HOME_NOSCRIPT_CSS_PATH, LOGO_PNG_PATH, NOSTR_JS_PATH,
-    NOTICE_CSS_PATH, PAGE_JS_PATH, PAGE_WASM_PATH, PDF_JS_PATH, PDF_LICENSE_PATH, PDF_WASM_PATH,
-    POST_CSS_PATH, POST_JS_PATH, POST_NOSCRIPT_CSS_PATH, RELAYS_JS_PATH, SECP256K1_JS_PATH,
-    THEME_JS_PATH, WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH, WRITEMARK_LIVE_JS_PATH,
+    cache_control_for_path, cache_control_for_request, editor_mode_js, entity_tag_for_path,
+    home_css, home_js, home_noscript_css, if_none_match_matches, logo_png, nostr_js, notice_css,
+    parser_js, parser_wasm, pdf_js, pdf_license, pdf_wasm, post_css, post_js, post_noscript_css,
+    relays_js, robots_txt, secp256k1_js, theme_js, warm, writemark_css, writemark_js,
+    writemark_live_js, EDITOR_MODE_JS_PATH, HOME_CSS_PATH, HOME_JS_PATH, HOME_NOSCRIPT_CSS_PATH,
+    LOGO_PNG_PATH, NOSTR_JS_PATH, NOTICE_CSS_PATH, PAGE_JS_PATH, PAGE_WASM_PATH, PDF_JS_PATH,
+    PDF_LICENSE_PATH, PDF_WASM_PATH, POST_CSS_PATH, POST_JS_PATH, POST_NOSCRIPT_CSS_PATH,
+    RELAYS_JS_PATH, SECP256K1_JS_PATH, THEME_JS_PATH, WRITEMARK_CSS_PATH, WRITEMARK_JS_PATH,
+    WRITEMARK_LIVE_JS_PATH,
 };
 pub(crate) use assets::{post_scripts, PAGE_JS, PDF_JS};
 pub(crate) use fetch_slot::{

@@ -99,11 +99,15 @@ fn nojs_home_omits_scripts() {
     assert!(scripts.contains("<link rel=\"preload\" href=\"/page/nostorgraph_page_bg.wasm?v="));
     assert!(
         scripts.find("<script src=\"/editor-mode.js?v=").unwrap()
-            < scripts.find("<script type=\"module\" src=\"/writemark.js?v=").unwrap()
+            < scripts
+                .find("<script type=\"module\" src=\"/writemark.js?v=")
+                .unwrap()
     );
     assert!(
         scripts.find("<script src=\"/relays.js?v=").unwrap()
-            < scripts.find("<script type=\"module\" src=\"/home.js?v=").unwrap()
+            < scripts
+                .find("<script type=\"module\" src=\"/home.js?v=")
+                .unwrap()
     );
     assert!(include_str!("../templates/editor-mode.js").contains("nostorgraph-editor-mode"));
     let field = js.get("content_field").unwrap();
@@ -1726,7 +1730,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
     let temp = tempfile::tempdir().unwrap();
     let href = create_location_with_cookie(&form, &config, "", Some(&pinned_relays(&[&instance])));
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_parts(&href);
+    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
     assert!(query.is_empty(), "{href}");
     assert!(crate::nostr::sealed_locator(&locator), "{href}");
     assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
@@ -1758,7 +1762,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
         Some(&pinned_relays(&["wss://hint.example"])),
     );
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_parts(&href);
+    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
     assert!(crate::nostr::sealed_locator(&locator), "{href}");
     assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
     assert!(is_seal_key(&key), "{href}");
@@ -1794,7 +1798,7 @@ fn opening_a_sealed_note_stays_in_the_browser() {
     let temp = tempfile::tempdir().unwrap();
     let href = create_location_with_cookie(&form, &config, "", Some(&pinned_relays(&[&instance])));
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_parts(&href);
+    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
     assert!(query.is_empty(), "{href}");
 
     let client = rocket::local::blocking::Client::tracked(
@@ -1845,18 +1849,68 @@ fn is_seal_key(key: &str) -> bool {
             .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
 }
 
-fn seal_link_parts(href: &str) -> (String, String, String, String) {
+struct ParsedSealLink {
+    locator: String,
+    event_id: Option<String>,
+    key: String,
+    query: String,
+}
+
+fn seal_link_parts(href: &str) -> ParsedSealLink {
     let (before, key) = href.split_once('#').unwrap_or_else(|| panic!("{href}"));
     assert!(!before.contains("?k=") && !before.contains("&k="), "{href}");
     let (path, query) = before.split_once('?').unwrap_or((before, ""));
     let rest = path.strip_prefix("/s/").unwrap_or_else(|| panic!("{href}"));
-    let (locator, event_id) = rest.split_once('/').unwrap_or_else(|| panic!("{href}"));
-    (
-        locator.to_string(),
-        event_id.to_string(),
-        key.to_string(),
-        query.to_string(),
-    )
+    let (locator, event_id) = match rest.split_once('/') {
+        Some((locator, event_id)) => (locator, Some(event_id.to_string())),
+        None => (rest, None),
+    };
+    ParsedSealLink {
+        locator: locator.to_string(),
+        event_id,
+        key: key.to_string(),
+        query: query.to_string(),
+    }
+}
+
+fn seal_link_with_event_id(href: &str) -> (String, String, String, String) {
+    let link = seal_link_parts(href);
+    let event_id = link.event_id.expect("event id");
+    (link.locator, event_id, link.key, link.query)
+}
+
+#[test]
+fn seal_address_keeps_the_event_id_until_it_is_omitted() {
+    let event_id = "ab".repeat(32);
+    let key = "Kw7s_pQ2mN4xR8vL0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+    let hints = vec![
+        "wss://hint.example".to_string(),
+        "http://private.example".to_string(),
+    ];
+    let href = super::layout::seal_href(&super::layout::SealAddress {
+        locator: "0123456789abcdef0123",
+        event_id: Some(&event_id),
+        key,
+        hints: &hints,
+    });
+    let (locator, found_id, found_key, query) = seal_link_with_event_id(&href);
+    assert_eq!(locator, "0123456789abcdef0123");
+    assert_eq!(found_id, event_id);
+    assert_eq!(found_key, key);
+    assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
+
+    let short = super::layout::seal_href(&super::layout::SealAddress {
+        locator: "0123456789abcdef0123",
+        event_id: None,
+        key,
+        hints: &[],
+    });
+    let link = seal_link_parts(&short);
+    assert_eq!(link.locator, "0123456789abcdef0123");
+    assert!(link.event_id.is_none());
+    assert_eq!(link.key, key);
+    assert!(link.query.is_empty());
+    assert_eq!(short, format!("/s/0123456789abcdef0123#{key}"));
 }
 
 #[test]
@@ -1893,7 +1947,7 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
         Some(&pinned_relays(&["wss://hint.example"])),
     );
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_parts(&href);
+    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
     assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
     assert!(is_seal_key(&key), "{href}");
 
@@ -2652,7 +2706,8 @@ fn seal_note_loads_page_wasm_and_stops_when_ciphertext_exceeds_the_cap() {
     let locator = "0123456789abcdef0123";
     let secret = [4u8; nostorgraph_nip44::SECRET_LEN];
     let nonce = [5u8; 32];
-    let payload = nostorgraph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
+    let payload =
+        nostorgraph_nip44::seal("Title", "Ada", content, locator, &secret, &nonce).unwrap();
     let opened = nostorgraph_nip44::open(&payload, &secret, locator).unwrap();
     assert_eq!(opened.content, content);
     let limit = content.len();
@@ -2763,7 +2818,8 @@ fn seal_pow_bits_match_the_crate() {
     nostorgraph_nip44::push_json_string(&mut rebuilt, CONTENT);
     rebuilt.push(']');
     assert_eq!(rebuilt, CANONICAL);
-    let id = nostorgraph_nip44::event_id(PUBKEY, CREATED_AT, nostorgraph_nip44::KIND, &tags, CONTENT);
+    let id =
+        nostorgraph_nip44::event_id(PUBKEY, CREATED_AT, nostorgraph_nip44::KIND, &tags, CONTENT);
     let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(hex, ID);
     assert!(nostorgraph_nip44::check_stamp(
@@ -2828,7 +2884,7 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
     assert!(home.contains("The post is too long."));
     assert!(!home.contains("contentMax: contentLimit"));
     assert!(home.contains("location.assign(openedSealHref(result))"));
-    let href = home.find("function openedSealHref(").unwrap();
+    let href = home.find("function sealHref(").unwrap();
     let href_end = home[href..]
         .find("\n            async function publishOnNostr")
         .map(|offset| href + offset)
@@ -2888,7 +2944,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("publishPublicNote"));
     assert!(home.contains("csrfToken"));
     assert!(home.contains("location.assign(openedSealHref(result))"));
-    let href = home.find("function openedSealHref(").unwrap();
+    let href = home.find("function sealHref(").unwrap();
     let href_end = home[href..]
         .find("\n            async function publishOnNostr")
         .map(|offset| href + offset)
