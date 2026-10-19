@@ -38,6 +38,13 @@ const SEALED_ABOUT: &str = r##"<div class="bottom-sheet-overlay" id="help-sheet"
 <p>Notes are stored on <a href="https://nostr.com/info" target="_blank" rel="noopener noreferrer">nostr relays</a>. They are reached through Tor, so nobody sees who posted a note or who read it.</p>
 </div>
 <div class="help-section">
+<h3>Links</h3>
+<p>Store offers three addresses. A reader only has the one they were sent. The key is the part after #. This site never sees it.</p>
+<p><strong>Long.</strong> Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #.<br><code>https://&lt;site&gt;/s/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key</code></p>
+<p><strong>Short.</strong> This site stores the event id and the relays. It does not store the writing or the key.<br><code>https://&lt;site&gt;/s/&lt;locator&gt;#key</code></p>
+<p><strong>Title.</strong> Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key.<br><code>https://&lt;site&gt;/t/&lt;title&gt;#key</code></p>
+</div>
+<div class="help-section">
 <h3>Principles</h3>
 <ul>
 <li>Posts cannot be edited or deleted after publishing</li>
@@ -69,9 +76,13 @@ fn sealed_key_box() -> &'static str {
 </div>"
 }
 
-pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
+pub(crate) fn sealed_shell(events: &[String], config: &Config) -> String {
+    sealed_shell_for(events, config, None)
+}
+
+fn sealed_shell_for(events: &[String], config: &Config, locator: Option<&str>) -> String {
     let version = super::assets::version();
-    let theme_boot = if event_json.is_empty() {
+    let theme_boot = if events.is_empty() {
         String::new()
     } else {
         super::layout::theme_boot(version)
@@ -83,13 +94,12 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
     } else {
         "false"
     };
-    let event = if event_json.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<script type=\"module\" src=\"/nostr.js?v={version}\"></script>\n    <div id=\"sealed-event\" hidden>{}</div>",
-            event_json.replace('<', "\\u003c"),
-        )
+    let event = sealed_event_markup(events, version);
+    let locator_mark = match locator {
+        Some(locator) if crate::nostr::sealed_locator(locator) => {
+            format!(r#"<div id="sealed-locator" hidden>{locator}</div>"#)
+        }
+        _ => String::new(),
     };
     format!(
         r##"<!doctype html>
@@ -137,6 +147,7 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         <button type="button" class="theme-toggle" aria-label="Dark mode"><span class="theme-to-dark">dark</span><span class="theme-to-light">light</span></button>
         {save}
     </div>
+    {locator_mark}
     {event}
 </body>
 </html>"##,
@@ -150,12 +161,9 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
         theme = theme,
         max_url = options.max_url_length,
         external = external,
-        save = if event_json.is_empty() {
-            ""
-        } else {
-            SEALED_SAVE
-        },
+        save = if events.is_empty() { "" } else { SEALED_SAVE },
         about = SEALED_ABOUT,
+        locator_mark = locator_mark,
     )
 }
 
@@ -163,6 +171,18 @@ pub(crate) fn sealed_shell(event_json: &str, config: &Config) -> String {
 pub(crate) struct SealHints {
     #[field(name = "r", default = Vec::<String>::new())]
     r: Vec<String>,
+}
+
+#[get("/s/<locator>?<hints..>")]
+pub async fn sealed_locator_view(
+    locator: &str,
+    hints: SealHints,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    if !crate::nostr::sealed_locator(locator) {
+        return Err(sealed_not_found());
+    }
+    open_sealed(locator.to_string(), None, hints.r, config, false).await
 }
 
 #[get("/s/<locator>/<event_id>?<hints..>")]
@@ -173,11 +193,43 @@ pub async fn sealed_view(
     config: &State<Config>,
 ) -> Result<content::RawHtml<String>, ViewErr> {
     if !crate::nostr::sealed_locator(locator) || !crate::nostr::sealed_event_id(event_id) {
-        return Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(not_found_html())),
-        ));
+        return Err(sealed_not_found());
     }
+    open_sealed(
+        locator.to_string(),
+        Some(event_id.to_string()),
+        hints.r,
+        config,
+        false,
+    )
+    .await
+}
+
+#[get("/t/<slug>")]
+pub async fn title_view(
+    slug: &str,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    let Some(locator) = super::title_link::locator_for(slug) else {
+        return Err(sealed_not_found());
+    };
+    open_sealed(locator, None, Vec::new(), config, true).await
+}
+
+fn sealed_not_found() -> ViewErr {
+    (
+        Status::NotFound,
+        rocket::Either::Right(content::RawHtml(not_found_html())),
+    )
+}
+
+async fn open_sealed(
+    locator: String,
+    event_id: Option<String>,
+    hints: Vec<String>,
+    config: &State<Config>,
+    show_locator: bool,
+) -> Result<content::RawHtml<String>, ViewErr> {
     let Some(_slot) = PublicFetchSlot::acquire() else {
         return Err((
             Status::ServiceUnavailable,
@@ -186,40 +238,94 @@ pub async fn sealed_view(
     };
     let config = config.inner().clone();
     let shell = config.clone();
-    let query = locator.to_string();
-    let query_id = event_id.to_string();
-    let hints = hints.r;
-    let event = match rocket::tokio::task::spawn_blocking(move || {
+    let embed = if show_locator {
+        Some(locator.clone())
+    } else {
+        None
+    };
+    let events = match rocket::tokio::task::spawn_blocking(move || {
+        read_sealed_events(&config, &hints, &locator, event_id.as_deref())
+    })
+    .await
+    {
+        Ok(events) => events,
+        Err(_) => Vec::new(),
+    };
+    if events.is_empty() {
+        return Err(sealed_not_found());
+    }
+    Ok(content::RawHtml(sealed_shell_for(
+        &events,
+        &shell,
+        embed.as_deref(),
+    )))
+}
+
+fn read_sealed_events(
+    config: &Config,
+    hints: &[String],
+    locator: &str,
+    event_id: Option<&str>,
+) -> Vec<String> {
+    #[cfg(test)]
+    if let Some(canned) = canned_nojs_event() {
+        note_nojs_fetch_hints(hints);
+        return canned.into_iter().collect();
+    }
+    let timeout = relay_timeout(config);
+    let pool = crate::crawl::pool_path(Path::new("content"));
+    if let Some(event_id) = event_id {
         #[cfg(test)]
-        note_nojs_fetch_hints(&hints);
-        #[cfg(test)]
-        if let Some(canned) = canned_nojs_event() {
-            return canned;
-        }
-        let timeout = relay_timeout(&config);
-        fetch_sealed_by_id(
-            &hints,
-            &query_id,
-            &query,
+        note_nojs_fetch_hints(hints);
+        return fetch_sealed_by_id(
+            hints,
+            event_id,
+            locator,
             config.limits.title_max_length,
             config.limits.alias_max_length,
             config.limits.content_max_length,
             timeout,
-            &crate::crawl::pool_path(Path::new("content")),
+            &pool,
         )
-    })
-    .await
-    {
-        Ok(event) => event,
-        Err(_) => None,
+        .into_iter()
+        .collect();
+    }
+    // A short link opens the saved event. Query relays do not choose another one.
+    let Some(saved) = super::seal_row::read(locator) else {
+        return Vec::new();
     };
-    let Some(event) = event else {
-        return Err((
-            Status::NotFound,
-            rocket::Either::Right(content::RawHtml(not_found_html())),
-        ));
-    };
-    Ok(content::RawHtml(sealed_shell(&event, &shell)))
+    #[cfg(test)]
+    note_nojs_fetch_hints(&saved.relays);
+    fetch_sealed_by_id(
+        &saved.relays,
+        &saved.event_id,
+        locator,
+        config.limits.title_max_length,
+        config.limits.alias_max_length,
+        config.limits.content_max_length,
+        timeout,
+        &pool,
+    )
+    .into_iter()
+    .collect()
+}
+
+fn sealed_event_markup(events: &[String], version: &str) -> String {
+    if events.is_empty() {
+        return String::new();
+    }
+    let mut list = String::from("[");
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 {
+            list.push(',');
+        }
+        list.push_str(event);
+    }
+    list.push(']');
+    format!(
+        "<script type=\"module\" src=\"/nostr.js?v={version}\"></script>\n    <div id=\"sealed-event\" hidden>{}</div>",
+        list.replace('<', "\\u003c"),
+    )
 }
 
 fn nojs_not_found() -> ViewErr {
@@ -264,6 +370,16 @@ impl<'r, 'o: 'r, R: Responder<'r, 'o>> Responder<'r, 'o> for NojsSealedHeaders<R
     }
 }
 
+#[get("/nojs/s/<locator>")]
+pub fn nojs_sealed_locator_view(
+    locator: &str,
+) -> NojsSealedHeaders<Result<content::RawHtml<String>, ViewErr>> {
+    if !crate::nostr::sealed_locator(locator) {
+        return NojsSealedHeaders(Err(nojs_not_found()));
+    }
+    NojsSealedHeaders(Ok(content::RawHtml(run_locally_page())))
+}
+
 #[get("/nojs/s/<locator>/<event_id>")]
 pub fn nojs_sealed_view(
     locator: &str,
@@ -275,8 +391,6 @@ pub fn nojs_sealed_view(
     NojsSealedHeaders(Ok(content::RawHtml(run_locally_page())))
 }
 
-const MAX_CALLER_HINTS: usize = 2;
-
 pub(crate) fn fetch_sealed_by_id(
     hints: &[String],
     event_id: &str,
@@ -287,8 +401,7 @@ pub(crate) fn fetch_sealed_by_id(
     timeout: Duration,
     pool: &Path,
 ) -> Option<String> {
-    let mut relays = public_relays(hints);
-    relays.truncate(MAX_CALLER_HINTS);
+    let relays = public_relays(hints);
     if let Some(note) = crate::nostr::fetch_sealed(
         &relays,
         event_id,
@@ -300,7 +413,7 @@ pub(crate) fn fetch_sealed_by_id(
     ) {
         return Some(note);
     }
-    // Later hints were not queried. Leave them eligible for the pool.
+    // Relays past the six were not queried. Leave them eligible for the pool.
     let rows = crate::crawl::next_pool_relays(pool, &relays);
     crate::nostr::fetch_sealed(
         &rows,

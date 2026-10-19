@@ -47,6 +47,36 @@ export function relaysForPublicPublish(relays) {
     return out;
 }
 
+async function hmacSha256(keyBytes, message) {
+    let key = keyBytes instanceof Uint8Array ? keyBytes : new Uint8Array(keyBytes);
+    if (key.length > 64) {
+        key = await sha256(key);
+    }
+    const block = new Uint8Array(64);
+    block.set(key);
+    const ipad = new Uint8Array(64);
+    const opad = new Uint8Array(64);
+    for (let index = 0; index < 64; index++) {
+        ipad[index] = block[index] ^ 0x36;
+        opad[index] = block[index] ^ 0x5c;
+    }
+    const inner = new Uint8Array(64 + message.length);
+    inner.set(ipad);
+    inner.set(message, 64);
+    const innerHash = await sha256(inner);
+    const outer = new Uint8Array(96);
+    outer.set(opad);
+    outer.set(innerHash, 64);
+    return sha256(outer);
+}
+
+async function sealClaim(secret, locator) {
+    const message = new TextEncoder().encode(
+        "nostorgraph-seal-claim-v1\0" + locator,
+    );
+    return bytesToHex(await hmacSha256(secret, message));
+}
+
 export async function publishPublicNote({
     title,
     author,
@@ -82,6 +112,7 @@ export async function publishPublicNote({
         10_000,
         Number.isFinite(configured) ? configured : 0,
     );
+    const claim = await sealClaim(sealed.secret, sealed.locator);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), wait);
     try {
@@ -91,6 +122,7 @@ export async function publishPublicNote({
             body: JSON.stringify({
                 event,
                 relays: relaysForPublicPublish(relays),
+                seal_claim: claim,
                 csrf_token: csrfToken || "",
             }),
             signal: controller.signal,
@@ -110,6 +142,8 @@ export async function publishPublicNote({
             accepted,
             hints,
             locator,
+            claim,
+            title: String(title ?? ""),
             key: bytesToBase64Url(sealed.secret),
         };
     } finally {
@@ -602,43 +636,49 @@ function blockedRelayHost(host) {
 }
 
 export async function openEmbeddedSeal(eventJson) {
-    let event;
+    let events;
     try {
-        event = JSON.parse(String(eventJson ?? ""));
+        const parsed = JSON.parse(String(eventJson ?? ""));
+        events = Array.isArray(parsed) ? parsed : [];
     } catch (error) {
+        return null;
+    }
+    if (!events.length) {
         return null;
     }
     try {
         await ensureBip340();
-        if (!(await verifySealedEvent(event))) {
-            return null;
+        const page = await loadPage();
+        for (const event of events) {
+            if (!(await verifySealedEvent(event))) {
+                continue;
+            }
+            const path = sealPath(location.pathname);
+            const field = document.getElementById("sealed-key");
+            const typed = field && field.value.trim();
+            const secret = secretFromFragment(typed ? "#" + typed : location.hash);
+            if (!path || !secret) {
+                return null;
+            }
+            const locator = firstTag(event.tags, "d");
+            if (locator !== path.locator || typeof event.content !== "string") {
+                continue;
+            }
+            if (path.eventId && event.id !== path.eventId) {
+                continue;
+            }
+            try {
+                const note = await page.open(event.content, secret, locator);
+                renderOpenedNote(note, page);
+                return note;
+            } catch (error) {
+                continue;
+            }
         }
     } catch (error) {
         return null;
     }
-    const path = sealPath(location.pathname);
-    const field = document.getElementById("sealed-key");
-    const typed = field && field.value.trim();
-    const secret = secretFromFragment(typed ? "#" + typed : location.hash);
-    if (!path || !secret) {
-        return null;
-    }
-    const locator = firstTag(event.tags, "d");
-    if (
-        event.id !== path.eventId ||
-        locator !== path.locator ||
-        typeof event.content !== "string"
-    ) {
-        return null;
-    }
-    try {
-        const page = await loadPage();
-        const note = await page.open(event.content, secret, locator);
-        renderOpenedNote(note, page);
-        return note;
-    } catch (error) {
-        return null;
-    }
+    return null;
 }
 
 function renderOpenedNote(note, page) {
@@ -879,15 +919,31 @@ function firstTag(tags, name) {
     return "";
 }
 
+function embeddedLocator() {
+    if (typeof document === "undefined") {
+        return "";
+    }
+    const node = document.getElementById("sealed-locator");
+    const text = node && node.textContent ? node.textContent.trim() : "";
+    return /^[0-9a-f]{20}$/.test(text) ? text : "";
+}
+
 function sealPath(pathname) {
+    const embedded = embeddedLocator();
+    if (embedded) {
+        return { locator: embedded, eventId: null };
+    }
     const parts = String(pathname || "").split("/").filter(Boolean);
-    if (parts.length !== 3 || parts[0] !== "s") {
+    if (parts[0] !== "s" || !/^[0-9a-f]{20}$/.test(parts[1] || "")) {
         return null;
     }
-    if (!/^[0-9a-f]{20}$/.test(parts[1]) || !/^[0-9a-f]{64}$/.test(parts[2])) {
-        return null;
+    if (parts.length === 2) {
+        return { locator: parts[1], eventId: null };
     }
-    return { locator: parts[1], eventId: parts[2] };
+    if (parts.length === 3 && /^[0-9a-f]{64}$/.test(parts[2])) {
+        return { locator: parts[1], eventId: parts[2] };
+    }
+    return null;
 }
 
 function secretFromFragment(hash) {

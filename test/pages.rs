@@ -507,7 +507,10 @@ fn rendered_home_switches_the_content_field() {
     assert!(!nojs_help.contains("signs in your browser"));
     let css = include_str!("../templates/home.css");
     let tablet = css.find("@media (max-width: 768px)").unwrap();
-    let mobile = css.find("@media (max-width: 480px)").unwrap();
+    let mobile = css[tablet..]
+        .find("@media (max-width: 480px)")
+        .map(|offset| tablet + offset)
+        .unwrap();
     let tablet_css = &css[tablet..mobile];
     let mobile_css = &css[mobile..];
     assert!(tablet_css.contains("input[type=\"text\"]:not(.relay-url-input)"));
@@ -973,10 +976,10 @@ fn theme_toggle_is_saved_only_when_script_is_allowed() {
     assert!(post_nojs.contains("class=\"theme-toggle\""));
     assert!(!post_nojs.contains("<script"));
 
-    let opened = sealed_shell("{}", &config);
+    let opened = sealed_shell(&["{}".to_string()], &config);
     assert!(opened.contains("<script src=\"/theme.js?v="));
     assert!(!opened.contains("</script><script"));
-    let locked = sealed_shell("", &config);
+    let locked = sealed_shell(&[], &config);
     assert!(locked.contains("class=\"theme-toggle\""));
     assert!(!locked.contains("<script"));
 }
@@ -1026,7 +1029,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     config.theme.syntax_highlighting = "ocean\"dark".to_string();
     config.security.max_url_length = 4096;
     config.security.external_link_security = false;
-    let html = sealed_shell(&event, &config);
+    let html = sealed_shell(std::slice::from_ref(&event), &config);
     assert!(html.contains("<title>Sealed note</title>"));
     assert!(html.contains("rel=\"icon\" type=\"image/png\" href=\"/logo.png?v="));
     assert!(html.contains("property=\"og:title\" content=\"Sealed note\""));
@@ -1043,7 +1046,10 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(!head.contains(secret));
     assert!(html.contains(secret));
     assert!(html.contains("\\u003c/script>"));
-    assert!(html.contains("<div id=\"sealed-event\" hidden>"));
+    assert!(html.contains(&format!(
+        "<div id=\"sealed-event\" hidden>[{}]</div>",
+        event.replace('<', "\\u003c")
+    )));
     assert!(!html.contains("<script type=\"application/json\""));
     assert!(html.contains("<script type=\"module\" src=\"/nostr.js?v="));
     assert!(html.contains("id=\"sealed-copy\">Copy link</button>"));
@@ -1063,6 +1069,19 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(html.contains("About Nostorgraph"));
     assert!(html.contains("What's this?"));
     assert!(html.contains("encrypted in your browser"));
+    assert!(html.contains("<h3>Links</h3>"));
+    assert!(html.contains(
+        "Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #."
+    ));
+    assert!(html.contains(
+        "This site stores the event id and the relays. It does not store the writing or the key."
+    ));
+    assert!(html.contains("Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key."));
+    assert!(html
+        .contains("https://&lt;site&gt;/s/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key"));
+    assert!(html.contains("https://&lt;site&gt;/s/&lt;locator&gt;#key"));
+    assert!(html.contains("https://&lt;site&gt;/t/&lt;title&gt;#key"));
+    assert!(!html.contains("ends in -2"));
     assert!(!html.contains("href=\"/about\">about</a>"));
     assert!(html.contains(">legal</a>"));
     assert!(html.contains(">api</a>"));
@@ -1118,7 +1137,7 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(nostr.contains("./pdf/nostorgraph_pdf.js"));
     assert!(nostr.contains("./pdf/nostorgraph_pdf_bg.wasm"));
     assert!(nostr.contains("root.hidden = false"));
-    let locked_shell = sealed_shell("", &config);
+    let locked_shell = sealed_shell(&[], &config);
     assert!(!locked_shell.contains("save-note"));
     assert!(PAGE_JS.contains(
         "export function render_markdown(markdown, syntax_theme, max_url_length, external_link_security)"
@@ -1304,6 +1323,27 @@ fn nojs_sealed_address_says_to_run_locally() {
         .dispatch();
     assert_eq!(missing.status(), Status::NotFound);
     assert!(missing.headers().get_one("Location").is_none());
+    assert!(!missing.into_string().unwrap().contains(&key));
+}
+
+#[test]
+fn nojs_short_address_says_to_run_locally() {
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(crate::config::Config::default())
+            .mount("/", routes![super::nojs_sealed_locator_view]),
+    )
+    .unwrap();
+    let locator = "0123456789abcdef0123";
+    let key = "A".repeat(43);
+    let page = client.get(format!("/nojs/s/{locator}?k={key}")).dispatch();
+    assert_eq!(page.status(), Status::Ok);
+    sealed_route_headers(&page);
+    let body = page.into_string().unwrap();
+    assert!(body.contains("<h1>Run locally to read the note</h1>"));
+    assert!(!body.contains(&key));
+    let missing = client.get("/nojs/s/not-a-locator").dispatch();
+    assert_eq!(missing.status(), Status::NotFound);
     assert!(!missing.into_string().unwrap().contains(&key));
 }
 
@@ -1542,7 +1582,7 @@ fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
 }
 
 #[test]
-fn a_later_hint_stays_available_in_the_pool() {
+fn a_long_link_asks_every_named_relay_and_a_seventh_can_come_from_the_pool() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     let document: serde_json::Value =
@@ -1598,9 +1638,33 @@ fn a_later_hint_stays_available_in_the_pool() {
     );
     assert!(answers.asked("wss://hint0.example"));
     assert!(answers.asked("wss://hint1.example"));
+    assert!(answers.asked("wss://hintonly.example"));
     assert!(answers.asked("wss://extra.example"));
     assert!(answers.asked("wss://row.example"));
-    assert!(!answers.asked("wss://hintonly.example"));
+
+    let beyond: Vec<String> = (0..6)
+        .map(|index| format!("wss://miss{index}.example"))
+        .chain(["wss://row.example".to_string()])
+        .collect();
+    let again = crate::nostr::RelayAnswer::begin();
+    again.answer("wss://row.example", &note.event_json);
+    assert_eq!(
+        fetch_sealed_by_id(
+            &beyond,
+            &event_id,
+            locator,
+            128,
+            32,
+            4,
+            std::time::Duration::from_secs(2),
+            &path,
+        )
+        .as_deref(),
+        Some(note.event_json.as_str())
+    );
+    assert!(again.asked("wss://miss0.example"));
+    assert!(again.asked("wss://miss5.example"));
+    assert!(again.asked("wss://row.example"));
 }
 
 #[test]
@@ -1713,6 +1777,7 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
         }
     }
     let _clear = ClearAccepted;
+    let holds = HoldDir::new();
 
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -1730,12 +1795,30 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
     let temp = tempfile::tempdir().unwrap();
     let href = create_location_with_cookie(&form, &config, "", Some(&pinned_relays(&[&instance])));
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
-    assert!(query.is_empty(), "{href}");
-    assert!(crate::nostr::sealed_locator(&locator), "{href}");
-    assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
-    assert!(is_seal_key(&key), "{href}");
-    assert!(href.contains(&locator) && href.contains(&event_id) && href.contains(&key));
+    let link = seal_link_parts(&href);
+    assert_eq!(link.query, "r=wss%3A%2F%2Finstance.example", "{href}");
+    assert!(crate::nostr::sealed_locator(&link.locator), "{href}");
+    assert!(
+        crate::nostr::sealed_event_id(link.event_id.as_deref().unwrap_or("")),
+        "{href}"
+    );
+    assert!(is_seal_key(&link.key), "{href}");
+    assert!(href.contains(&link.locator) && href.contains(&link.key));
+    assert_eq!(hold_dir_count(holds.path()), 0);
+    assert!(super::seal_row::read(&link.locator).is_none());
+    let locks: Vec<_> = std::fs::read_dir(holds.path().join("seal-locks"))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".writing"))
+        .collect();
+    assert_eq!(locks.len(), 1);
+    let stored = std::fs::read_to_string(locks[0].path()).unwrap();
+    assert!(!stored.contains("Hello World"), "{stored}");
+    assert!(!stored.contains(&link.key), "{stored}");
+    assert!(
+        !stored.contains(link.event_id.as_deref().unwrap()),
+        "{stored}"
+    );
     set_nojs_test_accepted(None);
 
     let mut rejected = form.clone();
@@ -1762,11 +1845,14 @@ fn nojs_post_writes_no_file_and_redirects_with_the_key_or_an_error() {
         Some(&pinned_relays(&["wss://hint.example"])),
     );
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
-    assert!(crate::nostr::sealed_locator(&locator), "{href}");
-    assert!(crate::nostr::sealed_event_id(&event_id), "{href}");
-    assert!(is_seal_key(&key), "{href}");
-    assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
+    let link = seal_link_parts(&href);
+    assert!(crate::nostr::sealed_locator(&link.locator), "{href}");
+    assert!(
+        crate::nostr::sealed_event_id(link.event_id.as_deref().unwrap_or("")),
+        "{href}"
+    );
+    assert!(is_seal_key(&link.key), "{href}");
+    assert_eq!(link.query, "r=wss%3A%2F%2Fhint.example", "{href}");
     assert!(!href.contains("nostr_publish_failed"), "{href}");
 }
 
@@ -1781,6 +1867,7 @@ fn opening_a_sealed_note_stays_in_the_browser() {
         }
     }
     let _clear = ClearFetch;
+    let _holds = HoldDir::new();
 
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -1798,14 +1885,21 @@ fn opening_a_sealed_note_stays_in_the_browser() {
     let temp = tempfile::tempdir().unwrap();
     let href = create_location_with_cookie(&form, &config, "", Some(&pinned_relays(&[&instance])));
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
-    assert!(query.is_empty(), "{href}");
+    let link = seal_link_parts(&href);
+    assert_eq!(link.query, "r=wss%3A%2F%2Finstance.example", "{href}");
+    let locator = link.locator;
+    let event_id = link.event_id.expect("event id");
+    let key = link.key;
 
-    let client = rocket::local::blocking::Client::tracked(
-        rocket::build()
-            .manage(config)
-            .mount("/", routes![super::sealed_view, super::nojs_sealed_view]),
-    )
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![
+            super::sealed_view,
+            super::sealed_locator_view,
+            super::nojs_sealed_view,
+            super::nojs_sealed_locator_view,
+        ],
+    ))
     .unwrap();
 
     let path = format!("/s/{locator}/{event_id}");
@@ -1830,9 +1924,7 @@ fn opening_a_sealed_note_stays_in_the_browser() {
     assert!(!posted_body.contains("opened note body"));
     assert!(!posted_body.contains(&key));
 
-    let local = client
-        .get(format!("/nojs/s/{locator}/{event_id}?k={key}"))
-        .dispatch();
+    let local = client.get(format!("/nojs/s/{locator}?k={key}")).dispatch();
     assert_eq!(local.status(), Status::Ok);
     sealed_route_headers(&local);
     let local_body = local.into_string().unwrap();
@@ -1926,6 +2018,7 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
         }
     }
     let _clear = ClearFetch;
+    let _holds = HoldDir::new();
 
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
@@ -1947,15 +2040,18 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
         Some(&pinned_relays(&["wss://hint.example"])),
     );
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
-    let (locator, event_id, key, query) = seal_link_with_event_id(&href);
-    assert_eq!(query, "r=wss%3A%2F%2Fhint.example");
-    assert!(is_seal_key(&key), "{href}");
+    let link = seal_link_parts(&href);
+    let event_id = link.event_id.expect("event id");
+    assert_eq!(link.query, "r=wss%3A%2F%2Fhint.example", "{href}");
+    assert!(is_seal_key(&link.key), "{href}");
+    let locator = link.locator;
+    let query = link.query;
 
     NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
     let client = rocket::local::blocking::Client::tracked(
         rocket::build()
             .manage(config)
-            .mount("/", routes![super::sealed_view]),
+            .mount("/", routes![super::sealed_view, super::sealed_locator_view]),
     )
     .unwrap();
 
@@ -1963,9 +2059,7 @@ fn an_added_relay_keeps_the_link_and_the_open_asks_that_relay() {
     assert_eq!(bare.status(), Status::NotFound);
 
     let js = client
-        .get(format!(
-            "/s/{locator}/{event_id}?r=wss%3A%2F%2Fhint.example"
-        ))
+        .get(format!("/s/{locator}/{event_id}?{query}"))
         .dispatch();
     assert_eq!(js.status(), Status::Ok);
     let js_body = js.into_string().unwrap();
@@ -2037,6 +2131,7 @@ fn nojs_publish_failure_keeps_the_draft() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
+    let _holds = HoldDir::new();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
     config.nostr.timeout_secs = 1;
@@ -2127,6 +2222,7 @@ fn nostr_publish_keeps_public_relays_and_drops_private_ones() {
             "wss://127.0.0.1".to_string(),
             "wss://dealt.example".to_string(),
         ],
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     let saved = vec![
@@ -2177,6 +2273,7 @@ fn nostr_publish_refuses_a_clear_long_form_note() {
     let body = NostrPublishBody {
         event,
         relays: vec!["wss://127.0.0.1".to_string()],
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     assert!(note_and_relays_for_publish(&body, &config, "").is_none());
@@ -2195,6 +2292,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
             "wss://pin.example".to_string(),
             "wss://127.0.0.1".to_string(),
         ],
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     let (parsed, relays, locator) = note_and_relays_for_publish(&body, &config, "").unwrap();
@@ -2216,6 +2314,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
     let long_body = NostrPublishBody {
         event: long_event,
         relays: vec!["wss://127.0.0.1".to_string()],
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     assert!(note_and_relays_for_publish(&long_body, &config, "").is_none());
@@ -2225,7 +2324,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
 #[test]
 fn publish_result_names_the_locator_and_accepted_relays() {
     let accepted = vec!["wss://relay.damus.io".to_string()];
-    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone(), &[]);
+    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone());
     assert_eq!(result.locator, "0123456789abcdef0123");
     assert_eq!(result.accepted, accepted);
     let json = serde_json::to_string(&result).unwrap();
@@ -2237,55 +2336,78 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     assert!(!json.contains("\"key\""));
     assert!(!json.contains("nevent"));
 
-    assert!(publish_result(String::new(), accepted, &[])
-        .locator
-        .is_empty());
-    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new(), &[]);
+    assert!(publish_result(String::new(), accepted).locator.is_empty());
+    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new());
     assert!(failed.locator.is_empty());
     assert!(failed.accepted.is_empty());
     let failed_json = serde_json::to_string(&failed).unwrap();
     assert!(!failed_json.contains("0123456789abcdef0123"));
 
     let extra_only = vec!["wss://relay.primal.net".to_string()];
-    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone(), &[]);
+    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone());
     assert_eq!(extra.locator, "0123456789abcdef0123");
     assert_eq!(extra.accepted, extra_only);
     let both = vec![
         "wss://relay.primal.net".to_string(),
         "wss://relay.damus.io".to_string(),
     ];
-    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone(), &[]);
+    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone());
     assert_eq!(landed.locator, "0123456789abcdef0123");
     assert_eq!(landed.accepted, both);
     let private = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://127.0.0.1".to_string()],
-        &[],
     );
     assert!(private.locator.is_empty());
     let cased = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://Relay.Primal.net/".to_string()],
-        &[],
     );
     assert_eq!(cased.locator, "0123456789abcdef0123");
 }
 
 #[test]
-fn the_share_link_omits_a_relay_the_host_already_has() {
+fn the_long_share_link_names_every_accepted_relay() {
+    let locator = "0123456789abcdef0123";
+    let event_id = "ab".repeat(32);
+    let key = "seal-key";
     let accepted = vec![
-        "wss://config.example".to_string(),
         "wss://pin.example".to_string(),
+        "wss://Relay.Extra.example/".to_string(),
+        "wss://third.example".to_string(),
+        "wss://fourth.example".to_string(),
     ];
-    let configured = vec!["wss://config.example".to_string()];
-    let result = publish_result(
-        "0123456789abcdef0123".to_string(),
-        accepted.clone(),
-        &configured,
+    assert_eq!(
+        long_seal_href(locator, &event_id, key, &accepted),
+        format!(
+            "/s/{locator}/{event_id}?r=wss%3A%2F%2Fpin.example&r=wss%3A%2F%2Frelay.extra.example&r=wss%3A%2F%2Fthird.example&r=wss%3A%2F%2Ffourth.example#{key}"
+        )
     );
-    assert_eq!(result.locator, "0123456789abcdef0123");
+    assert_eq!(short_seal_href(locator, key), format!("/s/{locator}#{key}"));
+    let mut many = vec!["wss://127.0.0.1".to_string()];
+    for index in 0..8 {
+        many.push(format!("wss://hint{index}.example"));
+    }
+    let capped = long_seal_href(locator, &event_id, key, &many);
+    assert!(capped.contains("r=wss%3A%2F%2Fhint0.example"));
+    assert!(capped.contains("r=wss%3A%2F%2Fhint5.example"));
+    assert!(!capped.contains("hint6.example"));
+    assert!(!capped.contains("127.0.0.1"));
+
+    let result = publish_result(locator.to_string(), accepted.clone());
+    assert_eq!(result.locator, locator);
     assert_eq!(result.accepted, accepted);
-    assert_eq!(result.hints, vec!["wss://pin.example".to_string()]);
+    assert_eq!(
+        result.hints,
+        vec![
+            "wss://pin.example".to_string(),
+            "wss://relay.extra.example".to_string(),
+            "wss://third.example".to_string(),
+            "wss://fourth.example".to_string(),
+        ]
+    );
+
+    let configured = vec!["wss://config.example".to_string()];
 
     let mut config = crate::config::Config::default();
     config.nostr.relays = configured;
@@ -2304,9 +2426,7 @@ fn the_share_link_omits_a_relay_the_host_already_has() {
         .find("\n            globalThis.paintSavedRelayLists")
         .map(|offset| key_at + offset)
         .expect("saved lists follow the relay key");
-    let href_at = home
-        .find("function acceptedRelayHints(")
-        .expect("accepted hints");
+    let href_at = home.find("function sealHref(").expect("share link");
     let href_end = home[href_at..]
         .find("\n            async function publishOnNostr")
         .map(|offset| href_at + offset)
@@ -2324,11 +2444,16 @@ function publicRelayUrl(relay) {
     program.push_str(&home[href_at..href_end]);
     program.push_str(&format!(
         r##"
-const href = openedSealHref({{
+const href = longSealHref({{
     locator: "0123456789abcdef0123",
     event: {{ id: "ab".repeat(32) }},
     key: "seal-key",
     accepted: {accepted_json},
+    hints: {hints},
+}});
+const short = shortSealHref({{
+    locator: "0123456789abcdef0123",
+    key: "seal-key",
     hints: {hints},
 }});
 const expected =
@@ -2336,9 +2461,18 @@ const expected =
     "ab".repeat(32) +
     "?r=" +
     encodeURIComponent("wss://pin.example") +
+    "&r=" +
+    encodeURIComponent("wss://relay.extra.example") +
+    "&r=" +
+    encodeURIComponent("wss://third.example") +
+    "&r=" +
+    encodeURIComponent("wss://fourth.example") +
     "#seal-key";
 if (href !== expected) {{
     throw new Error(href);
+}}
+if (short !== "/s/0123456789abcdef0123#seal-key") {{
+    throw new Error(short);
 }}
 "##
     ));
@@ -2358,12 +2492,750 @@ if (href !== expected) {{
     assert!(!block.contains("!hints.length"));
 }
 
+fn seal_claim(locator: &str) -> String {
+    super::seal_row::claim_hex(&[9u8; 32], locator)
+}
+
+fn lock_for(locator: &str) {
+    assert!(matches!(
+        super::seal_row::lock_claim(locator, &seal_claim(locator)),
+        super::seal_row::LockPut::Created | super::seal_row::LockPut::Same
+    ));
+}
+
+#[test]
+#[serial(nojs_sealed_fetch, publish_script)]
+fn copying_the_title_link_saves_the_slug_and_the_open_stays_there() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let first = "0123456789abcdef0123";
+    let second = "fedcba9876543210abcd";
+    let third = "00112233445566778899";
+    let note = crate::nostr::sign_sealed_note("kept", first, 1_700_000_000);
+    let event_id = note.id_hex();
+    let other_id = "ab".repeat(32);
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![
+            super::remember_title_link,
+            super::remember_short_link,
+            super::title_view
+        ],
+    ))
+    .unwrap();
+    let post = |title: &str, locator: &str, id: &str| {
+        client
+            .post("/title-link")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"title":"{title}","locator":"{locator}","event_id":"{id}","relays":["wss://saved.example"],"claim":"{}","csrf_token":""}}"#,
+                seal_claim(locator)
+            ))
+            .dispatch()
+    };
+    let slug_of = |response: rocket::local::blocking::LocalResponse<'_>| {
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("key").is_none());
+        assert!(value.get("secret").is_none());
+        value["slug"].as_str().unwrap().to_string()
+    };
+
+    let rejected = client
+        .post("/title-link")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"title":"Hello","locator":"{first}","event_id":"{event_id}","relays":["wss://saved.example"],"csrf_token":"","key":"secret"}}"#
+        ))
+        .dispatch();
+    assert_eq!(rejected.status(), Status::UnprocessableEntity);
+    assert!(std::fs::read_dir(dir.path().join("title-slugs")).is_err());
+    assert!(std::fs::read_dir(dir.path().join("seal-rows")).is_err());
+
+    let blank = post("   ", first, &event_id);
+    assert_eq!(blank.status(), Status::BadRequest);
+    assert!(std::fs::read_dir(dir.path().join("title-slugs")).is_err());
+
+    lock_for(second);
+    lock_for(first);
+    lock_for(third);
+    assert_eq!(slug_of(post("Hello-2", second, &other_id)), "Hello-2");
+    assert_eq!(slug_of(post("Hello", first, &event_id)), "Hello");
+    assert_eq!(slug_of(post("Hello", third, &other_id)), "Hello-3");
+    assert_eq!(slug_of(post("Hello", first, &event_id)), "Hello");
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("title-slugs"))
+            .unwrap()
+            .count(),
+        3
+    );
+    let fourth = "aabbccddeeff00112233";
+    lock_for(fourth);
+    assert_eq!(
+        slug_of(post("Hello/World", fourth, &other_id)),
+        "Hello-World"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("title-slugs").join("Hello")).unwrap(),
+        first
+    );
+    let row = super::seal_row::read(first).expect("locator row");
+    assert_eq!(row.event_id, event_id);
+    assert_eq!(row.relays, vec!["wss://saved.example".to_string()]);
+    let retarget = client
+        .post("/title-link")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"title":"Hello","locator":"{first}","event_id":"{other_id}","relays":["wss://other.example"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(first)
+        ))
+        .dispatch();
+    assert_eq!(retarget.status(), Status::BadRequest);
+    let retarget_short = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{first}","event_id":"{other_id}","relays":["wss://other.example"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(first)
+        ))
+        .dispatch();
+    assert_eq!(retarget_short.status(), Status::BadRequest);
+    let kept = super::seal_row::read(first).expect("locator row");
+    assert_eq!(kept.event_id, event_id);
+    assert_eq!(kept.relays, vec!["wss://saved.example".to_string()]);
+
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://saved.example", &note.event_json);
+    let page = client.get("/t/Hello").dispatch();
+    assert_eq!(page.status(), Status::Ok);
+    let html = page.into_string().unwrap();
+    assert!(html.contains(&format!(r#"<div id="sealed-locator" hidden>{first}</div>"#)));
+    assert!(html.contains("id=\"sealed-event\""));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://saved.example".to_string()]
+    );
+    let missing = client.get("/t/Missing").dispatch();
+    assert_eq!(missing.status(), Status::NotFound);
+
+    let home = include_str!("../templates/home.js");
+    let copy_at = home
+        .find("async function copyTitleLink")
+        .expect("title copy");
+    let copy_end = home[copy_at..]
+        .find("\n            async function publishOnNostr")
+        .map(|offset| copy_at + offset)
+        .expect("open follows title copy");
+    let copy_body = &home[copy_at..copy_end];
+    assert!(copy_body.contains("\"/title-link\""));
+    assert!(copy_body.contains("title: title"));
+    assert!(copy_body.contains("event_id: eventId"));
+    assert!(copy_body.contains("if (!response || !response.ok)"));
+    assert!(copy_body.contains("ok: false"));
+    let posted = copy_body
+        .split("JSON.stringify")
+        .nth(1)
+        .expect("title body");
+    let posted = &posted[..posted.find("});").expect("end of title body")];
+    assert!(posted.contains("claim: result.claim"));
+    assert!(!posted.contains("result.key"));
+    assert!(!posted.contains("secret"));
+    assert!(copy_body.contains("location.origin"));
+    assert!(copy_body.contains("new URL("));
+
+    let nostr = include_str!("../templates/nostr.js");
+    let publish_at = nostr
+        .find("async function publishPublicNote(")
+        .expect("publish");
+    let publish_end = nostr[publish_at..]
+        .find("\nfunction xOnlyPubkey")
+        .map(|offset| publish_at + offset)
+        .expect("publish ends");
+    let publish = &nostr[publish_at..publish_end];
+    let returned = publish.find("return {").expect("publish result");
+    let returned_end = publish[returned..]
+        .find("};")
+        .map(|offset| returned + offset)
+        .expect("publish result ends");
+    assert!(publish[returned..returned_end].contains("title: String(title ?? \"\")"));
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_multibyte_title_opens_and_a_failed_save_leaves_nothing() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+    let encode = |slug: &str| {
+        let mut encoded = String::new();
+        for byte in slug.as_bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+                encoded.push(*byte as char);
+            } else {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        encoded
+    };
+    let names = |path: &std::path::Path| {
+        let Ok(dir) = std::fs::read_dir(path) else {
+            return Vec::new();
+        };
+        let mut found = dir
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        found.sort();
+        found
+    };
+
+    let blocked = tempfile::tempdir().unwrap();
+    let _blocked_rows = super::seal_row::SealRowDirGuard::set(blocked.path());
+    std::fs::write(blocked.path().join("seal-rows"), b"blocked").unwrap();
+    let blocked_locator = "c4c4c4c4c4c4c4c4c4c4";
+    let blocked_note = crate::nostr::sign_sealed_note("kept", blocked_locator, 1_700_000_000);
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let client = rocket::local::blocking::Client::tracked(
+        rocket::build()
+            .manage(config)
+            .mount("/", routes![super::remember_title_link, super::title_view]),
+    )
+    .unwrap();
+    let post = |title: &str, locator: &str, id: &str, relay: &str| {
+        client
+            .post("/title-link")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"title":"{title}","locator":"{locator}","event_id":"{id}","relays":["{relay}"],"claim":"{}","csrf_token":""}}"#,
+                seal_claim(locator)
+            ))
+            .dispatch()
+    };
+    let slug_of = |response: rocket::local::blocking::LocalResponse<'_>| {
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        value["slug"].as_str().unwrap().to_string()
+    };
+    let failed = post(
+        "Hello",
+        blocked_locator,
+        &blocked_note.id_hex(),
+        "wss://saved.example",
+    );
+    assert_eq!(failed.status(), Status::BadRequest);
+    assert!(names(&blocked.path().join("title-slugs")).is_empty());
+    assert!(names(&blocked.path().join("title-for")).is_empty());
+    assert!(super::seal_row::read(blocked_locator).is_none());
+
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let first = "c1c1c1c1c1c1c1c1c1c1";
+    let second = "c2c2c2c2c2c2c2c2c2c2";
+    let third = "c3c3c3c3c3c3c3c3c3c3";
+    let short_title = "字".repeat(49);
+    let long_title = "字".repeat(128);
+    let first_note = crate::nostr::sign_sealed_note("kept", first, 1_700_000_000);
+    let second_note = crate::nostr::sign_sealed_note("kept", second, 1_700_000_000);
+    let third_note = crate::nostr::sign_sealed_note("kept", third, 1_700_000_000);
+    let private = post("Hello", first, &first_note.id_hex(), "wss://127.0.0.1");
+    assert_eq!(private.status(), Status::BadRequest);
+    assert!(names(&dir.path().join("title-slugs")).is_empty());
+    assert!(names(&dir.path().join("seal-rows")).is_empty());
+
+    lock_for(first);
+    let slug = slug_of(post(
+        &short_title,
+        first,
+        &first_note.id_hex(),
+        "wss://saved.example",
+    ));
+    assert!(slug.len() > 144, "{}", slug.len());
+    assert_eq!(
+        slug_of(post(
+            &short_title,
+            first,
+            &first_note.id_hex(),
+            "wss://saved.example",
+        )),
+        slug
+    );
+    lock_for(second);
+    let collided = slug_of(post(
+        &short_title,
+        second,
+        &second_note.id_hex(),
+        "wss://other.example",
+    ));
+    assert_eq!(collided, format!("{slug}-2"));
+    lock_for(third);
+    let long_slug = slug_of(post(
+        &long_title,
+        third,
+        &third_note.id_hex(),
+        "wss://third.example",
+    ));
+    assert!(long_slug.chars().count() < 128);
+    assert!(long_slug.len() + 5 <= 255);
+    assert_eq!(
+        slug_of(post(
+            &long_title,
+            third,
+            &third_note.id_hex(),
+            "wss://third.example",
+        )),
+        long_slug
+    );
+
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://saved.example", &first_note.event_json);
+    answers.answer("wss://other.example", &second_note.event_json);
+    answers.answer("wss://third.example", &third_note.event_json);
+    for (slug, locator) in [(&slug, first), (&collided, second), (&long_slug, third)] {
+        let page = client.get(format!("/t/{}", encode(slug))).dispatch();
+        assert_eq!(page.status(), Status::Ok, "{slug}");
+        let html = page.into_string().unwrap();
+        assert!(
+            html.contains(&format!(
+                r#"<div id="sealed-locator" hidden>{locator}</div>"#
+            )),
+            "{slug}"
+        );
+    }
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn copying_the_short_link_saves_a_locator_row_and_the_open_uses_it() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
+    let event_id = note.id_hex();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![super::remember_short_link, super::sealed_locator_view],
+    ))
+    .unwrap();
+
+    let rejected = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{event_id}","relays":["wss://saved.example"],"csrf_token":"","key":"secret"}}"#
+        ))
+        .dispatch();
+    assert_eq!(rejected.status(), Status::UnprocessableEntity);
+    assert!(std::fs::read_dir(dir.path().join("seal-rows")).is_err());
+
+    let private = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{event_id}","relays":["wss://127.0.0.1"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(locator)
+        ))
+        .dispatch();
+    assert_eq!(private.status(), Status::BadRequest);
+    assert!(std::fs::read_dir(dir.path().join("seal-rows")).is_err());
+
+    lock_for(locator);
+    let saved = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{event_id}","relays":["wss://Saved.Example/","wss://127.0.0.1"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(locator)
+        ))
+        .dispatch();
+    assert_eq!(saved.status(), Status::NoContent);
+    let wrong_claim = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{event_id}","relays":["wss://Saved.Example/","wss://127.0.0.1"],"claim":"{}","csrf_token":""}}"#,
+            "00".repeat(32)
+        ))
+        .dispatch();
+    assert_eq!(wrong_claim.status(), Status::BadRequest);
+    let row = super::seal_row::read(locator).expect("locator row");
+    assert_eq!(row.event_id, event_id);
+    assert_eq!(row.relays, vec!["wss://saved.example".to_string()]);
+    let stored: Vec<_> = std::fs::read_dir(dir.path().join("seal-rows"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    let name = stored[0].file_name().into_string().unwrap();
+    assert_eq!(name.len(), 64);
+    assert_ne!(name, locator);
+    let text = std::fs::read_to_string(stored[0].path()).unwrap();
+    assert!(!text.contains(locator), "{text}");
+    assert!(!text.contains(&event_id), "{text}");
+    assert!(!text.contains("saved.example"), "{text}");
+
+    let other_id = "ab".repeat(32);
+    let replaced = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{other_id}","relays":["wss://other.example"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(locator)
+        ))
+        .dispatch();
+    assert_eq!(replaced.status(), Status::BadRequest);
+    let kept = super::seal_row::read(locator).expect("locator row");
+    assert_eq!(kept.event_id, event_id);
+    assert_eq!(kept.relays, vec!["wss://saved.example".to_string()]);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("seal-rows"))
+            .unwrap()
+            .count(),
+        1
+    );
+
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://saved.example", &note.event_json);
+    let page = client.get(format!("/s/{locator}")).dispatch();
+    assert_eq!(page.status(), Status::Ok);
+    assert!(page.into_string().unwrap().contains("id=\"sealed-event\""));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://saved.example".to_string()]
+    );
+    let hinted = client
+        .get(format!("/s/{locator}?r=wss%3A%2F%2Fother.example"))
+        .dispatch();
+    assert_eq!(hinted.status(), Status::Ok);
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://saved.example".to_string()]
+    );
+    let other = "fedcba9876543210abcd";
+    let other_note = crate::nostr::sign_sealed_note("other", other, 1_700_000_000);
+    answers.answer("wss://saved.example", &other_note.event_json);
+    let unsaved = client
+        .get(format!("/s/{other}?r=wss%3A%2F%2Fsaved.example"))
+        .dispatch();
+    assert_eq!(unsaved.status(), Status::NotFound);
+    let missing = client.get("/s/fedcba9876543210abcd").dispatch();
+    assert_eq!(missing.status(), Status::NotFound);
+
+    let home = include_str!("../templates/home.js");
+    let copy_at = home
+        .find("async function copyShortLink")
+        .expect("short copy");
+    let copy_end = home[copy_at..]
+        .find("\n            async function copyTitleLink")
+        .map(|offset| copy_at + offset)
+        .expect("title copy follows short copy");
+    let copy_body = &home[copy_at..copy_end];
+    assert!(copy_body.contains("\"/seal-row\""));
+    assert!(copy_body.contains("event_id: eventId"));
+    assert!(copy_body.contains("if (!response || !response.ok)"));
+    assert!(copy_body.contains("ok: false"));
+    assert!(copy_body.contains("claim: result.claim"));
+    assert!(!copy_body.contains("result.key"));
+    assert!(!copy_body.contains("secret"));
+    let paint = copy_body.find("paintShareUrl(").expect("short url");
+    let copied = copy_body
+        .find("writeClipboard(href)")
+        .expect("clipboard follows the saved url");
+    assert!(paint < copied);
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn copying_the_short_link_still_allows_the_title_link() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_sealed_note("kept", locator, 1_700_000_000);
+    let event_id = note.id_hex();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![
+            super::remember_short_link,
+            super::remember_title_link,
+            super::title_view
+        ],
+    ))
+    .unwrap();
+    lock_for(locator);
+    let saved = client
+        .post("/seal-row")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"locator":"{locator}","event_id":"{event_id}","relays":["wss://saved.example"],"claim":"{}","csrf_token":""}}"#,
+            seal_claim(locator)
+        ))
+        .dispatch();
+    assert_eq!(saved.status(), Status::NoContent);
+    assert_eq!(hold_dir_count(dir.path()), 0);
+
+    let title = |title: &str, id: &str, claim: &str| {
+        client
+            .post("/title-link")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"title":"{title}","locator":"{locator}","event_id":"{id}","relays":["wss://saved.example"],"claim":"{claim}","csrf_token":""}}"#
+            ))
+            .dispatch()
+    };
+    let rejected = title("Hello", &event_id, &"00".repeat(32));
+    assert_eq!(rejected.status(), Status::BadRequest);
+    let retarget = title("Hello", &"ab".repeat(32), &seal_claim(locator));
+    assert_eq!(retarget.status(), Status::BadRequest);
+    let blank = title("   ", &event_id, &seal_claim(locator));
+    assert_eq!(blank.status(), Status::BadRequest);
+    assert!(std::fs::read_dir(dir.path().join("title-slugs")).is_err());
+
+    let created = title("Hello", &event_id, &seal_claim(locator));
+    assert_eq!(created.status(), Status::Ok);
+    let body = created.into_string().unwrap();
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["slug"], "Hello");
+    let again = title("Hello", &event_id, &seal_claim(locator));
+    assert_eq!(again.status(), Status::Ok);
+    let again: serde_json::Value = serde_json::from_str(&again.into_string().unwrap()).unwrap();
+    assert_eq!(again["slug"], "Hello");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("title-slugs").join("Hello")).unwrap(),
+        locator
+    );
+    let kept = super::seal_row::read(locator).expect("locator row");
+    assert_eq!(kept.event_id, event_id);
+    assert_eq!(kept.relays, vec!["wss://saved.example".to_string()]);
+
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://saved.example", &note.event_json);
+    let page = client.get("/t/Hello").dispatch();
+    assert_eq!(page.status(), Status::Ok);
+    let html = page.into_string().unwrap();
+    assert!(html.contains(&format!(
+        r#"<div id="sealed-locator" hidden>{locator}</div>"#
+    )));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://saved.example".to_string()]
+    );
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_full_link_directory_refuses_another_row() {
+    let _cap = super::seal_row::LinkCapGuard::set(1);
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "d1d1d1d1d1d1d1d1d1d1";
+    let other = "d2d2d2d2d2d2d2d2d2d2";
+    let event_id = "ab".repeat(32);
+    let stored = vec!["wss://saved.example".to_string()];
+    lock_for(locator);
+    lock_for(other);
+    assert!(super::seal_row::remember(locator, &event_id, &stored, &seal_claim(locator)).is_ok());
+    assert!(super::seal_row::remember(other, &event_id, &stored, &seal_claim(other)).is_err());
+    assert!(super::seal_row::read(other).is_none());
+    assert_eq!(
+        super::seal_row::read(locator).expect("first row").event_id,
+        event_id
+    );
+}
+
+#[test]
+fn the_browser_seal_claim_matches_the_server() {
+    let locator = "0123456789abcdef0123";
+    let claim = super::seal_row::claim_hex(&[3u8; 32], locator);
+    let nostr = include_str!("../templates/nostr.js");
+    let sha = nostr.find("async function sha256(").expect("sha256");
+    let sha_end = nostr[sha..]
+        .find("\nlet bip340Ready")
+        .map(|offset| sha + offset)
+        .expect("sha256 ends");
+    let hex = nostr.find("function bytesToHex(").expect("hex");
+    let hex_end = nostr[hex..]
+        .find("\nfunction blockedRelayHost")
+        .map(|offset| hex + offset)
+        .expect("hex ends");
+    let mac = nostr.find("async function hmacSha256(").expect("hmac");
+    let mac_end = nostr[mac..]
+        .find("\nexport async function publishPublicNote")
+        .map(|offset| mac + offset)
+        .expect("claim ends");
+    let mut program = String::new();
+    program.push_str(&nostr[sha..sha_end]);
+    program.push_str(&nostr[hex..hex_end]);
+    program.push_str(&nostr[mac..mac_end]);
+    program.push_str(&format!(
+        r#"
+sealClaim(hexToBytes("{}"), "{locator}").then((got) => {{
+    if (got !== "{claim}") {{
+        throw new Error(got);
+    }}
+}}).catch((error) => {{
+    console.error(error);
+    if (typeof process !== "undefined") process.exit(1);
+    throw error;
+}});
+"#,
+        "03".repeat(32)
+    ));
+    run_javascript("nostorgraph-seal-claim", &program);
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_second_claim_cannot_replace_a_saved_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "bbbbbbbbbbbbbbbbbbbb";
+    let event_id = "cd".repeat(32);
+    let claim = super::seal_row::claim_hex(&[4u8; 32], locator);
+    let other = super::seal_row::claim_hex(&[5u8; 32], locator);
+    let relays = vec!["wss://saved.example".to_string()];
+    assert!(matches!(
+        super::seal_row::lock_claim(locator, &claim),
+        super::seal_row::LockPut::Created
+    ));
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &claim).is_ok());
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &other).is_err());
+    let kept = super::seal_row::read(locator).expect("saved row");
+    assert_eq!(kept.event_id, event_id);
+    assert_eq!(kept.relays, relays);
+}
+
+struct HoldDir {
+    dir: tempfile::TempDir,
+    _guard: super::seal_row::SealRowDirGuard,
+}
+
+impl HoldDir {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::seal_row::SealRowDirGuard::set(dir.path());
+        Self { dir, _guard }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+}
+
+fn hold_dir_count(root: &std::path::Path) -> usize {
+    let Ok(dir) = std::fs::read_dir(root.join("seal-holds")) else {
+        return 0;
+    };
+    dir.filter_map(|entry| entry.ok())
+        .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".writing"))
+        .count()
+}
+
+#[test]
+#[serial(nojs_sealed_fetch, publish_script)]
+fn a_refused_publish_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_v2_note(locator, 1_700_000_000);
+    let event = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let body = NostrPublishBody {
+        event,
+        relays: vec!["wss://marked.example".to_string()],
+        seal_claim: String::new(),
+        csrf_token: String::new(),
+    };
+    let script = crate::nostr::PublishScript::begin();
+    script.refuse("wss://marked.example");
+    let result = publish_sealed_note(&body, &config, "").unwrap();
+    drop(script);
+    assert!(result.locator.is_empty());
+    assert!(result.accepted.is_empty());
+    assert_eq!(hold_dir_count(dir.path()), 0);
+    assert!(super::seal_row::read(locator).is_none());
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_short_link_needs_no_publish_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let locator = "0123456789abcdef0123";
+    let event_id = "ab".repeat(32);
+    let relays = vec!["wss://saved.example".to_string()];
+    let claim = super::seal_row::claim_hex(&[4u8; 32], locator);
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &claim).is_err());
+    assert!(matches!(
+        super::seal_row::lock_claim(locator, &claim),
+        super::seal_row::LockPut::Created
+    ));
+    let other = super::seal_row::claim_hex(&[5u8; 32], locator);
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &other).is_err());
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &claim).is_ok());
+    assert_eq!(hold_dir_count(dir.path()), 0);
+    let row = super::seal_row::read(locator).expect("saved row");
+    assert_eq!(row.event_id, event_id);
+    assert_eq!(row.relays, relays);
+    assert!(super::seal_row::remember(locator, &event_id, &relays, &other).is_err());
+}
+
 #[test]
 #[serial(nojs_sealed_fetch, publish_script)]
 fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
     set_shared_nojs_accepted(None);
     let dir = tempfile::tempdir().unwrap();
     let _content = super::relays::RelayContentGuard::set(dir.path());
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
     let path = dir.path().join("relay-pool.json");
     let row = |url: &str, refused: bool| crawler::Row {
         url: url.to_string(),
@@ -2408,6 +3280,7 @@ fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
     script.limit("wss://slow.example");
     let published = publish_nojs_note_with_cookie(&form, &config, Some(&cookie)).unwrap();
     assert!(published.accepted.is_empty());
+    assert_eq!(hold_dir_count(dir.path()), 0);
     drop(script);
 
     let pool = crawler::load(&path);
@@ -2442,6 +3315,7 @@ fn a_refused_publish_marks_the_pool_row_and_leaves_the_pinned_relay() {
     let body = NostrPublishBody {
         event,
         relays: vec!["wss://marked.example".to_string()],
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     let script = crate::nostr::PublishScript::begin();
@@ -2497,6 +3371,7 @@ fn nostr_publish_sends_the_saved_relays_and_leaves_out_configured_names() {
     let body = NostrPublishBody {
         event,
         relays: saved.clone(),
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     let (_, chosen, _) = note_and_relays_for_publish(&body, &config, "").unwrap();
@@ -2865,6 +3740,13 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
     assert!(body.contains("locator !== sealed.locator"));
     assert!(body.contains("key: bytesToBase64Url(sealed.secret)"));
     assert!(!body.contains("nevent"));
+    let returned = body.find("return {").unwrap();
+    let returned_end = body[returned..]
+        .find("};")
+        .map(|offset| returned + offset)
+        .unwrap();
+    let returned = &body[returned..returned_end];
+    assert!(returned.contains("title: String(title ?? \"\")"));
     let payload_at = body.find("JSON.stringify({").unwrap();
     let payload_end = body[payload_at..]
         .find("})")
@@ -2873,17 +3755,24 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
     let payload = &body[payload_at..payload_end];
     assert!(payload.contains("event,"));
     assert!(payload.contains("relays: relaysForPublicPublish(relays)"));
+    assert!(payload.contains("seal_claim: claim"));
     assert!(payload.contains("csrf_token: csrfToken || \"\""));
     assert!(!payload.contains("secret"));
     assert!(!payload.contains("key"));
     assert!(!payload.contains("locator"));
     assert!(!payload.contains("sealed"));
+    assert!(!payload.contains("title"));
 
     let home = include_str!("../templates/home.js");
     assert!(home.contains("contentMax: Number(form.dataset.sealMax)"));
     assert!(home.contains("The post is too long."));
     assert!(!home.contains("contentMax: contentLimit"));
-    assert!(home.contains("location.assign(openedSealHref(result))"));
+    assert!(home.contains("showShareLinks(result, title)"));
+    assert!(!home.contains("location.assign(longSealHref(result))"));
+    assert!(home.contains("history.pushState"));
+    assert!(home.contains("noteLocked || !hasAnyPublishRelay()"));
+    assert!(home.contains("That link was not saved."));
+    assert!(home.contains("Saved, but the link was not copied."));
     let href = home.find("function sealHref(").unwrap();
     let href_end = home[href..]
         .find("\n            async function publishOnNostr")
@@ -2893,6 +3782,7 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
     assert!(href_body.contains("\"/s/\""));
     assert!(href_body.contains("result.locator"));
     assert!(href_body.contains("result.event.id"));
+    assert!(href_body.contains("result.hints"));
     assert!(href_body.contains("\"#\""));
     assert!(href_body.contains("result.key"));
     assert!(href_body.contains("encodeURIComponent(relay)"));
@@ -2943,7 +3833,12 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("./nostr.js"));
     assert!(home.contains("publishPublicNote"));
     assert!(home.contains("csrfToken"));
-    assert!(home.contains("location.assign(openedSealHref(result))"));
+    assert!(home.contains("showShareLinks(result, title)"));
+    assert!(!home.contains("location.assign(longSealHref(result))"));
+    assert!(home.contains("history.pushState"));
+    assert!(home.contains("noteLocked || !hasAnyPublishRelay()"));
+    assert!(home.contains("That link was not saved."));
+    assert!(home.contains("Saved, but the link was not copied."));
     let href = home.find("function sealHref(").unwrap();
     let href_end = home[href..]
         .find("\n            async function publishOnNostr")
@@ -2953,6 +3848,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(href_body.contains("\"/s/\""));
     assert!(href_body.contains("result.locator"));
     assert!(href_body.contains("result.event.id"));
+    assert!(href_body.contains("result.hints"));
     assert!(href_body.contains("\"#\""));
     assert!(href_body.contains("result.key"));
     assert!(href_body.contains("encodeURIComponent(relay)"));
@@ -2961,10 +3857,10 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(home.contains("publishOnNostr()"));
     assert!(home.contains("Publishing failed. Try again."));
     assert!(home.contains("A title is required."));
-    assert!(home.contains("if (!hasAnyPublishRelay())"));
+    assert!(home.contains("if (noteLocked || !hasAnyPublishRelay())"));
     assert!(home.contains("if (publishing || !everyRelayHasPath())"));
-    assert!(home.contains("leaveBusy = true"));
-    assert!(home.contains("if (!leaveBusy)"));
+    assert!(home.contains("setPublishBusy(false)"));
+    assert!(!home.contains("leaveBusy"));
     assert!(home.contains("syncNostrButtons"));
     assert!(home.contains("savedRelayUrls(localStorage)"));
     assert!(home.contains("bindRelayActions(localStorage"));
@@ -2973,7 +3869,7 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!home.contains("nostorgraph_extra_relays"));
     assert!(!home.contains("mergePublishRelays"));
     assert!(!home.contains("MAX_EXTRA_RELAYS"));
-    assert!(home.contains("hints.includes(key)"));
+    assert!(!home.contains("acceptedRelayHints"));
     assert!(!home.contains("1059"));
     assert!(!home.contains("nsec"));
 
@@ -2986,6 +3882,39 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!html.contains("class=\"nostr-publish\""));
     assert!(!html.contains("On Nostr"));
     assert_eq!(html.matches(">Store</button>").count(), 2);
+    assert!(html.contains("id=\"share-links\" class=\"share-links\" hidden"));
+    assert!(html.contains(
+        "Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #."
+    ));
+    assert!(html.contains(
+        "This site stores the event id and the relays. It does not store the writing or the key."
+    ));
+    assert!(html.contains("Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key."));
+    assert!(html.contains("id=\"share-long-url\""));
+    assert!(html.contains("id=\"share-short-url\""));
+    assert!(html.contains("id=\"share-title-url\""));
+    assert!(html.contains("class=\"share-label\" id=\"share-long-label\">Long</p>"));
+    assert!(html.contains("class=\"share-label\" id=\"share-short-label\">Short</p>"));
+    assert!(html.contains("class=\"share-label\" id=\"share-title-label\">Title</p>"));
+    assert!(html.contains("class=\"share-bang\""));
+    assert!(html.contains("class=\"share-pop\""));
+    assert!(html.contains("role=\"tooltip\""));
+    assert!(html.contains("id=\"share-long\""));
+    assert!(html.contains("id=\"share-short\""));
+    assert!(html.contains("id=\"share-title\""));
+    let long_copy = home.find("async function copyLongLink").expect("long copy");
+    let long_end = home[long_copy..]
+        .find("\n            async function publishOnNostr")
+        .map(|offset| long_copy + offset)
+        .unwrap();
+    let long_body = &home[long_copy..long_end];
+    assert!(!long_body.contains("/seal-row"));
+    assert!(!long_body.contains("/title-link"));
+    assert!(home.contains("copyShortLink(sharedResult, csrf)"));
+    assert!(home.contains("copyTitleLink(sharedResult, csrf)"));
+    assert!(home.contains("copyLongLink(sharedResult)"));
+    assert!(home.contains("editor.readonly = true"));
+    assert!(home.contains("classList.add(\"is-stored\")"));
     assert!(html.contains("class=\"nojs-file-note\""));
     assert!(html.contains("This host seals the note and does not keep a copy."));
     assert!(html.contains("The key stays in the address."));
@@ -4451,6 +5380,7 @@ fn nojs_create_trims_the_title_and_alias_and_keeps_the_body() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_rejects_a_private_cookie_and_keeps_field_checks_first() {
+    let _holds = HoldDir::new();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
     config.nostr.relays = vec!["wss://127.0.0.1".to_string()];
@@ -4734,6 +5664,7 @@ async function loadNostr() {
     let body = NostrPublishBody {
         event,
         relays: Vec::new(),
+        seal_claim: String::new(),
         csrf_token: String::new(),
     };
     assert!(note_and_relays_for_publish(&body, &config, "").is_none());
@@ -4773,6 +5704,7 @@ async function loadNostr() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
+    let holds = HoldDir::new();
     let mut config = crate::config::Config::default();
     config.security.csrf_protection_enabled = false;
     config.nostr.timeout_secs = 1;
@@ -4792,14 +5724,14 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
     assert_ne!(published.payload, form.content);
     assert!(published.payload.len() > form.content.len());
     assert!(published.accepted.is_empty());
+    assert_eq!(hold_dir_count(holds.path()), 0);
     assert!(published.k.len() > 1);
     assert!(!published.k.contains('='));
-    let configured = vec!["wss://relay.primal.net".to_string()];
     let mut accepted = published;
     let key = accepted.k.clone();
     accepted.accepted = vec!["wss://nojs-seal.invalid".to_string()];
     assert_eq!(
-        nojs_sealed_location(&accepted, &configured).as_deref(),
+        nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
                 "/s/{}/{}?r=wss%3A%2F%2Fnojs-seal.invalid#{}",
@@ -4809,17 +5741,17 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
         )
     );
     accepted.accepted = vec!["wss://127.0.0.1".to_string()];
-    assert!(nojs_sealed_location(&accepted, &configured).is_none());
+    assert!(nojs_sealed_location(&accepted).is_none());
     accepted.accepted = vec!["wss://nojs-seal.invalid".to_string()];
     accepted.k.clear();
-    assert!(nojs_sealed_location(&accepted, &configured).is_none());
+    assert!(nojs_sealed_location(&accepted).is_none());
     accepted.k = key;
     accepted.accepted = vec!["wss://Relay.Primal.net/".to_string()];
     assert_eq!(
-        nojs_sealed_location(&accepted, &configured).as_deref(),
+        nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
-                "/s/{}/{}#{}",
+                "/s/{}/{}?r=wss%3A%2F%2Frelay.primal.net#{}",
                 accepted.locator, accepted.event_id, accepted.k
             )
             .as_str()
@@ -4830,10 +5762,10 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
         "wss://nojs-seal.invalid".to_string(),
     ];
     assert_eq!(
-        nojs_sealed_location(&accepted, &configured).as_deref(),
+        nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
-                "/s/{}/{}?r=wss%3A%2F%2Fnojs-seal.invalid#{}",
+                "/s/{}/{}?r=wss%3A%2F%2Frelay.primal.net&r=wss%3A%2F%2Fnojs-seal.invalid#{}",
                 accepted.locator, accepted.event_id, accepted.k
             )
             .as_str()
@@ -4863,6 +5795,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
 #[test]
 #[serial(nojs_sealed_fetch)]
 fn nojs_create_takes_a_public_publish_slot_until_it_finishes() {
+    let _holds = HoldDir::new();
     let mut readers = Vec::new();
     for _ in 0..MAX_PUBLIC_FETCHES {
         readers.push(PublicFetchSlot::acquire().expect("public fetch slot"));

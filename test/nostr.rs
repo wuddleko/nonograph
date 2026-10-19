@@ -413,6 +413,21 @@ fn test_parse_ok_matches_the_event_id() {
 }
 
 #[test]
+fn collected_notes_keep_one_copy_of_an_event_id() {
+    let locator = "0123456789abcdef0123";
+    let first = sign_sealed_note(&v2_payload(locator, 2), locator, 1_700_000_000);
+    let second = sign_sealed_note(&v2_payload(locator, 3), locator, 1_800_000_000);
+    assert_ne!(first.id_hex(), second.id_hex());
+    let (tx, rx) = mpsc::channel();
+    tx.send(Some(first.event_json.clone())).unwrap();
+    tx.send(Some(first.event_json.clone())).unwrap();
+    tx.send(Some(second.event_json.clone())).unwrap();
+    drop(tx);
+    let notes = take_notes(rx, Instant::now() + Duration::from_secs(2), 2);
+    assert_eq!(notes, vec![first.event_json, second.event_json]);
+}
+
+#[test]
 fn test_first_note_returns_when_the_first_relay_answers() {
     let (tx, rx) = mpsc::channel();
     tx.send(None).unwrap();

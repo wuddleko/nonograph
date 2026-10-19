@@ -38,6 +38,7 @@ pub(crate) use nip11::fetch_nip11;
 use nip11::{decode_http_message, NIP11_BODY_MAX};
 
 pub(crate) const MAX_FETCH_RELAYS: usize = 6;
+const ID_MATCH: usize = 1;
 const SEALED_EVENT_OVERHEAD: usize = 8192;
 const SEALED_FRAME_OVERHEAD: usize = 1024;
 const PUBLISH_FRAME_MAX: usize = 64 * 1024;
@@ -452,17 +453,42 @@ fn fetch_from_relays(
 }
 
 fn take_first_note(rx: mpsc::Receiver<Option<String>>, deadline: Instant) -> Option<String> {
+    take_notes(rx, deadline, ID_MATCH).into_iter().next()
+}
+
+fn take_notes(rx: mpsc::Receiver<Option<String>>, deadline: Instant, limit: usize) -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut seen = Vec::new();
+    if limit == 0 {
+        return notes;
+    }
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return None;
+            return notes;
         }
         match rx.recv_timeout(remaining) {
-            Ok(Some(note)) => return Some(note),
+            Ok(Some(note)) => {
+                if let Some(id) = note_id(&note) {
+                    if seen.iter().any(|have| have == &id) {
+                        continue;
+                    }
+                    seen.push(id);
+                }
+                notes.push(note);
+                if notes.len() == limit {
+                    return notes;
+                }
+            }
             Ok(None) => {}
-            Err(_) => return None,
+            Err(_) => return notes,
         }
     }
+}
+
+fn note_id(event_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(event_json).ok()?;
+    Some(value.get("id")?.as_str()?.to_string())
 }
 
 pub(crate) struct RelayList {

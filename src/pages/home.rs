@@ -375,7 +375,7 @@ pub(crate) fn create_location_with_cookie(
         return format!("{home}?error=nostr_publish_failed");
     }
     match publish_nojs_note_with_cookie(form, config, relay_cookie) {
-        Ok(published) => nojs_sealed_location(&published, &config.nostr.relays)
+        Ok(published) => nojs_sealed_location(&published)
             .unwrap_or_else(|| format!("{home}?error=nostr_publish_failed")),
         Err(error) => format!("{home}?error={error}"),
     }
@@ -411,6 +411,12 @@ pub(super) fn publish_nojs_note_with_cookie(
     };
     #[cfg(test)]
     super::nojs_test::remember_nojs_test_event(&sealed.note.event_json);
+    let claim = super::seal_row::claim_hex(&sealed.secret, &sealed.locator);
+    let locator = sealed.locator.clone();
+    let locked = super::seal_row::lock_claim(&locator, &claim);
+    if matches!(locked, super::seal_row::LockPut::Rejected) {
+        return Err("nostr_publish_failed");
+    }
     let timeout = relay_timeout(config);
     let accepted = {
         let _slot = nojs_publish_slot().map_err(|_| "nostr_publish_failed")?;
@@ -427,6 +433,12 @@ pub(super) fn publish_nojs_note_with_cookie(
             publish_and_record(&relays, &sealed.note, timeout).accepted
         }
     };
+    let landed = accepted
+        .iter()
+        .any(|relay| crate::nostr::canonical_public_relay(relay).is_some());
+    if !landed && matches!(locked, super::seal_row::LockPut::Created) {
+        super::seal_row::release_lock(&locator);
+    }
     let event: serde_json::Value =
         serde_json::from_str(&sealed.note.event_json).map_err(|_| "nostr_publish_failed")?;
     let payload = event
@@ -443,10 +455,7 @@ pub(super) fn publish_nojs_note_with_cookie(
     })
 }
 
-pub(super) fn nojs_sealed_location(
-    published: &NojsPublished,
-    configured: &[String],
-) -> Option<String> {
+pub(super) fn nojs_sealed_location(published: &NojsPublished) -> Option<String> {
     if published.k.is_empty()
         || published.locator.is_empty()
         || !crate::nostr::sealed_event_id(&published.event_id)
@@ -460,13 +469,36 @@ pub(super) fn nojs_sealed_location(
     if kept.is_empty() {
         return None;
     }
-    let hints = share_link_hints(&published.accepted, configured);
-    Some(super::layout::seal_href(&super::layout::SealAddress {
-        locator: &published.locator,
-        event_id: Some(&published.event_id),
-        key: &published.k,
+    Some(long_seal_href(
+        &published.locator,
+        &published.event_id,
+        &published.k,
+        &published.accepted,
+    ))
+}
+
+pub(super) fn long_seal_href(
+    locator: &str,
+    event_id: &str,
+    key: &str,
+    accepted: &[String],
+) -> String {
+    let hints = public_relays(accepted);
+    super::layout::seal_href(&super::layout::SealAddress {
+        locator,
+        event_id: Some(event_id),
+        key,
         hints: &hints,
-    }))
+    })
+}
+
+pub(super) fn short_seal_href(locator: &str, key: &str) -> String {
+    super::layout::seal_href(&super::layout::SealAddress {
+        locator,
+        event_id: None,
+        key,
+        hints: &[],
+    })
 }
 
 fn relays_for_nojs_write(relay_cookie: Option<&str>) -> Option<Vec<String>> {
@@ -591,6 +623,9 @@ pub struct NostrPublishBody {
     pub(super) event: serde_json::Value,
     #[serde(default)]
     pub(super) relays: Vec<String>,
+    /// HMAC of the key and the locator. Only its hash is stored, until a short or title link is saved.
+    #[serde(default)]
+    pub(super) seal_claim: String,
     #[serde(default)]
     pub(super) csrf_token: String,
 }
@@ -600,24 +635,6 @@ pub struct NostrPublishResult {
     pub(super) locator: String,
     pub(super) accepted: Vec<String>,
     pub(super) hints: Vec<String>,
-}
-
-pub(super) fn share_link_hints(accepted: &[String], configured: &[String]) -> Vec<String> {
-    let mut instance = Vec::new();
-    for relay in configured {
-        push_public_relay(&mut instance, relay);
-    }
-    let mut hints = Vec::new();
-    for relay in accepted {
-        let Some(relay) = crate::nostr::canonical_public_relay(relay) else {
-            continue;
-        };
-        if instance.iter().any(|have| have == &relay) {
-            continue;
-        }
-        push_public_relay(&mut hints, &relay);
-    }
-    hints
 }
 
 pub(crate) fn note_and_relays_for_publish(
@@ -641,12 +658,8 @@ pub(crate) fn note_and_relays_for_publish(
     Some((note, relays, locator))
 }
 
-pub(super) fn publish_result(
-    locator: String,
-    accepted: Vec<String>,
-    configured: &[String],
-) -> NostrPublishResult {
-    let hints = share_link_hints(&accepted, configured);
+pub(super) fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
+    let hints = public_relays(&accepted);
     let locator = if accepted
         .iter()
         .any(|relay| crate::nostr::canonical_public_relay(relay).is_some())
@@ -729,13 +742,106 @@ pub(super) fn publish_sealed_note(
     csrf_cookie: &str,
 ) -> Option<NostrPublishResult> {
     let (note, relays, locator) = note_and_relays_for_publish(body, config, csrf_cookie)?;
+    let locked = if body.seal_claim.is_empty() {
+        None
+    } else {
+        let put = super::seal_row::lock_claim(&locator, &body.seal_claim);
+        if matches!(put, super::seal_row::LockPut::Rejected) {
+            return None;
+        }
+        Some(put)
+    };
     let timeout = relay_timeout(config);
     let published = publish_and_record(&relays, &note, timeout);
-    Some(publish_result(
-        locator,
-        published.accepted,
-        &config.nostr.relays,
-    ))
+    let result = publish_result(locator.clone(), published.accepted);
+    if result.locator.is_empty() && matches!(locked, Some(super::seal_row::LockPut::Created)) {
+        super::seal_row::release_lock(&locator);
+    }
+    Some(result)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ShortLinkBody {
+    locator: String,
+    event_id: String,
+    relays: Vec<String>,
+    claim: String,
+    #[serde(default)]
+    csrf_token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TitleLinkBody {
+    title: String,
+    locator: String,
+    event_id: String,
+    relays: Vec<String>,
+    claim: String,
+    #[serde(default)]
+    csrf_token: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TitleLinkResult {
+    slug: String,
+}
+
+#[post("/title-link", data = "<body>")]
+pub fn remember_title_link(
+    body: Json<TitleLinkBody>,
+    config: &State<Config>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TitleLinkResult>, Status> {
+    let body = body.into_inner();
+    if csrf_failure(
+        config,
+        &body.csrf_token,
+        &csrf::request_csrf_cookie(cookies),
+    )
+    .is_some()
+    {
+        return Err(Status::BadRequest);
+    }
+    let Some(_slot) = PublicPublishSlot::acquire() else {
+        return Err(Status::ServiceUnavailable);
+    };
+    match super::title_link::save(
+        &body.title,
+        &body.locator,
+        &body.event_id,
+        &body.relays,
+        &body.claim,
+    ) {
+        Ok(slug) => Ok(Json(TitleLinkResult { slug })),
+        Err(()) => Err(Status::BadRequest),
+    }
+}
+
+#[post("/seal-row", data = "<body>")]
+pub fn remember_short_link(
+    body: Json<ShortLinkBody>,
+    config: &State<Config>,
+    cookies: &CookieJar<'_>,
+) -> Status {
+    let body = body.into_inner();
+    if csrf_failure(
+        config,
+        &body.csrf_token,
+        &csrf::request_csrf_cookie(cookies),
+    )
+    .is_some()
+    {
+        return Status::BadRequest;
+    }
+    let Some(_slot) = PublicPublishSlot::acquire() else {
+        return Status::ServiceUnavailable;
+    };
+    match super::seal_row::remember(&body.locator, &body.event_id, &body.relays, &body.claim) {
+        Ok(()) => Status::NoContent,
+        Err(()) => Status::BadRequest,
+    }
 }
 
 #[post("/nostr/publish", data = "<body>")]

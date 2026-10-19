@@ -5,8 +5,10 @@ mod layout;
 #[cfg(test)]
 mod nojs_test;
 mod relays;
+mod seal_row;
 mod sealed;
 mod static_pages;
+mod title_link;
 
 pub use assets::{
     cache_control_for_path, cache_control_for_request, editor_mode_js, entity_tag_for_path,
@@ -25,8 +27,8 @@ pub(crate) use fetch_slot::{
     MAX_PUBLIC_FETCHES, MAX_PUBLIC_PUBLISHES,
 };
 pub use home::{
-    assign_tor_circuits, index, nojs_create_post, nojs_index, nostr_publish, tor_circuits,
-    NostrPublishBody,
+    assign_tor_circuits, index, nojs_create_post, nojs_index, nostr_publish, remember_short_link,
+    remember_title_link, tor_circuits, NostrPublishBody,
 };
 pub(crate) use home::{
     create_location, create_location_with_cookie, note_and_relays_for_publish,
@@ -35,7 +37,9 @@ pub(crate) use home::{
 pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post_description};
 pub use relays::{nojs_relays_page, nojs_relays_update, relays_page};
 pub(crate) use sealed::{fetch_sealed_by_id, sealed_shell};
-pub use sealed::{nojs_sealed_view, sealed_view};
+pub use sealed::{
+    nojs_sealed_locator_view, nojs_sealed_view, sealed_locator_view, sealed_view, title_view,
+};
 pub use static_pages::{about_page, api_page, legal_page, markup_page, nojs_static_page};
 pub(crate) use static_pages::{build_static_page, BuiltPage};
 
@@ -44,9 +48,9 @@ use rocket::http::{ContentType, Status};
 
 #[cfg(test)]
 use home::{
-    home_context, home_error_message, nojs_error_code, nojs_publish_failure_page,
+    home_context, home_error_message, long_seal_href, nojs_error_code, nojs_publish_failure_page,
     nojs_publish_relays, nojs_publish_slot, nojs_sealed_location, publish_nojs_note_with_cookie,
-    publish_result, publish_sealed_note,
+    publish_result, publish_sealed_note, short_seal_href,
 };
 #[cfg(test)]
 use nojs_test::{

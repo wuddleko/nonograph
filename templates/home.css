@@ -236,6 +236,170 @@
             .form-error:empty {
                 display: none;
             }
+            .share-links {
+                margin: 0 0 28px;
+            }
+            .share-links[hidden] {
+                display: none;
+            }
+            .share-row[hidden] {
+                display: none;
+            }
+            body.is-stored #sidebar-relays,
+            body.is-stored .relays-open-sheet,
+            body.is-stored .relays-open-bar,
+            body.is-stored .sidebar-store,
+            body.is-stored button[type="submit"][form="publishForm"] {
+                display: none !important;
+            }
+            body.is-stored .sidebar {
+                display: none !important;
+            }
+            .share-row {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 6px;
+                margin: 0 0 16px;
+                min-width: 0;
+            }
+            .share-label {
+                margin: 0;
+                color: var(--quiet);
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                line-height: 1;
+                text-transform: uppercase;
+            }
+            .share-line {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-width: 0;
+            }
+            .share-url-wrap {
+                position: relative;
+                flex: 1;
+                min-width: 0;
+            }
+            .share-url,
+            .share-full {
+                font-family: "SF Mono", Monaco, Consolas, monospace;
+                font-size: 13px;
+                line-height: 1.35;
+            }
+            .share-links button.share-url {
+                display: block;
+                width: 100%;
+                min-width: 0;
+                margin: 0;
+                padding: 8px 0;
+                background: transparent;
+                color: var(--ink);
+                border: none;
+                font-family: "SF Mono", Monaco, Consolas, monospace;
+                font-size: 13px;
+                font-weight: 400;
+                letter-spacing: 0;
+                line-height: 1.35;
+                text-align: left;
+                text-transform: none;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .share-links button.share-url:hover,
+            .share-links button.share-url:active {
+                background: transparent;
+                color: var(--ink);
+            }
+            .share-full {
+                display: none;
+                position: absolute;
+                left: 0;
+                right: 0;
+                top: calc(100% + 4px);
+                box-sizing: border-box;
+                padding: 8px 10px;
+                background: var(--ink);
+                color: var(--ground);
+                overflow-wrap: anywhere;
+                z-index: 4;
+            }
+            .share-url-wrap:hover .share-full,
+            .share-url-wrap:focus-within .share-full,
+            .share-url-wrap.is-open .share-full {
+                display: block;
+            }
+            .share-links button.share-icon,
+            .share-links button.share-bang {
+                flex: none;
+                width: 36px;
+                height: 36px;
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                color: var(--ink);
+                border: 1px solid var(--ink);
+                font-size: 16px;
+                font-weight: 700;
+                letter-spacing: 0;
+                line-height: 1;
+                text-transform: none;
+            }
+            .share-links button.share-icon:hover,
+            .share-links button.share-bang:hover,
+            .share-links button.share-icon:active,
+            .share-links button.share-bang:active {
+                background: transparent;
+                color: var(--ink);
+            }
+            .share-links button.share-icon.is-copied,
+            .share-links button.share-icon.is-copied:hover {
+                background: var(--ink);
+                color: var(--ground);
+            }
+            .share-note {
+                position: relative;
+                flex: none;
+            }
+            .share-pop {
+                display: none;
+                position: absolute;
+                right: 0;
+                top: calc(100% + 6px);
+                box-sizing: border-box;
+                width: min(260px, calc(100vw - 32px));
+                padding: 8px 10px;
+                background: var(--ink);
+                color: var(--ground);
+                font-size: 13px;
+                font-weight: 400;
+                letter-spacing: 0;
+                line-height: 1.4;
+                text-transform: none;
+                z-index: 3;
+            }
+            .share-note:hover .share-pop,
+            .share-note:focus-within .share-pop {
+                display: block;
+            }
+            .share-status {
+                color: #9a3b3b;
+                font-size: 14px;
+                margin: 0 0 8px;
+            }
+            .share-status:empty {
+                display: none;
+            }
+            @media (max-width: 480px) {
+                .share-links button.share-icon,
+                .share-links button.share-bang {
+                    width: 44px;
+                    height: 44px;
+                }
+            }
             writemark-editor[name="content"] {
                 display: block;
                 width: 100%;
@@ -1342,6 +1506,9 @@
                 }
                 body:not(.nojs) .sidebar-store {
                     display: none;
+                }
+                body.is-stored:not(.nojs) .sidebar {
+                    display: none !important;
                 }
                 body:not(.nojs) #sidebar-relays {
                     position: fixed;

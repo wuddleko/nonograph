@@ -541,7 +541,10 @@ class WritemarkEditorElement extends HTMLElement {
     }
     if (!this._hasConnected) return;
     const restoreFocus = (name === "mode" || name === "readonly") && (this._focusWithin || Boolean(this._shadow.activeElement));
-    if ((name === "disabled" || name === "readonly") && (this.disabled || this.readonly)) this._closeCompletion();
+    if ((name === "disabled" || name === "readonly") && (this.disabled || this.readonly)) {
+      this._closeCompletion();
+      this._hideSelectionToolbar();
+    }
     this._syncAttributesToControls();
     if (name === "disabled" && this.disabled) this.blur();
     if (["mode", "disabled", "readonly"].includes(name)) this._renderAll({ restoreSelection: !this.disabled, force: true });
@@ -3203,12 +3206,13 @@ class WritemarkEditorElement extends HTMLElement {
 
   // Show the floating formatting toolbar above a non-empty selection in the live
   // editor. Hidden in source mode, while composing, when the slash
-  // completion popup is open, when the editor isn't focused, or with no selection.
+  // completion popup is open, when the editor isn't focused, when the note
+  // is locked, or with no selection.
   _updateSelectionToolbar() {
     if (!this._selectionToolbar) return;
     const sel = this._selection;
     const hasRange = sel && sel.start !== sel.end;
-    const canShow = hasRange && !this.disabled && !this._isComposing
+    const canShow = hasRange && !this.disabled && !this.readonly && !this._isComposing
       && this.mode !== "source"
       && !this._completion.open && this._focusWithin;
     if (!canShow) { this._hideSelectionToolbar(); return; }

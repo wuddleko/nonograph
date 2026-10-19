@@ -18,6 +18,12 @@ nostorgraph.pid
 /content/*.md
 # Crawler backoff. Door relays live in code; a missing file starts empty.
 /content/relay-pool.json
+# Short-link rows and title slugs, written only when those links are saved.
+# The lock is a claim hash kept until that save.
+/content/seal-rows/
+/content/title-slugs/
+/content/title-for/
+/content/seal-locks/
 
 # Tor backup directories created by run script
 onion_backup_*/

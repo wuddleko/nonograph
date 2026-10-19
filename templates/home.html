@@ -86,6 +86,27 @@
                         </p>
                     </div>
 
+                    <div class="help-section">
+                        <h3>Links</h3>
+                        <p>
+                            Store offers three addresses. A reader only has the
+                            one they were sent. The key is the part after #.
+                            This site never sees it.
+                        </p>
+                        <p>
+                            <strong>Long.</strong> Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #.<br />
+                            <code>https://&lt;site&gt;/s/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key</code>
+                        </p>
+                        <p>
+                            <strong>Short.</strong> This site stores the event id and the relays. It does not store the writing or the key.<br />
+                            <code>https://&lt;site&gt;/s/&lt;locator&gt;#key</code>
+                        </p>
+                        <p>
+                            <strong>Title.</strong> Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key.<br />
+                            <code>https://&lt;site&gt;/t/&lt;title&gt;#key</code>
+                        </p>
+                    </div>
+
                     {{relays_section}}
 
                     <div class="help-section">
@@ -142,6 +163,57 @@
                 <p class="nojs-file-note">
                     This host seals the note and does not keep a copy. The key stays in the address.
                 </p>
+                <section id="share-links" class="share-links" hidden aria-label="Note addresses">
+                    <div class="share-row">
+                        <p class="share-label" id="share-long-label">Long</p>
+                        <div class="share-line">
+                            <span class="share-url-wrap">
+                                <button type="button" class="share-url" id="share-long-url" aria-describedby="share-long-full" aria-expanded="false"></button>
+                                <span class="share-full" id="share-long-full" role="tooltip"></span>
+                            </span>
+                            <button type="button" class="share-icon" id="share-long" aria-label="Copy long link">
+                                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="8" y="8" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 16V4h12" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                            </button>
+                            <span class="share-note">
+                                <button type="button" class="share-bang" aria-label="About the long link" aria-describedby="share-long-note">!</button>
+                                <span class="share-pop" id="share-long-note" role="tooltip">Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #.</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="share-row">
+                        <p class="share-label" id="share-short-label">Short</p>
+                        <div class="share-line">
+                            <span class="share-url-wrap">
+                                <button type="button" class="share-url" id="share-short-url" aria-describedby="share-short-full" aria-expanded="false"></button>
+                                <span class="share-full" id="share-short-full" role="tooltip"></span>
+                            </span>
+                            <button type="button" class="share-icon" id="share-short" aria-label="Copy short link">
+                                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="8" y="8" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 16V4h12" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                            </button>
+                            <span class="share-note">
+                                <button type="button" class="share-bang" aria-label="About the short link" aria-describedby="share-short-note">!</button>
+                                <span class="share-pop" id="share-short-note" role="tooltip">This site stores the event id and the relays. It does not store the writing or the key.</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="share-row">
+                        <p class="share-label" id="share-title-label">Title</p>
+                        <div class="share-line">
+                            <span class="share-url-wrap">
+                                <button type="button" class="share-url" id="share-title-url" aria-describedby="share-title-full" aria-expanded="false"></button>
+                                <span class="share-full" id="share-title-full" role="tooltip"></span>
+                            </span>
+                            <button type="button" class="share-icon" id="share-title" aria-label="Copy title link">
+                                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="8" y="8" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 16V4h12" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+                            </button>
+                            <span class="share-note">
+                                <button type="button" class="share-bang" aria-label="About the title link" aria-describedby="share-title-note">!</button>
+                                <span class="share-pop" id="share-title-note" role="tooltip">Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key.</span>
+                            </span>
+                        </div>
+                    </div>
+                    <p id="share-status" class="share-status" role="status"></p>
+                </section>
                 <form
                     action="{{form_action}}"
                     method="{{form_method}}"

@@ -447,11 +447,14 @@ function paintSavedRelayLists(doc, storage) {
 
             let publishing = false;
 
+            let noteLocked = false;
+
             function syncPublishButtons() {
                 const overLimit = editor.value.length > contentLimit;
                 const blocked = !hasAnyPublishRelay();
                 publishButtons.forEach((button) => {
-                    button.disabled = !storeReady || publishing || overLimit || blocked;
+                    button.disabled =
+                        noteLocked || !storeReady || publishing || overLimit || blocked;
                 });
             }
             syncNostrButtons();
@@ -467,21 +470,6 @@ function paintSavedRelayLists(doc, storage) {
                 }
             }
 
-            function acceptedRelayHints(relays) {
-                const hints = [];
-                for (const relay of relays || []) {
-                    if (typeof relay !== "string" || !publicRelayUrl(relay)) {
-                        continue;
-                    }
-                    const key = relayKey(relay);
-                    if (hints.includes(key)) {
-                        continue;
-                    }
-                    hints.push(key);
-                }
-                return hints;
-            }
-
             function sealHref(locator, eventId, key, hints) {
                 let href = "/s/" + locator;
                 if (eventId) {
@@ -493,17 +481,158 @@ function paintSavedRelayLists(doc, storage) {
                 return href + (query ? "?" + query : "") + "#" + key;
             }
 
-            function openedSealHref(result) {
-                return sealHref(
-                    result.locator,
-                    result.event.id,
-                    result.key,
-                    acceptedRelayHints(result.hints),
+            function longSealHref(result) {
+                const hints = Array.isArray(result.hints) ? result.hints : [];
+                const eventId = result && result.event && result.event.id;
+                return sealHref(result.locator, eventId, result.key, hints);
+            }
+
+            function shortSealHref(result) {
+                return sealHref(result.locator, null, result.key, []);
+            }
+
+            function pageHref(path) {
+                if (typeof location === "undefined" || !location.origin) {
+                    return path;
+                }
+                return new URL(path, location.origin).href;
+            }
+
+            function pinLongLink(path) {
+                if (
+                    typeof history === "undefined" ||
+                    typeof history.pushState !== "function"
+                ) {
+                    return;
+                }
+                try {
+                    history.pushState(null, "", path);
+                } catch (error) {
+                    return;
+                }
+            }
+
+            async function copyShortLink(result, csrfToken) {
+                const event = result && result.event;
+                const eventId = event && event.id;
+                if (!result || !result.locator || !eventId || !result.claim) {
+                    return { ok: false, href: null };
+                }
+                let response;
+                try {
+                    response = await fetch("/seal-row", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            locator: result.locator,
+                            event_id: eventId,
+                            relays: Array.isArray(result.accepted) ? result.accepted : [],
+                            claim: result.claim,
+                            csrf_token: csrfToken || "",
+                        }),
+                    });
+                } catch (error) {
+                    return { ok: false, href: null };
+                }
+                if (!response || !response.ok) {
+                    return { ok: false, href: null };
+                }
+                const href = pageHref(shortSealHref(result));
+                paintShareUrl(
+                    document.getElementById("share-short-url"),
+                    "share-short-full",
+                    href,
                 );
+                return { ok: true, href: await writeClipboard(href) };
+            }
+
+            async function copyTitleLink(result, csrfToken) {
+                const event = result && result.event;
+                const eventId = event && event.id;
+                const title = result && typeof result.title === "string" ? result.title : "";
+                const origin = typeof location !== "undefined" && location.origin;
+                if (
+                    !result ||
+                    !result.locator ||
+                    !eventId ||
+                    !title.trim() ||
+                    !result.key ||
+                    !result.claim ||
+                    !origin
+                ) {
+                    return { ok: false, href: null };
+                }
+                let response;
+                try {
+                    response = await fetch("/title-link", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            title: title,
+                            locator: result.locator,
+                            event_id: eventId,
+                            relays: Array.isArray(result.accepted) ? result.accepted : [],
+                            claim: result.claim,
+                            csrf_token: csrfToken || "",
+                        }),
+                    });
+                } catch (error) {
+                    return { ok: false, href: null };
+                }
+                if (!response || !response.ok) {
+                    return { ok: false, href: null };
+                }
+                let payload;
+                try {
+                    payload = await response.json();
+                } catch (error) {
+                    return { ok: false, href: null };
+                }
+                const slug = payload && typeof payload.slug === "string" ? payload.slug : "";
+                if (!slug) {
+                    return { ok: false, href: null };
+                }
+                const href = new URL(
+                    "/t/" + encodeURIComponent(slug) + "#" + result.key,
+                    origin,
+                ).href;
+                paintShareUrl(
+                    document.getElementById("share-title-url"),
+                    "share-title-full",
+                    href,
+                );
+                return { ok: true, href: await writeClipboard(href) };
+            }
+
+            async function writeClipboard(href) {
+                const clipboard =
+                    typeof navigator !== "undefined" && navigator.clipboard;
+                if (!clipboard || typeof clipboard.writeText !== "function") {
+                    return null;
+                }
+                try {
+                    await clipboard.writeText(href);
+                } catch (error) {
+                    return null;
+                }
+                return href;
+            }
+
+            async function copyLongLink(result) {
+                if (!result || !result.locator || !result.key) {
+                    return null;
+                }
+                const href = pageHref(longSealHref(result));
+                paintShareUrl(
+                    document.getElementById("share-long-url"),
+                    "share-long-full",
+                    href,
+                );
+                return writeClipboard(href);
             }
 
             async function publishOnNostr() {
-                if (!hasAnyPublishRelay()) {
+                if (noteLocked || !hasAnyPublishRelay()) {
                     return;
                 }
                 if (publishing || !everyRelayHasPath()) {
@@ -532,7 +661,6 @@ function paintSavedRelayLists(doc, storage) {
                 }
                 showPublishError("");
                 setPublishBusy(true);
-                let leaveBusy = false;
                 try {
                     const result = await nostorgraphPublishPublicNote({
                         title,
@@ -550,8 +678,7 @@ function paintSavedRelayLists(doc, storage) {
                         showPublishError("Publishing failed. Try again.");
                         return;
                     }
-                    leaveBusy = true;
-                    location.assign(openedSealHref(result));
+                    showShareLinks(result, title);
                 } catch (error) {
                     console.error(error);
                     const tooLong =
@@ -563,12 +690,210 @@ function paintSavedRelayLists(doc, storage) {
                             : "Publishing failed. Try again.",
                     );
                 } finally {
-                    if (!leaveBusy) {
-                        setPublishBusy(false);
-                    }
+                    setPublishBusy(false);
                 }
             }
 
+
+            let sharedResult = null;
+
+            function paintShareUrl(node, fullId, href) {
+                if (node) {
+                    node.textContent = href;
+                }
+                const full = document.getElementById(fullId);
+                if (full) {
+                    full.textContent = href;
+                }
+            }
+
+            function shareTitleSlug(title) {
+                const maxBytes = 250;
+                let slug = "";
+                let dash = false;
+                for (const ch of String(title || "").trim()) {
+                    if ([...slug].length >= 128) {
+                        break;
+                    }
+                    const code = ch.codePointAt(0);
+                    const blocked =
+                        code <= 0x1f ||
+                        (code >= 0x7f && code <= 0x9f) ||
+                        "/\\?#%:*\"<>|".includes(ch);
+                    if (blocked || /\s/u.test(ch)) {
+                        if (slug) {
+                            dash = true;
+                        }
+                        continue;
+                    }
+                    const extra = new TextEncoder().encode(ch).length + (dash ? 1 : 0);
+                    if (new TextEncoder().encode(slug).length + extra > maxBytes) {
+                        break;
+                    }
+                    if (dash) {
+                        slug += "-";
+                        dash = false;
+                    }
+                    slug += ch;
+                }
+                while (slug.endsWith("-")) {
+                    slug = slug.slice(0, -1);
+                }
+                if (!slug || slug === "." || slug === "..") {
+                    return "";
+                }
+                return slug;
+            }
+
+            function titleShareHref(result, slug) {
+                const origin = typeof location !== "undefined" && location.origin;
+                if (!slug || !origin || !result || !result.key) {
+                    return "";
+                }
+                return new URL(
+                    "/t/" + encodeURIComponent(slug) + "#" + result.key,
+                    origin,
+                ).href;
+            }
+
+            function showShareLinks(result, title) {
+                sharedResult = Object.assign({}, result, {
+                    title: title || "",
+                });
+                noteLocked = true;
+                pinLongLink(longSealHref(sharedResult));
+                syncPublishButtons();
+                const panel = document.getElementById("share-links");
+                if (!panel) {
+                    return;
+                }
+                const longHref = pageHref(longSealHref(sharedResult));
+                const shortHref = pageHref(shortSealHref(sharedResult));
+                const titleHref = titleShareHref(
+                    sharedResult,
+                    shareTitleSlug(sharedResult.title),
+                );
+                const longUrl = document.getElementById("share-long-url");
+                const shortUrl = document.getElementById("share-short-url");
+                const titleUrl = document.getElementById("share-title-url");
+                paintShareUrl(longUrl, "share-long-full", longHref);
+                paintShareUrl(shortUrl, "share-short-full", shortHref);
+                paintShareUrl(titleUrl, "share-title-full", titleHref);
+                const status = document.getElementById("share-status");
+                if (status) {
+                    status.textContent = "";
+                }
+                panel.hidden = false;
+                document.body.classList.add("is-stored");
+                if (form.title) {
+                    form.title.readOnly = true;
+                    form.title.removeAttribute("title");
+                }
+                if (form.alias) {
+                    form.alias.readOnly = true;
+                    form.alias.removeAttribute("title");
+                }
+                editor.readonly = true;
+                editor.removeAttribute("title");
+                syncPublishButtons();
+                if (!panel.dataset.ready) {
+                    panel.dataset.ready = "1";
+                    bindShareCopies(panel);
+                    bindShareAddresses(panel);
+                }
+                panel.scrollIntoView({ block: "nearest" });
+            }
+
+            function bindShareAddresses(panel) {
+                panel.querySelectorAll(".share-url").forEach((url) => {
+                    url.addEventListener("click", () => {
+                        const wrap = url.closest(".share-url-wrap");
+                        if (!wrap) {
+                            return;
+                        }
+                        const open = wrap.classList.contains("is-open");
+                        panel.querySelectorAll(".share-url-wrap.is-open").forEach((node) => {
+                            node.classList.remove("is-open");
+                        });
+                        if (!open) {
+                            wrap.classList.add("is-open");
+                        }
+                        url.setAttribute("aria-expanded", open ? "false" : "true");
+                    });
+                });
+            }
+
+            function bindShareCopies(panel) {
+                const csrf = form.csrf_token ? form.csrf_token.value : "";
+                const status = document.getElementById("share-status");
+                const finish = (button) => {
+                    if (status) {
+                        status.textContent = "";
+                    }
+                    button.classList.add("is-copied");
+                    setTimeout(() => {
+                        button.classList.remove("is-copied");
+                    }, 1200);
+                };
+                const markCopied = (button, href) => {
+                    if (!href) {
+                        if (status) {
+                            status.textContent = "That link was not copied.";
+                        }
+                        return;
+                    }
+                    finish(button);
+                };
+                const markSaved = (button, outcome) => {
+                    if (!outcome || !outcome.ok) {
+                        if (status) {
+                            status.textContent = "That link was not saved.";
+                        }
+                        return;
+                    }
+                    if (!outcome.href) {
+                        if (status) {
+                            status.textContent = "Saved, but the link was not copied.";
+                        }
+                        return;
+                    }
+                    finish(button);
+                };
+                const longButton = document.getElementById("share-long");
+                const shortButton = document.getElementById("share-short");
+                const titleButton = document.getElementById("share-title");
+                if (longButton) {
+                    longButton.addEventListener("click", () => {
+                        if (!sharedResult) {
+                            return;
+                        }
+                        copyLongLink(sharedResult).then((href) =>
+                            markCopied(longButton, href),
+                        );
+                    });
+                }
+                if (shortButton) {
+                    shortButton.addEventListener("click", () => {
+                        if (!sharedResult) {
+                            return;
+                        }
+                        copyShortLink(sharedResult, csrf).then((outcome) =>
+                            markSaved(shortButton, outcome),
+                        );
+                    });
+                }
+                if (titleButton) {
+                    titleButton.addEventListener("click", () => {
+                        if (!sharedResult) {
+                            return;
+                        }
+                        copyTitleLink(sharedResult, csrf).then((outcome) =>
+                            markSaved(titleButton, outcome),
+                        );
+                    });
+                }
+                panel.dataset.bound = "1";
+            }
 
             let charCountFrame = 0;
             function updateCharCount() {

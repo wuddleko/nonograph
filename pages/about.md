@@ -25,6 +25,14 @@ Nostorgraph is a clean, simple publishing tool built in Rust with a focus on sim
 - **Sealed notes** - The host does not keep a copy of what you publish
 - **Anonymous by design** - Privacy-first approach
 
+**Links**
+
+Store offers three addresses. A reader only has the one they were sent. The key is the part after `#`. This site never sees it.
+
+- **Long.** Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #. `https://<site>/s/<locator>/<event-id>?r=<relay>#key`
+- **Short.** This site stores the event id and the relays. It does not store the writing or the key. `https://<site>/s/<locator>#key`
+- **Title.** Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key. `https://<site>/t/<title>#key`
+
 **Technical Details**
 
 Built with modern Rust using:
