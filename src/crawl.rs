@@ -18,10 +18,12 @@ pub(crate) const DOORS: [&str; 3] = [
 pub(crate) const WORKERS: usize = 4;
 
 pub(crate) const CANDIDATE_CAP: usize = 48;
+const FOUND_GOAL: usize = 100;
 const POOL_FETCH: usize = 3;
 const SAVE_RETRY: Duration = Duration::from_secs(60);
 const BAD_FILE_WAIT: Duration = Duration::from_secs(15 * 60);
-const PASS_PAUSE: Duration = Duration::from_secs(15 * 60);
+const FIRST_CRAWL: Duration = Duration::from_secs(60 * 60);
+const STEADY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
@@ -29,6 +31,13 @@ pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
 
 pub(crate) fn batch_queue(path: &Path, now: i64) -> io::Result<Queue> {
     let pool = read_pool(path)?;
+    let first_build = pool.rows.len() < FOUND_GOAL;
+    let answered: Vec<String> = pool
+        .rows
+        .iter()
+        .filter(|row| row_answered(row))
+        .map(|row| row.url.clone())
+        .collect();
     let due_urls = due(&pool.rows, now);
     let mut queue = Queue::new(pool);
     queue.set_rotation(CANDIDATE_CAP, row_is_usable);
@@ -39,6 +48,11 @@ pub(crate) fn batch_queue(path: &Path, now: i64) -> io::Result<Queue> {
     }
     for url in due_urls {
         queue.push(&url, now);
+    }
+    if first_build {
+        for url in answered {
+            queue.revisit(&url, now);
+        }
     }
     Ok(queue)
 }
@@ -69,7 +83,10 @@ pub(crate) fn run_pool(socks: RelaySocks, timeout_secs: u64) {
         &path,
         |now| {
             let filling = pool_is_filling(&path);
-            run_crawl(&path, now, || CrawlVisit::new(timeout_secs, socks, filling))
+            let first_build = found_in(&path) < FOUND_GOAL;
+            run_crawl(&path, now, || {
+                CrawlVisit::new(timeout_secs, socks, filling, first_build)
+            })
         },
         |wait| {
             std::thread::sleep(wait);
@@ -83,8 +100,10 @@ where
     C: FnMut(i64) -> io::Result<()>,
     S: FnMut(Duration) -> bool,
 {
+    let boot = Instant::now();
     loop {
         let now = crate::nostr::now_secs();
+        eprintln!("Nostorgraph: {}", crawl_start_line(path));
         let crawled = crawl(now);
         if let Err(error) = &crawled {
             eprintln!("Nostorgraph: relay pool was not saved: {error}");
@@ -93,12 +112,69 @@ where
         let wait = match &crawled {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => BAD_FILE_WAIT,
             Err(_) => pool_file_wait(path, now).max(SAVE_RETRY),
-            Ok(()) => pass_wait(path, now),
+            Ok(()) => pass_wait(path, boot.elapsed()),
         };
+        eprintln!("Nostorgraph: {}", crawl_pause_line(path, wait));
         if !sleep(wait) {
             return;
         }
     }
+}
+
+fn crawl_start_line(path: &Path) -> String {
+    format!("relay crawl starting, {}", crawl_progress(path))
+}
+
+fn crawl_pause_line(path: &Path, wait: Duration) -> String {
+    if wait.is_zero() {
+        return format!("relay crawl continuing, {}", crawl_progress(path));
+    }
+    format!(
+        "relay crawl paused, {}, next pass in {}",
+        crawl_progress(path),
+        wait_words(wait)
+    )
+}
+
+fn crawl_progress(path: &Path) -> String {
+    let found = found_in(path);
+    let usable = usable_in(path);
+    if found < FOUND_GOAL {
+        format!("{found}/{FOUND_GOAL} relays found, {usable}/{CANDIDATE_CAP} usable")
+    } else {
+        format!("{usable}/{CANDIDATE_CAP} relays usable")
+    }
+}
+
+fn found_in(path: &Path) -> usize {
+    read_pool(path).map(|pool| pool.rows.len()).unwrap_or(0)
+}
+
+fn usable_in(path: &Path) -> usize {
+    read_pool(path)
+        .map(|pool| pool.rows.iter().filter(|row| row_is_usable(row)).count())
+        .unwrap_or(0)
+}
+
+fn wait_words(wait: Duration) -> String {
+    let secs = wait.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    let mut parts = Vec::new();
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if seconds > 0 && hours == 0 {
+        parts.push(format!("{seconds}s"));
+    }
+    parts.join(" ")
 }
 
 fn pool_file_wait(path: &Path, now: i64) -> Duration {
@@ -108,19 +184,17 @@ fn pool_file_wait(path: &Path, now: i64) -> Duration {
     }
 }
 
-fn pass_wait(path: &Path, now: i64) -> Duration {
-    let Ok(pool) = read_pool(path) else {
+fn pass_wait(path: &Path, elapsed: Duration) -> Duration {
+    if found_in(path) < FOUND_GOAL && elapsed < FIRST_CRAWL {
         return Duration::ZERO;
-    };
-    if rows_fill_rotation(&pool.rows) {
-        return usable_wait(&pool.rows, now);
     }
-    let wait = pool_wait(&pool.rows, now);
-    if wait.is_zero() && !due(&pool.rows, now).is_empty() {
-        PASS_PAUSE
-    } else {
-        wait
-    }
+    STEADY_INTERVAL
+}
+
+fn row_answered(row: &Row) -> bool {
+    row.visit
+        .as_ref()
+        .is_some_and(|visit| visit.socket_answered)
 }
 
 fn rows_fill_rotation(rows: &[Row]) -> bool {
@@ -131,24 +205,6 @@ fn pool_is_filling(path: &Path) -> bool {
     match read_pool(path) {
         Ok(pool) => !rows_fill_rotation(&pool.rows),
         Err(_) => false,
-    }
-}
-
-fn usable_wait(rows: &[Row], now: i64) -> Duration {
-    let Some(next) = rows
-        .iter()
-        .filter(|row| row_is_usable(row))
-        .take(CANDIDATE_CAP)
-        .map(|row| row.next_try)
-        .min()
-    else {
-        return Duration::ZERO;
-    };
-    let delay = next.saturating_sub(now);
-    if delay <= 0 {
-        PASS_PAUSE
-    } else {
-        Duration::from_secs(delay as u64)
     }
 }
 
@@ -167,6 +223,7 @@ fn pool_wait(rows: &[Row], now: i64) -> Duration {
 pub(crate) struct CrawlVisit<R> {
     timeout_secs: u64,
     filling: bool,
+    first_build: bool,
     read: R,
 }
 
@@ -175,10 +232,16 @@ pub(crate) struct LiveRead {
 }
 
 impl CrawlVisit<LiveRead> {
-    pub(crate) fn new(timeout_secs: u64, socks: RelaySocks, filling: bool) -> Self {
+    pub(crate) fn new(
+        timeout_secs: u64,
+        socks: RelaySocks,
+        filling: bool,
+        first_build: bool,
+    ) -> Self {
         Self {
             timeout_secs,
             filling,
+            first_build,
             read: LiveRead { socks },
         }
     }
@@ -202,7 +265,7 @@ impl RelayRead for LiveRead {
 impl<R: RelayRead> VisitHook for CrawlVisit<R> {
     fn visit(&mut self, url: &str, now: i64) -> (Visit, Vec<String>) {
         let deadline = Instant::now() + Duration::from_secs(self.timeout_secs.max(1));
-        let list = if self.filling && is_door(url) {
+        let list = if self.first_build || (self.filling && is_door(url)) {
             self.read.read_list(url, deadline)
         } else {
             RelayList {
@@ -213,15 +276,52 @@ impl<R: RelayRead> VisitHook for CrawlVisit<R> {
         let body = self.read.read_nip11(url, deadline);
         let nip11 = nip11_document(body.as_deref());
         let probes = probe_kind(url, nip11.as_ref(), deadline);
-        (
-            Visit {
-                at: now,
-                socket_answered: list.socket_answered || body.is_some(),
-                nip11,
-                probes,
-            },
-            admit_discovered(url, list.urls),
-        )
+        let visit = Visit {
+            at: now,
+            socket_answered: list.socket_answered || body.is_some(),
+            nip11,
+            probes,
+        };
+        let learned = admit_discovered(url, list.urls);
+        eprintln!("Nostorgraph: {}", visit_line(url, &visit, learned.len()));
+        (visit, learned)
+    }
+}
+
+fn visit_line(url: &str, visit: &Visit, learned: usize) -> String {
+    format!(
+        "relay {url} {}{}",
+        visit_outcome(visit),
+        learned_words(learned)
+    )
+}
+
+fn learned_words(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => ", learned 1 relay".to_string(),
+        count => format!(", learned {count} relays"),
+    }
+}
+
+fn visit_outcome(visit: &Visit) -> &'static str {
+    if !visit.socket_answered {
+        return "did not answer";
+    }
+    match visit.nip11.as_ref() {
+        Some(document) if crate::nip11::document_is_public(document) => {}
+        Some(_) => return "is not public",
+        None => return "sent no relay document",
+    }
+    let name = nostorgraph_nip44::KIND.to_string();
+    if visit
+        .probes
+        .iter()
+        .any(|probe| probe.accepted && probe.name == name)
+    {
+        "accepted a public note"
+    } else {
+        "does not accept public notes"
     }
 }
 

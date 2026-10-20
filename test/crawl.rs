@@ -233,7 +233,7 @@ fn a_bad_pool_file_waits_fifteen_minutes() {
 }
 
 #[test]
-fn a_due_pool_waits_fifteen_minutes_after_a_pass() {
+fn a_short_pool_starts_the_next_pass_immediately() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     save(
@@ -256,11 +256,11 @@ fn a_due_pool_waits_fifteen_minutes_after_a_pass() {
     );
 
     let waits = waits.lock().expect("waits");
-    assert_eq!(waits.as_slice(), &[Duration::from_secs(15 * 60)]);
+    assert_eq!(waits.as_slice(), &[Duration::ZERO]);
 }
 
 #[test]
-fn a_resting_pool_sleeps_until_the_next_try() {
+fn the_first_crawl_keeps_going_while_under_the_goal() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     let later = crate::nostr::now_secs() + 5 * 60;
@@ -284,13 +284,11 @@ fn a_resting_pool_sleeps_until_the_next_try() {
     );
 
     let waits = waits.lock().expect("waits");
-    assert_eq!(waits.len(), 1);
-    assert!(waits[0].as_secs() <= 5 * 60);
-    assert!(waits[0].as_secs() >= 5 * 60 - 5);
+    assert_eq!(waits.as_slice(), &[Duration::ZERO]);
 }
 
 #[test]
-fn a_capped_pass_leaves_due_rows_for_fifteen_minutes() {
+fn a_capped_pass_continues_while_relays_are_still_due() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
     let rows = (0..49)
@@ -316,27 +314,18 @@ fn a_capped_pass_leaves_due_rows_for_fifteen_minutes() {
             }
         },
         move |wait| {
-            recorded.lock().expect("waits").push(wait);
-            false
+            let mut waits = recorded.lock().expect("waits");
+            let again = wait.is_zero() && waits.len() < 4;
+            waits.push(wait);
+            again
         },
     );
 
-    assert_eq!(seen.lock().expect("seen").len(), crawler::VISIT_CAP);
     let pool = load(&path);
-    assert_eq!(
-        pool.rows.iter().filter(|row| row.visit.is_some()).count(),
-        crawler::VISIT_CAP
-    );
-    let waiting: Vec<Row> = pool
-        .rows
-        .iter()
-        .filter(|row| row.visit.is_none())
-        .cloned()
-        .collect();
-    assert!(!waiting.is_empty());
-    assert_eq!(due(&waiting, crate::nostr::now_secs()).len(), waiting.len());
+    assert!(pool.rows.iter().all(|row| row.visit.is_some()));
     let waits = waits.lock().expect("waits");
-    assert_eq!(waits.as_slice(), &[Duration::from_secs(15 * 60)]);
+    assert!(waits.len() >= 2);
+    assert!(waits.iter().all(|wait| wait.is_zero()));
 }
 
 #[test]
@@ -399,11 +388,8 @@ fn a_full_pool_checks_the_due_relays_then_sleeps_until_the_next_try() {
         .rows
         .iter()
         .any(|row| row.url == "wss://new.example" && row.visit.is_none()));
-    let day = 24 * 60 * 60;
     let waits = waits.lock().expect("waits");
-    assert_eq!(waits.len(), 1);
-    assert!(waits[0].as_secs() <= day);
-    assert!(waits[0].as_secs() >= day - 5);
+    assert_eq!(waits.as_slice(), &[Duration::ZERO]);
 }
 
 #[test]
@@ -438,6 +424,7 @@ fn doors_are_pushed_before_rows_that_are_already_due() {
     assert_eq!(queue.pop().as_deref(), Some("wss://nos.lol"));
     assert_eq!(queue.pop().as_deref(), Some("wss://relay.damus.io"));
     assert_eq!(queue.pop().as_deref(), Some("wss://relay.example"));
+    assert_eq!(queue.pop().as_deref(), Some("wss://later.example"));
     assert_eq!(queue.pop(), None);
     let kept = queue
         .pool()
@@ -558,7 +545,7 @@ fn a_short_pool_queues_a_cooling_door() {
     assert_eq!(queue.pop().as_deref(), Some("wss://relay.primal.net"));
     assert_eq!(queue.pop().as_deref(), Some("wss://nos.lol"));
     assert_eq!(queue.pop().as_deref(), Some("wss://relay.damus.io"));
-    assert_eq!(queue.pop(), None);
+    assert_eq!(queue.pop().as_deref(), Some("wss://relay0.example"));
 }
 
 #[test]
@@ -588,6 +575,7 @@ fn run_crawl_visits_the_doors_and_the_due_rows() {
     assert_eq!(
         seen,
         vec![
+            "wss://later.example".to_owned(),
             "wss://nos.lol".to_owned(),
             "wss://relay.damus.io".to_owned(),
             "wss://relay.example".to_owned(),
@@ -596,16 +584,9 @@ fn run_crawl_visits_the_doors_and_the_due_rows() {
     );
     let pool = load(&path);
     assert_eq!(pool.rows.len(), 5);
-    let kept = pool
-        .rows
-        .iter()
-        .find(|row| row.url == "wss://later.example")
-        .unwrap();
-    assert_eq!(kept, &cooling);
     assert!(pool
         .rows
         .iter()
-        .filter(|row| row.url != "wss://later.example")
         .all(|row| row.visit.as_ref().is_some_and(|visit| visit.at == NOW)));
 }
 
@@ -666,6 +647,7 @@ fn a_non_door_stores_the_document_and_skips_the_list() {
     let mut hook = CrawlVisit {
         timeout_secs: 30,
         filling: true,
+        first_build: false,
         read: Saved {
             body,
             urls: vec![
@@ -707,6 +689,7 @@ fn a_door_reads_the_list_while_the_pool_is_filling() {
     let mut hook = CrawlVisit {
         timeout_secs: 30,
         filling: true,
+        first_build: false,
         read: Saved {
             body,
             urls: vec!["wss://two-source.example".to_owned()],
@@ -771,6 +754,7 @@ fn a_health_check_does_not_read_the_list() {
     let mut hook = CrawlVisit {
         timeout_secs: 30,
         filling: false,
+        first_build: false,
         read: Saved {
             body,
             urls: vec!["wss://other.example".to_owned()],
@@ -796,7 +780,7 @@ fn a_health_check_does_not_read_the_list() {
 
 #[test]
 fn a_missed_socket_still_returns_the_visit() {
-    let mut hook = CrawlVisit::new(30, crate::nostr::RelaySocks::Disabled, true);
+    let mut hook = CrawlVisit::new(30, crate::nostr::RelaySocks::Disabled, true, false);
     let started = Instant::now();
     let (visit, urls) = hook.visit("wss://warm.example", NOW);
     assert!(started.elapsed() < Duration::from_millis(50));
@@ -1148,4 +1132,72 @@ fn next_pool_relays_return_three_and_skip_the_link_relay() {
             "wss://relay3.example".to_string(),
         ]
     );
+}
+
+#[test]
+fn crawl_lines_name_the_relay_and_the_wait() {
+    assert_eq!(
+        visit_line("wss://miss.example", &silent(), 0),
+        "relay wss://miss.example did not answer"
+    );
+    let mut accepted = answered();
+    accepted.probes[0].name = nostorgraph_nip44::KIND.to_string();
+    assert_eq!(
+        visit_line("wss://open.example", &accepted, 1),
+        "relay wss://open.example accepted a public note, learned 1 relay"
+    );
+    assert_eq!(
+        visit_line("wss://open.example", &accepted, 3),
+        "relay wss://open.example accepted a public note, learned 3 relays"
+    );
+    let closed = Visit {
+        nip11: Some(saved_document(include_str!("../test/nip11/auth.json"))),
+        ..answered()
+    };
+    assert_eq!(
+        visit_line("wss://auth.example", &closed, 0),
+        "relay wss://auth.example is not public"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    assert_eq!(
+        crawl_start_line(&path),
+        format!("relay crawl starting, 0/{FOUND_GOAL} relays found, 0/{CANDIDATE_CAP} usable")
+    );
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    save(
+        &path,
+        &Pool {
+            rows: vec![visited("wss://open.example", true, open, true)],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        crawl_pause_line(&path, Duration::from_secs(15 * 60)),
+        format!(
+            "relay crawl paused, 1/{FOUND_GOAL} relays found, 1/{CANDIDATE_CAP} usable, next pass in 15m"
+        )
+    );
+    assert_eq!(
+        crawl_pause_line(&path, Duration::ZERO),
+        format!(
+            "relay crawl continuing, 1/{FOUND_GOAL} relays found, 1/{CANDIDATE_CAP} usable"
+        )
+    );
+    assert_eq!(wait_words(Duration::from_secs(0)), "0s");
+    assert_eq!(wait_words(Duration::from_secs(90)), "1m 30s");
+    assert_eq!(wait_words(Duration::from_secs(24 * 60 * 60)), "24h");
+    assert_eq!(pass_wait(&path, Duration::ZERO), Duration::ZERO);
+    assert_eq!(pass_wait(&path, FIRST_CRAWL), STEADY_INTERVAL);
+    let mut rows = Vec::new();
+    for index in 0..FOUND_GOAL {
+        rows.push(row(
+            &format!("wss://found{index}.example"),
+            NOW,
+            None,
+        ));
+    }
+    save(&path, &Pool { rows }).unwrap();
+    assert_eq!(pass_wait(&path, Duration::ZERO), STEADY_INTERVAL);
 }
