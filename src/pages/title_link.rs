@@ -47,6 +47,10 @@ pub(crate) fn save(
         } else {
             format!("{base}-{number}")
         };
+        if slug_blocked(&candidate) {
+            number += 1;
+            continue;
+        }
         match claim(&candidate, locator)? {
             Claim::Created => break (candidate, true),
             Claim::Reused => break (candidate, false),
@@ -125,6 +129,44 @@ pub(super) fn slugify(title: &str) -> Option<String> {
     } else {
         Some(slug)
     }
+}
+
+pub(super) fn slug_blocked(slug: &str) -> bool {
+    if crate::nostr::sealed_locator(slug) {
+        return true;
+    }
+    const PAGES: &[&str] = &[
+        "about",
+        "api",
+        "legal",
+        "markup",
+        "nojs",
+        "relays",
+        "tor-circuits",
+    ];
+    const FILES: &[&str] = &[
+        super::assets::EDITOR_MODE_JS_PATH,
+        super::assets::HOME_CSS_PATH,
+        super::assets::HOME_JS_PATH,
+        super::assets::HOME_NOSCRIPT_CSS_PATH,
+        super::assets::LOGO_PNG_PATH,
+        super::assets::NOTICE_CSS_PATH,
+        super::assets::NOSTR_JS_PATH,
+        super::assets::POST_CSS_PATH,
+        super::assets::POST_JS_PATH,
+        super::assets::POST_NOSCRIPT_CSS_PATH,
+        super::assets::RELAYS_JS_PATH,
+        super::assets::SECP256K1_JS_PATH,
+        super::assets::THEME_JS_PATH,
+        super::assets::WRITEMARK_CSS_PATH,
+        super::assets::WRITEMARK_JS_PATH,
+        super::assets::WRITEMARK_LIVE_JS_PATH,
+        "/robots.txt",
+    ];
+    PAGES.contains(&slug)
+        || FILES
+            .iter()
+            .any(|path| path.strip_prefix('/') == Some(slug))
 }
 
 enum Claim {

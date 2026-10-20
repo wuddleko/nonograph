@@ -1083,10 +1083,11 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
         "This site stores the event id and the relays. It does not store the writing or the key."
     ));
     assert!(html.contains("Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key."));
-    assert!(html
-        .contains("https://&lt;site&gt;/s/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key"));
-    assert!(html.contains("https://&lt;site&gt;/s/&lt;locator&gt;#key"));
-    assert!(html.contains("https://&lt;site&gt;/t/&lt;title&gt;#key"));
+    assert!(
+        html.contains("https://&lt;site&gt;/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key")
+    );
+    assert!(html.contains("https://&lt;site&gt;/&lt;locator&gt;#key"));
+    assert!(html.contains("https://&lt;site&gt;/&lt;title&gt;#key"));
     assert!(!html.contains("ends in -2"));
     assert!(!html.contains("href=\"/about\">about</a>"));
     assert!(html.contains(">legal</a>"));
@@ -1340,7 +1341,7 @@ fn nojs_sealed_address_says_to_run_locally() {
     assert!(body.contains("<a href=\"https://github.com/wuddleko/nostorgraph\">source code</a>"));
     assert!(!body.contains(&key));
     assert!(!body.contains("hint.example"));
-    assert!(!body.contains(&format!("/s/{locator}/{event_id}")));
+    assert!(!body.contains(&format!("/{locator}/{event_id}")));
     let plain = client
         .get(format!("/nojs/s/{locator}/{event_id}?k=not-a-secret"))
         .dispatch();
@@ -1982,7 +1983,7 @@ fn seal_link_parts(href: &str) -> ParsedSealLink {
     let (before, key) = href.split_once('#').unwrap_or_else(|| panic!("{href}"));
     assert!(!before.contains("?k=") && !before.contains("&k="), "{href}");
     let (path, query) = before.split_once('?').unwrap_or((before, ""));
-    let rest = path.strip_prefix("/s/").unwrap_or_else(|| panic!("{href}"));
+    let rest = path.strip_prefix('/').unwrap_or_else(|| panic!("{href}"));
     let (locator, event_id) = match rest.split_once('/') {
         Some((locator, event_id)) => (locator, Some(event_id.to_string())),
         None => (rest, None),
@@ -2032,7 +2033,7 @@ fn seal_address_keeps_the_event_id_until_it_is_omitted() {
     assert!(link.event_id.is_none());
     assert_eq!(link.key, key);
     assert!(link.query.is_empty());
-    assert_eq!(short, format!("/s/0123456789abcdef0123#{key}"));
+    assert_eq!(short, format!("/0123456789abcdef0123#{key}"));
 }
 
 #[test]
@@ -2189,7 +2190,9 @@ fn a_note_at_the_plaintext_cap_seals_and_an_over_cap_payload_keeps_the_error() {
     let href = create_location_with_cookie(&form, &config, "", Some(&relays));
     assert!(std::fs::read_dir(temp.path().join("content")).is_err());
     set_nojs_test_accepted(None);
-    assert!(href.starts_with("/s/"), "{href}");
+    let link = seal_link_parts(&href);
+    assert_eq!(link.locator.len(), nostorgraph_nip44::LOCATOR_LEN, "{href}");
+    assert!(link.event_id.is_some(), "{href}");
     assert!(href.contains('#'), "{href}");
     assert!(!href.contains("error="));
 
@@ -2410,10 +2413,10 @@ fn the_long_share_link_names_every_accepted_relay() {
     assert_eq!(
         long_seal_href(locator, &event_id, key, &accepted),
         format!(
-            "/s/{locator}/{event_id}?r=wss%3A%2F%2Fpin.example&r=wss%3A%2F%2Frelay.extra.example&r=wss%3A%2F%2Fthird.example&r=wss%3A%2F%2Ffourth.example#{key}"
+            "/{locator}/{event_id}?r=wss%3A%2F%2Fpin.example&r=wss%3A%2F%2Frelay.extra.example&r=wss%3A%2F%2Fthird.example&r=wss%3A%2F%2Ffourth.example#{key}"
         )
     );
-    assert_eq!(short_seal_href(locator, key), format!("/s/{locator}#{key}"));
+    assert_eq!(short_seal_href(locator, key), format!("/{locator}#{key}"));
     let mut many = vec!["wss://127.0.0.1".to_string()];
     for index in 0..8 {
         many.push(format!("wss://hint{index}.example"));
@@ -2472,6 +2475,46 @@ function publicRelayUrl(relay) {
     );
     program.push_str(&home[key_at..key_end]);
     program.push_str(&home[href_at..href_end]);
+    let slug_at = home.find("function shareTitleSlug(").expect("title slug");
+    let slug_end = home[slug_at..]
+        .find("\n            function showShareLinks(")
+        .map(|offset| slug_at + offset)
+        .expect("share links follow the title slug");
+    program.push_str(&home[slug_at..slug_end]);
+    let blocked = {
+        let mut names = vec![
+            "about".to_string(),
+            "api".to_string(),
+            "legal".to_string(),
+            "markup".to_string(),
+            "nojs".to_string(),
+            "relays".to_string(),
+            "tor-circuits".to_string(),
+            "0123456789abcdef0123".to_string(),
+        ];
+        for path in [
+            EDITOR_MODE_JS_PATH,
+            HOME_CSS_PATH,
+            HOME_JS_PATH,
+            HOME_NOSCRIPT_CSS_PATH,
+            LOGO_PNG_PATH,
+            NOTICE_CSS_PATH,
+            NOSTR_JS_PATH,
+            POST_CSS_PATH,
+            POST_JS_PATH,
+            POST_NOSCRIPT_CSS_PATH,
+            RELAYS_JS_PATH,
+            SECP256K1_JS_PATH,
+            THEME_JS_PATH,
+            WRITEMARK_CSS_PATH,
+            WRITEMARK_JS_PATH,
+            WRITEMARK_LIVE_JS_PATH,
+        ] {
+            names.push(path.strip_prefix('/').expect(path).to_string());
+        }
+        names.push("robots.txt".to_string());
+        serde_json::to_string(&names).unwrap()
+    };
     program.push_str(&format!(
         r##"
 const href = longSealHref({{
@@ -2487,7 +2530,7 @@ const short = shortSealHref({{
     hints: {hints},
 }});
 const expected =
-    "/s/0123456789abcdef0123/" +
+    "/0123456789abcdef0123/" +
     "ab".repeat(32) +
     "?r=" +
     encodeURIComponent("wss://pin.example") +
@@ -2501,8 +2544,40 @@ const expected =
 if (href !== expected) {{
     throw new Error(href);
 }}
-if (short !== "/s/0123456789abcdef0123#seal-key") {{
+if (short !== "/0123456789abcdef0123#seal-key") {{
     throw new Error(short);
+}}
+if (typeof TextEncoder === "undefined") {{
+    function TextEncoder() {{}}
+    TextEncoder.prototype.encode = function (text) {{
+        return {{ length: unescape(encodeURIComponent(text)).length }};
+    }};
+}}
+if (typeof URL === "undefined") {{
+    function URL(path, origin) {{
+        this.href = String(origin).replace(/\/$/, "") + path;
+    }}
+}}
+const blocked = {blocked};
+for (const name of blocked) {{
+    const got = shareTitleSlug(name);
+    if (got !== name + "-2") {{
+        throw new Error(name + " -> " + got);
+    }}
+}}
+if (shareTitleSlug("About") !== "About") {{
+    throw new Error(shareTitleSlug("About"));
+}}
+if (shareTitleSlug("0123456789ABCDEF0123") !== "0123456789ABCDEF0123") {{
+    throw new Error(shareTitleSlug("0123456789ABCDEF0123"));
+}}
+if (shareTitleSlug("Hello") !== "Hello") {{
+    throw new Error(shareTitleSlug("Hello"));
+}}
+var location = {{ origin: "https://notes.example" }};
+const titled = titleShareHref({{ key: "seal-key" }}, "about-2");
+if (titled !== "https://notes.example/about-2#seal-key") {{
+    throw new Error(titled);
 }}
 "##
     ));
@@ -2855,6 +2930,388 @@ fn a_multibyte_title_opens_and_a_failed_save_leaves_nothing() {
             "{slug}"
         );
     }
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_root_address_opens_the_note_and_a_site_page_stays() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let long_locator = "a1a1a1a1a1a1a1a1a1a1";
+    let short_locator = "b2b2b2b2b2b2b2b2b2b2";
+    let title_locator = "c3c3c3c3c3c3c3c3c3c3";
+    let long_note = crate::nostr::sign_sealed_note("kept", long_locator, 1_700_000_000);
+    let short_note = crate::nostr::sign_sealed_note("kept", short_locator, 1_700_000_000);
+    let title_note = crate::nostr::sign_sealed_note("kept", title_locator, 1_700_000_000);
+    let long_id = long_note.id_hex();
+    lock_for(short_locator);
+    super::seal_row::remember(
+        short_locator,
+        &short_note.id_hex(),
+        &["wss://saved.example".to_string()],
+        &seal_claim(short_locator),
+    )
+    .expect("short row");
+    lock_for(title_locator);
+    assert_eq!(
+        super::title_link::save(
+            "Hello",
+            title_locator,
+            &title_note.id_hex(),
+            &["wss://title.example".to_string()],
+            &seal_claim(title_locator),
+        )
+        .expect("title slug"),
+        "Hello"
+    );
+
+    let mut config = crate::config::Config::default();
+    config.nostr.timeout_secs = 1;
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![
+            super::index,
+            super::nojs_index,
+            super::about_page,
+            super::legal_page,
+            super::api_page,
+            super::markup_page,
+            super::nojs_static_page,
+            super::relays_page,
+            super::tor_circuits,
+            super::robots_txt,
+            super::logo_png,
+            super::home_js,
+            super::root_link_view,
+            super::root_sealed_view,
+            super::sealed_locator_view,
+            super::sealed_view,
+            super::title_view,
+        ],
+    ))
+    .expect("root routes mount beside the site pages");
+
+    for path in [
+        "/",
+        "/nojs",
+        "/about",
+        "/legal",
+        "/api",
+        "/markup",
+        "/nojs/about",
+        "/relays",
+        "/tor-circuits",
+        "/robots.txt",
+        "/logo.png",
+        "/home.js",
+    ] {
+        let page = client.get(path).dispatch();
+        assert_eq!(page.status(), Status::Ok, "{path}");
+        if path == "/about" {
+            let html = page.into_string().unwrap();
+            assert!(html.contains("A Minimalist Publishing Platform"));
+            assert!(!html.contains("id=\"sealed-event\""));
+        }
+    }
+
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://hint.example", &long_note.event_json);
+    answers.answer("wss://saved.example", &short_note.event_json);
+    answers.answer("wss://title.example", &title_note.event_json);
+
+    let long = client
+        .get(format!(
+            "/{long_locator}/{long_id}?r=wss%3A%2F%2Fhint.example"
+        ))
+        .dispatch();
+    assert_eq!(long.status(), Status::Ok);
+    let long_html = long.into_string().unwrap();
+    assert!(long_html.contains("id=\"sealed-event\""));
+    assert!(!long_html.contains("id=\"sealed-locator\""));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://hint.example".to_string()]
+    );
+    let long_again = client
+        .get(format!(
+            "/s/{long_locator}/{long_id}?r=wss%3A%2F%2Fhint.example"
+        ))
+        .dispatch();
+    assert_eq!(long_again.status(), Status::Ok);
+
+    let short = client
+        .get(format!("/{short_locator}?r=wss%3A%2F%2Fother.example"))
+        .dispatch();
+    assert_eq!(short.status(), Status::Ok);
+    let short_html = short.into_string().unwrap();
+    assert!(short_html.contains("id=\"sealed-event\""));
+    assert!(!short_html.contains("id=\"sealed-locator\""));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://saved.example".to_string()]
+    );
+    let short_again = client.get(format!("/s/{short_locator}")).dispatch();
+    assert_eq!(short_again.status(), Status::Ok);
+
+    let title = client.get("/Hello?r=wss%3A%2F%2Fother.example").dispatch();
+    assert_eq!(title.status(), Status::Ok);
+    let title_html = title.into_string().unwrap();
+    assert!(title_html.contains(&format!(
+        r#"<div id="sealed-locator" hidden>{title_locator}</div>"#
+    )));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://title.example".to_string()]
+    );
+    let title_again = client.get("/t/Hello").dispatch();
+    assert_eq!(title_again.status(), Status::Ok);
+
+    let missing_title = client.get("/Missing").dispatch();
+    assert_eq!(missing_title.status(), Status::NotFound);
+    let missing_short = client.get("/fedcba9876543210abcd").dispatch();
+    assert_eq!(missing_short.status(), Status::NotFound);
+    let upper = client.get("/0123456789ABCDEF0123").dispatch();
+    assert_eq!(upper.status(), Status::NotFound);
+    let bad_long = client.get(format!("/{long_locator}/abcd")).dispatch();
+    assert_eq!(bad_long.status(), Status::NotFound);
+    let two = client.get("/about/extra").dispatch();
+    assert_eq!(two.status(), Status::NotFound);
+}
+
+#[test]
+#[serial(nojs_sealed_fetch)]
+fn a_reserved_title_takes_the_next_slug_and_an_old_one_stays() {
+    struct ClearFetch;
+    impl Drop for ClearFetch {
+        fn drop(&mut self) {
+            set_nojs_test_fetch(NojsTestFetch::Live);
+            NOJS_RECORD_HINTS.store(false, std::sync::atomic::Ordering::Relaxed);
+            *NOJS_FETCH_HINTS.lock().expect("nojs fetch hints") = Vec::new();
+        }
+    }
+    let _clear = ClearFetch;
+
+    for name in [
+        "about",
+        "api",
+        "legal",
+        "markup",
+        "nojs",
+        "relays",
+        "tor-circuits",
+        "0123456789abcdef0123",
+    ] {
+        assert!(super::title_link::slug_blocked(name), "{name}");
+    }
+    for path in [
+        HOME_CSS_PATH,
+        HOME_JS_PATH,
+        NOSTR_JS_PATH,
+        SECP256K1_JS_PATH,
+        POST_CSS_PATH,
+        POST_JS_PATH,
+        POST_NOSCRIPT_CSS_PATH,
+        HOME_NOSCRIPT_CSS_PATH,
+        WRITEMARK_JS_PATH,
+        WRITEMARK_LIVE_JS_PATH,
+        WRITEMARK_CSS_PATH,
+        NOTICE_CSS_PATH,
+        THEME_JS_PATH,
+        EDITOR_MODE_JS_PATH,
+        RELAYS_JS_PATH,
+        LOGO_PNG_PATH,
+    ] {
+        let name = path.strip_prefix('/').expect(path);
+        assert!(!name.contains('/'), "{path}");
+        assert!(super::title_link::slug_blocked(name), "{path}");
+    }
+    assert!(super::title_link::slug_blocked("robots.txt"));
+    for path in [
+        PAGE_JS_PATH,
+        PAGE_WASM_PATH,
+        PDF_JS_PATH,
+        PDF_WASM_PATH,
+        PDF_LICENSE_PATH,
+    ] {
+        let name = path.strip_prefix('/').expect(path);
+        assert!(name.contains('/'), "{path}");
+        assert!(!super::title_link::slug_blocked(name), "{path}");
+    }
+    for name in [
+        "About",
+        "s",
+        "t",
+        "page",
+        "pdf",
+        "0123456789abcdef012",
+        "0123456789ABCDEF0123",
+    ] {
+        assert!(!super::title_link::slug_blocked(name), "{name}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let _rows = super::seal_row::SealRowDirGuard::set(dir.path());
+    let old = "aaaaaaaaaaaaaaaaaaaa";
+    let fresh = "bbbbbbbbbbbbbbbbbbbb";
+    let other = "cccccccccccccccccccc";
+    let hex = "dddddddddddddddddddd";
+    let hex_title = "0123456789abcdef0123";
+    let old_note = crate::nostr::sign_sealed_note("kept", old, 1_700_000_000);
+    let fresh_note = crate::nostr::sign_sealed_note("kept", fresh, 1_700_000_000);
+    let hex_note = crate::nostr::sign_sealed_note("kept", hex, 1_700_000_000);
+    let event_id = "ab".repeat(32);
+    let save = |title: &str, locator: &str, id: &str, relay: &str| {
+        lock_for(locator);
+        super::title_link::save(
+            title,
+            locator,
+            id,
+            &[relay.to_string()],
+            &seal_claim(locator),
+        )
+        .unwrap_or_else(|_| panic!("{title}"))
+    };
+    let slug_file = |name: &str| dir.path().join("title-slugs").join(name);
+
+    assert_eq!(
+        save("About", other, &event_id, "wss://saved.example"),
+        "About"
+    );
+    std::fs::remove_file(slug_file("About")).unwrap();
+    for entry in std::fs::read_dir(dir.path().join("title-for")).unwrap() {
+        let path = entry.unwrap().path();
+        if std::fs::read_to_string(&path).ok().as_deref() == Some("About") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    assert_eq!(
+        save("about", old, &old_note.id_hex(), "wss://old.example"),
+        "about-2"
+    );
+    assert!(!slug_file("about").exists());
+    std::fs::rename(slug_file("about-2"), slug_file("about")).unwrap();
+    let mut planted = false;
+    for entry in std::fs::read_dir(dir.path().join("title-for")).unwrap() {
+        let path = entry.unwrap().path();
+        if std::fs::read_to_string(&path).ok().as_deref() == Some("about-2") {
+            std::fs::write(&path, "about").unwrap();
+            planted = true;
+        }
+    }
+    assert!(planted);
+    assert_eq!(
+        save("about", old, &old_note.id_hex(), "wss://old.example"),
+        "about"
+    );
+    assert_eq!(std::fs::read_to_string(slug_file("about")).unwrap(), old);
+    assert!(!slug_file("about-2").exists());
+
+    assert_eq!(
+        save(hex_title, hex, &hex_note.id_hex(), "wss://hex.example",),
+        format!("{hex_title}-2")
+    );
+    assert!(!slug_file(hex_title).exists());
+    assert_eq!(
+        save(
+            "0123456789ABCDEF0123",
+            "eeeeeeeeeeeeeeeeeeee",
+            &event_id,
+            "wss://saved.example",
+        ),
+        "0123456789ABCDEF0123"
+    );
+    assert_eq!(
+        save(
+            "logo.png",
+            "ffffffffffffffffffff",
+            &event_id,
+            "wss://saved.example",
+        ),
+        "logo.png-2"
+    );
+    assert!(!slug_file("logo.png").exists());
+    assert_eq!(
+        save("about", fresh, &fresh_note.id_hex(), "wss://new.example"),
+        "about-2"
+    );
+    assert_eq!(std::fs::read_to_string(slug_file("about")).unwrap(), old);
+    assert_eq!(
+        std::fs::read_to_string(slug_file("about-2")).unwrap(),
+        fresh
+    );
+
+    let mut config = crate::config::Config::default();
+    config.nostr.timeout_secs = 1;
+    let client = rocket::local::blocking::Client::tracked(rocket::build().manage(config).mount(
+        "/",
+        routes![super::about_page, super::root_link_view, super::title_view,],
+    ))
+    .unwrap();
+    set_nojs_test_fetch(NojsTestFetch::Live);
+    NOJS_RECORD_HINTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let answers = crate::nostr::RelayAnswer::begin();
+    answers.answer("wss://old.example", &old_note.event_json);
+    answers.answer("wss://new.example", &fresh_note.event_json);
+    answers.answer("wss://hex.example", &hex_note.event_json);
+
+    let site = client.get("/about").dispatch();
+    assert_eq!(site.status(), Status::Ok);
+    let site_html = site.into_string().unwrap();
+    assert!(site_html.contains("A Minimalist Publishing Platform"));
+    assert!(!site_html.contains("id=\"sealed-locator\""));
+
+    let kept = client.get("/t/about").dispatch();
+    assert_eq!(kept.status(), Status::Ok);
+    assert!(kept
+        .into_string()
+        .unwrap()
+        .contains(&format!(r#"<div id="sealed-locator" hidden>{old}</div>"#)));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://old.example".to_string()]
+    );
+
+    let opened = client.get("/about-2").dispatch();
+    assert_eq!(opened.status(), Status::Ok);
+    assert!(opened
+        .into_string()
+        .unwrap()
+        .contains(&format!(r#"<div id="sealed-locator" hidden>{fresh}</div>"#)));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://new.example".to_string()]
+    );
+    let opened_old = client.get("/t/about-2").dispatch();
+    assert_eq!(opened_old.status(), Status::Ok);
+
+    let bare_hex = client.get(format!("/{hex_title}")).dispatch();
+    assert_eq!(bare_hex.status(), Status::NotFound);
+    assert!(!bare_hex.into_string().unwrap().contains(hex));
+    let hex_page = client.get(format!("/{hex_title}-2")).dispatch();
+    assert_eq!(hex_page.status(), Status::Ok);
+    assert!(hex_page
+        .into_string()
+        .unwrap()
+        .contains(&format!(r#"<div id="sealed-locator" hidden>{hex}</div>"#)));
+    assert_eq!(
+        nojs_fetch_hints_seen(),
+        vec!["wss://hex.example".to_string()]
+    );
+    let hex_old = client.get(format!("/t/{hex_title}-2")).dispatch();
+    assert_eq!(hex_old.status(), Status::Ok);
 }
 
 #[test]
@@ -3809,7 +4266,8 @@ fn publish_signs_once_and_posts_the_event_without_the_key() {
         .map(|offset| href + offset)
         .unwrap();
     let href_body = &home[href..href_end];
-    assert!(href_body.contains("\"/s/\""));
+    assert!(href_body.contains("\"/\" + locator"));
+    assert!(href_body.contains("\"/\" + encodeURIComponent(slug)"));
     assert!(href_body.contains("result.locator"));
     assert!(href_body.contains("result.event.id"));
     assert!(href_body.contains("result.hints"));
@@ -3875,7 +4333,8 @@ fn homepage_js_can_send_a_public_long_form_note() {
         .map(|offset| href + offset)
         .unwrap();
     let href_body = &home[href..href_end];
-    assert!(href_body.contains("\"/s/\""));
+    assert!(href_body.contains("\"/\" + locator"));
+    assert!(href_body.contains("\"/\" + encodeURIComponent(slug)"));
     assert!(href_body.contains("result.locator"));
     assert!(href_body.contains("result.event.id"));
     assert!(href_body.contains("result.hints"));
@@ -5764,7 +6223,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
         nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
-                "/s/{}/{}?r=wss%3A%2F%2Fnojs-seal.invalid#{}",
+                "/{}/{}?r=wss%3A%2F%2Fnojs-seal.invalid#{}",
                 accepted.locator, accepted.event_id, key
             )
             .as_str()
@@ -5781,7 +6240,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
         nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
-                "/s/{}/{}?r=wss%3A%2F%2Frelay.primal.net#{}",
+                "/{}/{}?r=wss%3A%2F%2Frelay.primal.net#{}",
                 accepted.locator, accepted.event_id, accepted.k
             )
             .as_str()
@@ -5795,7 +6254,7 @@ fn nojs_create_seals_and_publishes_inside_the_blocking_task() {
         nojs_sealed_location(&accepted).as_deref(),
         Some(
             format!(
-                "/s/{}/{}?r=wss%3A%2F%2Frelay.primal.net&r=wss%3A%2F%2Fnojs-seal.invalid#{}",
+                "/{}/{}?r=wss%3A%2F%2Frelay.primal.net&r=wss%3A%2F%2Fnojs-seal.invalid#{}",
                 accepted.locator, accepted.event_id, accepted.k
             )
             .as_str()
@@ -5875,7 +6334,9 @@ fn nojs_create_takes_a_public_publish_slot_until_it_finishes() {
 
         held.pop();
         let href = create_location_with_cookie(&form, &config, "", Some(&relays));
-        assert!(href.starts_with("/s/"), "{href}");
+        let link = seal_link_parts(&href);
+        assert_eq!(link.locator.len(), nostorgraph_nip44::LOCATOR_LEN, "{href}");
+        assert!(link.event_id.is_some(), "{href}");
         let released = nojs_publish_slot().expect("publish released the publish slot");
         drop(released);
     }));

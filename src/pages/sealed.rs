@@ -40,9 +40,9 @@ const SEALED_ABOUT: &str = r##"<div class="bottom-sheet-overlay" id="help-sheet"
 <div class="help-section">
 <h3>Links</h3>
 <p>Store offers three addresses. A reader only has the one they were sent. The key is the part after #. This site never sees it.</p>
-<p><strong>Long.</strong> Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #.<br><code>https://&lt;site&gt;/s/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key</code></p>
-<p><strong>Short.</strong> This site stores the event id and the relays. It does not store the writing or the key.<br><code>https://&lt;site&gt;/s/&lt;locator&gt;#key</code></p>
-<p><strong>Title.</strong> Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key.<br><code>https://&lt;site&gt;/t/&lt;title&gt;#key</code></p>
+<p><strong>Long.</strong> Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #.<br><code>https://&lt;site&gt;/&lt;locator&gt;/&lt;event-id&gt;?r=&lt;relay&gt;#key</code></p>
+<p><strong>Short.</strong> This site stores the event id and the relays. It does not store the writing or the key.<br><code>https://&lt;site&gt;/&lt;locator&gt;#key</code></p>
+<p><strong>Title.</strong> Least private. This site stores the title, the event id, and the relays. The title is in the address. It does not store the writing or the key.<br><code>https://&lt;site&gt;/&lt;title&gt;#key</code></p>
 </div>
 <div class="help-section">
 <h3>Principles</h3>
@@ -171,6 +171,28 @@ fn sealed_shell_for(events: &[String], config: &Config, locator: Option<&str>) -
 pub(crate) struct SealHints {
     #[field(name = "r", default = Vec::<String>::new())]
     r: Vec<String>,
+}
+
+#[get("/<segment>?<hints..>")]
+pub async fn root_link_view(
+    segment: &str,
+    hints: SealHints,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    if crate::nostr::sealed_locator(segment) {
+        return sealed_locator_view(segment, hints, config).await;
+    }
+    title_view(segment, config).await
+}
+
+#[get("/<locator>/<event_id>?<hints..>")]
+pub async fn root_sealed_view(
+    locator: &str,
+    event_id: &str,
+    hints: SealHints,
+    config: &State<Config>,
+) -> Result<content::RawHtml<String>, ViewErr> {
+    sealed_view(locator, event_id, hints, config).await
 }
 
 #[get("/s/<locator>?<hints..>")]

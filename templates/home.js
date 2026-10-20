@@ -471,7 +471,7 @@ function paintSavedRelayLists(doc, storage) {
             }
 
             function sealHref(locator, eventId, key, hints) {
-                let href = "/s/" + locator;
+                let href = "/" + locator;
                 if (eventId) {
                     href += "/" + eventId;
                 }
@@ -593,7 +593,7 @@ function paintSavedRelayLists(doc, storage) {
                     return { ok: false, href: null };
                 }
                 const href = new URL(
-                    "/t/" + encodeURIComponent(slug) + "#" + result.key,
+                    "/" + encodeURIComponent(slug) + "#" + result.key,
                     origin,
                 ).href;
                 paintShareUrl(
@@ -742,7 +742,38 @@ function paintSavedRelayLists(doc, storage) {
                 if (!slug || slug === "." || slug === "..") {
                     return "";
                 }
-                return slug;
+                const reserved =
+                    /^[0-9a-f]{20}$/.test(slug) ||
+                    [
+                        "about",
+                        "api",
+                        "legal",
+                        "markup",
+                        "nojs",
+                        "relays",
+                        "tor-circuits",
+                        "editor-mode.js",
+                        "home.css",
+                        "home.js",
+                        "home-noscript.css",
+                        "logo.png",
+                        "notice.css",
+                        "nostr.js",
+                        "post.css",
+                        "post.js",
+                        "post-noscript.css",
+                        "relays.js",
+                        "secp256k1.js",
+                        "theme.js",
+                        "writemark.css",
+                        "writemark.js",
+                        "writemark-live.js",
+                        "robots.txt",
+                    ].includes(slug);
+                if (!reserved) {
+                    return slug;
+                }
+                return slug + "-2";
             }
 
             function titleShareHref(result, slug) {
@@ -751,7 +782,7 @@ function paintSavedRelayLists(doc, storage) {
                     return "";
                 }
                 return new URL(
-                    "/t/" + encodeURIComponent(slug) + "#" + result.key,
+                    "/" + encodeURIComponent(slug) + "#" + result.key,
                     origin,
                 ).href;
             }

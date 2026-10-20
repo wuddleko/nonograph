@@ -38,7 +38,8 @@ pub(crate) use layout::{fill_layout, mode_href, mode_label, not_found_html, post
 pub use relays::{nojs_relays_page, nojs_relays_update, relays_page};
 pub(crate) use sealed::{fetch_sealed_by_id, sealed_shell};
 pub use sealed::{
-    nojs_sealed_locator_view, nojs_sealed_view, sealed_locator_view, sealed_view, title_view,
+    nojs_sealed_locator_view, nojs_sealed_view, root_link_view, root_sealed_view,
+    sealed_locator_view, sealed_view, title_view,
 };
 pub use static_pages::{about_page, api_page, legal_page, markup_page, nojs_static_page};
 pub(crate) use static_pages::{build_static_page, BuiltPage};

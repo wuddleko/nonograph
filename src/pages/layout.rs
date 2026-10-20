@@ -126,7 +126,7 @@ pub(super) struct SealAddress<'a> {
 }
 
 pub(super) fn seal_href(address: &SealAddress<'_>) -> String {
-    let mut href = format!("/s/{}", address.locator);
+    let mut href = format!("/{}", address.locator);
     if let Some(event_id) = address.event_id {
         href.push('/');
         href.push_str(event_id);

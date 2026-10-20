@@ -378,6 +378,8 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
                 pages::remember_short_link,
                 pages::remember_title_link,
                 pages::title_view,
+                pages::root_link_view,
+                pages::root_sealed_view,
                 pages::tor_circuits,
                 pages::assign_tor_circuits,
                 pages::sealed_view,
