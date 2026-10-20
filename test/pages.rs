@@ -1009,6 +1009,12 @@ fn save_reads_the_note_in_the_tab_and_names_the_file_from_the_title() {
     assert!(save.contains("fields.title.trim(), fields.alias.trim(), html"));
     assert!(save.contains("cleaned || \"note\""));
     assert!(save.contains("savePdf(fields);"));
+    let chosen = save.find("choice.getAttribute(\"data-save\")").unwrap();
+    let after_choice = &save[chosen..];
+    let markdown = after_choice.find("saveMarkdown(fields);").unwrap();
+    let pdf = after_choice.find("savePdf(fields);").unwrap();
+    assert!(after_choice[..markdown].contains("setSaveOpen(false);"));
+    assert!(after_choice[markdown..pdf].contains("setSaveOpen(false);"));
     assert_eq!(save.matches("await ").count(), 1);
     assert!(!save.contains("page.note_pdf"));
     assert!(!save.contains("fetch("));
@@ -1186,6 +1192,30 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(about_body.contains("classList.remove(\"is-open\")"));
     assert!(!about_body.contains("location.hash"));
     assert!(!about_body.contains("location.href"));
+    let save_bind = nostr.find("function bindSealedSave(").unwrap();
+    let save_bind_end = nostr[save_bind..]
+        .find("\nasync function verifySealedEvent")
+        .unwrap();
+    let save_bind_body = &nostr[save_bind..save_bind + save_bind_end];
+    let save_guard = save_bind_body
+        .find("getElementById(\"sealed-open\")")
+        .unwrap();
+    let save_note = save_bind_body
+        .find("querySelector(\".save-note\")")
+        .unwrap();
+    let save_bound = save_bind_body.find("dataset.bound").unwrap();
+    assert!(save_bind_body.contains("getElementById(\"sealed-open\")) return"));
+    assert!(save_guard < save_note && save_note < save_bound);
+    let sealed_choice = save_bind_body
+        .find("choice.getAttribute(\"data-save\")")
+        .unwrap();
+    let after_sealed_choice = &save_bind_body[sealed_choice..];
+    let sealed_markdown = after_sealed_choice
+        .find("saveSealedMarkdown(fields);")
+        .unwrap();
+    let sealed_pdf = after_sealed_choice.find("saveSealedPdf(fields);").unwrap();
+    assert!(after_sealed_choice[..sealed_markdown].contains("setSealedSaveOpen(false);"));
+    assert!(after_sealed_choice[sealed_markdown..sealed_pdf].contains("setSealedSaveOpen(false);"));
     assert!(!footer_body.contains("?k="));
     assert!(!footer_body.contains("/nojs/s/"));
     assert!(!footer_body.contains("secretFromFragment"));

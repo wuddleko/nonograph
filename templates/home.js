@@ -1136,10 +1136,13 @@ function paintSavedRelayLists(doc, storage) {
                     const kind = choice.getAttribute("data-save");
                     if (kind === "markdown") {
                         clearSaveError();
+                        setSaveOpen(false);
                         saveMarkdown(fields);
                         return;
                     }
                     if (kind !== "pdf") return;
+                    clearSaveError();
+                    setSaveOpen(false);
                     savePdf(fields);
                 });
             }

@@ -844,6 +844,7 @@ function setSealedSaveOpen(open) {
 }
 
 function bindSealedSave() {
+    if (!document.getElementById("sealed-open")) return;
     const root = document.querySelector(".save-note");
     if (!root || root.dataset.bound === "true") return;
     root.dataset.bound = "true";
@@ -868,10 +869,13 @@ function bindSealedSave() {
         const kind = choice.getAttribute("data-save");
         if (kind === "markdown") {
             clearSealedSaveError();
+            setSealedSaveOpen(false);
             saveSealedMarkdown(fields);
             return;
         }
         if (kind !== "pdf") return;
+        clearSealedSaveError();
+        setSealedSaveOpen(false);
         saveSealedPdf(fields);
     });
 }
