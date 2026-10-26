@@ -1242,6 +1242,13 @@
             .format-markdown {
                 display: none;
             }
+            @media (max-width: 999px) {
+                .footer .save-formats {
+                    position: static;
+                    left: auto;
+                    top: auto;
+                }
+            }
             @media (max-width: 768px) {
                 .footer {
                     font-size: 15px;

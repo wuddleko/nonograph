@@ -458,8 +458,6 @@ class WritemarkEditorElement extends HTMLElement {
     this._paintedOffsets = new WeakMap();
     this._paintedChecks = new WeakMap();
     this._spellEditable = null;
-    this._sourceFormatTimer = 0;
-    this._idleFormattedKey = "";
     this._actions = new Map();
     this._providers = new Map();
     this._completion = { open: false, providerId: null, match: null, items: [], activeIndex: 0, requestId: 0, abort: null };
@@ -520,9 +518,6 @@ class WritemarkEditorElement extends HTMLElement {
     this._pageRenderFrame = 0;
     this._deferredPaint = null;
     this._clearOffsetMap();
-    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
-    this._sourceFormatTimer = 0;
-    this._idleFormattedKey = "";
   }
   attributeChangedCallback(name, oldValue, newValue) {
     if (oldValue === newValue) return;
@@ -680,13 +675,27 @@ class WritemarkEditorElement extends HTMLElement {
       .map(item => `<button type="button" part="selection-toolbar-button" data-action="${escapeAttribute(item.actionId)}" title="${escapeAttribute(item.label)}" aria-label="${escapeAttribute(item.label)}" tabindex="-1">${item.html}</button>`)
       .join("");
     // Keep focus/selection in the editor when interacting with the toolbar.
-    this._selectionToolbar.addEventListener("mousedown", event => event.preventDefault());
-    this._selectionToolbar.addEventListener("click", event => {
+    const keepEditorFocus = (event) => {
+      if (event.target.closest?.("button[data-action]")) event.preventDefault();
+    };
+    this._selectionToolbar.addEventListener("mousedown", keepEditorFocus);
+    this._selectionToolbar.addEventListener("touchstart", keepEditorFocus, { passive: false });
+    const runToolbar = (button) => {
+      this._runAction(button.dataset.action, undefined, { source: "toolbar", apply: true });
+      this._updateSelectionToolbar();
+    };
+    this._selectionToolbar.addEventListener("touchend", event => {
       const button = event.target.closest?.("button[data-action]");
       if (!button) return;
       event.preventDefault();
-      this._runAction(button.dataset.action, undefined, { source: "toolbar", apply: true });
-      this._updateSelectionToolbar();
+      this._touchMenuHandled = true;
+      runToolbar(button);
+    });
+    this._selectionToolbar.addEventListener("click", event => {
+      const button = event.target.closest?.("button[data-action]");
+      if (!button || this._touchMenuHandled) { this._touchMenuHandled = false; return; }
+      event.preventDefault();
+      runToolbar(button);
     });
   }
 
@@ -705,10 +714,32 @@ class WritemarkEditorElement extends HTMLElement {
 
     this._liveEditor.addEventListener("focus", () => { if (this._selection.start > this._value.length) this._selection = { start: 0, end: 0, direction: "none" }; }, true);
     this._liveEditor.addEventListener("keydown", event => this._onKeyDown(event));
-    this._liveEditor.addEventListener("keyup", event => this._onNavigationKey(event));
+    this._liveEditor.addEventListener("keyup", event => { this._notePhoneEnter(event); this._onNavigationKey(event); });
     this._liveEditor.addEventListener("beforeinput", event => this._onLiveBeforeInput(event));
     this._liveEditor.addEventListener("input", event => this._onLiveInput(event));
     this._liveEditor.addEventListener("click", event => this._onLiveClick(event));
+    this._liveEditor.addEventListener("touchstart", event => {
+      const preview = event.target?.closest?.("[data-phone-preview]");
+      if (preview) {
+        event.preventDefault();
+        this._fromTouch = true;
+        this._touchTyping = true;
+        this._openPhonePreview(preview, event.touches && event.touches[0]);
+        return;
+      }
+      this._fromTouch = true;
+      this._touchTyping = true;
+      const touch = event.touches && event.touches[0];
+      this._ensureTouchSurface(touch && touch.clientX, touch && touch.clientY);
+      this._sealPhoneFirstLine(this._liveEditor?.querySelector("[data-touch-surface='true']"));
+    }, { passive: false });
+    this._liveEditor.addEventListener("pointerdown", event => {
+      if (event.pointerType !== "touch") return;
+      this._fromTouch = true;
+      this._touchTyping = true;
+      this._ensureTouchSurface(event.clientX, event.clientY);
+      this._sealPhoneFirstLine(this._liveEditor?.querySelector("[data-touch-surface='true']"));
+    }, { passive: true });
     this._liveEditor.addEventListener("mousedown", event => this._onLiveMouseDown(event));
     this._liveEditor.addEventListener("mouseup", () => this._onSelectionChanged());
     this._liveEditor.addEventListener("scroll", () => this._onLiveScroll());
@@ -720,11 +751,42 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveEditor.addEventListener("compositionstart", () => this._onCompositionStart());
     this._liveEditor.addEventListener("compositionend", event => this._onCompositionEnd(event));
 
-    this._completionPopup.addEventListener("mousedown", e => e.preventDefault());
-    this._completionPopup.addEventListener("click", e => { const item = e.target.closest("[data-index]"); if (!item) return; const index = Number(item.dataset.index); if (this._completion.items[index]?.disabled) return; this._completion.activeIndex = index; this._acceptCompletion("pointer"); });
+    this._completionPopup.addEventListener("mousedown", event => {
+      if (event.target.closest?.("[data-index]")) event.preventDefault();
+    });
+    const acceptCompletionItem = (item) => {
+      const index = Number(item.dataset.index);
+      if (this._completion.items[index]?.disabled) return;
+      this._completion.activeIndex = index;
+      this._acceptCompletion("pointer");
+    };
+    this._completionPopup.addEventListener("touchstart", event => {
+      const touch = event.changedTouches && event.changedTouches[0];
+      this._completionTouch = touch ? { x: touch.clientX, y: touch.clientY, moved: false } : null;
+    }, { passive: true });
+    this._completionPopup.addEventListener("touchmove", event => {
+      const touch = event.changedTouches && event.changedTouches[0];
+      const start = this._completionTouch;
+      if (!touch || !start) return;
+      if (Math.abs(touch.clientY - start.y) > 8 || Math.abs(touch.clientX - start.x) > 8) start.moved = true;
+    }, { passive: true });
+    this._completionPopup.addEventListener("touchend", event => {
+      const item = event.target.closest?.("[data-index]");
+      const start = this._completionTouch;
+      this._completionTouch = null;
+      if (!item || !start || start.moved) return;
+      event.preventDefault();
+      this._touchMenuHandled = true;
+      acceptCompletionItem(item);
+    });
+    this._completionPopup.addEventListener("click", event => {
+      const item = event.target.closest?.("[data-index]");
+      if (!item || this._touchMenuHandled) { this._touchMenuHandled = false; return; }
+      acceptCompletionItem(item);
+    });
     this._label.addEventListener("click", event => { event.preventDefault(); this._focusEditable(); });
     this._shadow.addEventListener("focusin", () => { this._focusWithin = true; this._syncSourceForm(); });
-    this._shadow.addEventListener("focusout", () => { queueMicrotask(() => { this._focusWithin = Boolean(this._shadow.activeElement); if (!this._focusWithin) { this._hideSelectionToolbar?.(); this._formatWhenIdle(); } }); });
+    this._shadow.addEventListener("focusout", () => { queueMicrotask(() => { this._focusWithin = Boolean(this._shadow.activeElement); if (!this._focusWithin) { this._touchTyping = false; this._touchSurface = false; this._caretHeld = null; this._hideSelectionToolbar?.(); this._formatWhenIdle(); } }); });
     this._shadow.addEventListener("selectionchange", () => this._onSelectionChanged?.());
   }
 
@@ -899,20 +961,24 @@ class WritemarkEditorElement extends HTMLElement {
     if (opts.recordUndo && changed) this._recordUndo(before, this._snapshot(), opts.undoGroup || opts.source || "api", { coalesce: false });
     if (changed || opts.force || !this._hasRenderedOnce) this._afterValueChanged({ source: opts.source || "api", silent: opts.silent, restoreSelection: opts.preserveSelection !== false, previousValue, changes: changed ? diffTextChange(previousValue, value) : [] });
   }
-  _afterValueChanged({ source = "api", inputType = null, silent = false, restoreSelection = true, previousValue = null, changes = null, defer = false, editable = null } = {}) {
+  _afterValueChanged({ source = "api", inputType = null, silent = false, restoreSelection = true, previousValue = null, changes = null, defer = false, editable = null, skipDom = false } = {}) {
     this._selectAllLevel = 0;
     this._structuredSelection = null;
     if (["user", "keyboard", "paste", "pointer"].includes(source)) {
       this._validationVisible = true;
       this._userEdited = true;
     }
-    this._updateFormValue(); this._updateValidity(); this._renderAll({ restoreSelection, previousValue, changes, defer, editable });
+    this._updateFormValue(); this._updateValidity(); this._renderAll({ restoreSelection, previousValue, changes, defer, editable, skipDom });
     const oldDirty = this._dirty; this._dirty = this._value !== this._defaultValue; if (oldDirty !== this._dirty) this._dispatch("md-dirty-change", { dirty: this._dirty });
     this._updateSelectionToolbar();
     if (!silent) this._dispatch("md-input", { value: this._value, source, inputType });
   }
-  _renderAll({ restoreSelection = true, previousValue = null, changes = null, force = false, defer = false, editable = null } = {}) {
+  _renderAll({ restoreSelection = true, previousValue = null, changes = null, force = false, defer = false, editable = null, skipDom = false } = {}) {
     if (!this._liveEditor) return;
+    if (skipDom) {
+      this._cancelDeferredPaint();
+      return;
+    }
     // Replacing the DOM (or writing the textarea value) ends a Mac accent menu
     // or IME session, so the preview can only land on the first candidate.
     if (this._isComposing || this._holdAccentTarget) {
@@ -1077,8 +1143,15 @@ class WritemarkEditorElement extends HTMLElement {
     }
     if (this._isLiveVisible()) {
       this._renderLive({ previousValue, changes, force, deferredFrame, caretMoved });
-      if (restoreSelection && !this._isSourceActive()) this._restoreLiveSelection(this._selection);
-      this._armSpellcheck();
+      // Rewriting the caret, or swapping the line for formatted HTML, ends an
+      // iPhone composition. The blur handler formats the line instead.
+      if (restoreSelection && !this._isSourceActive() && !this._leaveLiveCaretAlone()) this._restoreLiveSelection(this._selection);
+      if (this._touchTyping && this._value.includes("\n")) {
+        this._touchSurface = false;
+        this._ensureTouchSurface();
+        this._restoreLiveSelection(this._selection);
+      }
+      if (!this._leaveLiveCaretAlone()) this._armSpellcheck();
     }
   }
   _armSpellcheck() {
@@ -1141,6 +1214,11 @@ class WritemarkEditorElement extends HTMLElement {
       this._sourceFormKeyShown = this._sourceFormKey();
       return;
     }
+    if (deferredFrame && this._leaveLiveCaretAlone()) {
+      this._liveBlocks = blocks;
+      this._rebuildLiveIndex();
+      return;
+    }
     const patched = !force && this._tryPatchLiveBlocks(previousBlocks, blocks, changes, previousValue);
     if (!patched) this._renderLiveFull(blocks);
     this._liveBlocks = blocks;
@@ -1193,7 +1271,10 @@ class WritemarkEditorElement extends HTMLElement {
       if (fresh.length !== 1) return false;
       prepared.push({ node: children[index], fresh: fresh[0] });
     }
-    for (const item of prepared) item.node.replaceWith(item.fresh);
+    for (const item of prepared) {
+      if (this._keyboardEditing() && item.node.contains(this._shadow?.activeElement)) continue;
+      item.node.replaceWith(item.fresh);
+    }
     return true;
   }
   _renderLiveFull(blocks) {
@@ -1470,10 +1551,15 @@ class WritemarkEditorElement extends HTMLElement {
     const pad = Number.parseFloat(globalThis.getComputedStyle?.(editor)?.paddingTop || "") || 0;
     const box = editor.clientHeight || 0;
     if (box > 0 && editor.scrollHeight > box + 2) return { y: editor.scrollTop || 0, height: Math.max(line * 8, box) };
-    // The writing page grows with the note and the document scrolls. The
-    // editor's own box is the whole note, so the visible slice is the viewport.
+    // The note fills the editor. The page column scrolls it on a phone; otherwise
+    // the document scrolls and the visible slice is the viewport.
     const rect = editor.getBoundingClientRect();
-    return { y: Math.max(0, -rect.top - pad), height: Math.max(line * 8, viewport) };
+    const scroller = this.closest?.(".container");
+    const overflow = scroller ? globalThis.getComputedStyle?.(scroller)?.overflowY : "";
+    const pane = scroller && scroller.clientHeight > 0 && (overflow === "auto" || overflow === "scroll")
+      ? scroller.clientHeight
+      : viewport;
+    return { y: Math.max(0, -rect.top - pad), height: Math.max(line * 8, pane) };
   }
   _virtualMargin() {
     return this._metrics().line * 18;
@@ -1896,10 +1982,12 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _onLiveScroll() {
     if (this._selectionToolbar && !this._selectionToolbar.hidden) this._positionSelectionToolbar();
-    if (!this._virtualState.active || this._virtualScrollFrame) return;
+    // The page scrolls to keep the caret above the keyboard while a word is
+    // marked. Rebuilding that line here ends the composition.
+    if (!this._virtualState.active || this._virtualScrollFrame || this._isComposing || this._holdAccentTarget) return;
     this._virtualScrollFrame = requestAnimationFrame(() => {
       this._virtualScrollFrame = 0;
-      if (!this._virtualState.active || !this._liveEditor) return;
+      if (!this._virtualState.active || !this._liveEditor || this._isComposing || this._holdAccentTarget) return;
       const blocks = this._liveBlocks?.length ? this._liveBlocks : this._getBlocks();
       if (this._virtualWindowCovers(blocks)) return;
       this._beginVirtualPaint();
@@ -1907,7 +1995,10 @@ class WritemarkEditorElement extends HTMLElement {
         this._renderLiveVirtual(blocks, { fromScroll: true, force: true });
         this._rebuildLiveIndex();
         const sel = this._selection;
-        if (sel && this._isSourceOffsetRendered(sel.start) && this._isSourceOffsetRendered(sel.end)) this._restoreLiveSelection(sel);
+        if (!sel || !this._isSourceOffsetRendered(sel.start) || !this._isSourceOffsetRendered(sel.end)) return;
+        const live = this._readLiveSelection();
+        if (live && live.start === sel.start && live.end === sel.end) return;
+        this._restoreLiveSelection(sel);
       } finally {
         this._endVirtualPaint();
       }
@@ -2047,10 +2138,9 @@ class WritemarkEditorElement extends HTMLElement {
     return true;
   }
   _syncSourceForm() {
+    if (this._touchCaretSession()) return;
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock || this._pointerSelection || this._isComposing) return;
     const key = this._sourceFormKey();
-    if (this._idleFormattedKey && key === this._idleFormattedKey && (this._sourceFormKeyShown ?? "") === "") return;
-    this._idleFormattedKey = "";
     if (this._deferredPaint || this._paintFrame) {
       if (this._deferredPaintBlocked()) return;
       if (this._sourceFormKey() === (this._sourceFormKeyShown ?? "")) return;
@@ -2064,8 +2154,6 @@ class WritemarkEditorElement extends HTMLElement {
       if (this._virtualState.active) return;
     }
     if (key === (this._sourceFormKeyShown ?? "")) return;
-    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
-    this._sourceFormatTimer = 0;
     const previousKey = this._sourceFormKeyShown ?? "";
     this._sourceFormLock = true;
     this._sourceFormKeyShown = key;
@@ -2084,91 +2172,75 @@ class WritemarkEditorElement extends HTMLElement {
     if (editable.dataset.editable === "cell") return true;
     return ["paragraph", "heading", "blockquote", "bullet-list-item", "ordered-list-item", "task-list-item", "blank"].includes(editable.dataset.kind);
   }
-  _scheduleActiveSourceFormat() {
-    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
-    this._sourceFormatTimer = setTimeout(() => {
-      this._sourceFormatTimer = 0;
-      this._formatShownSourceLine();
-    }, 600);
+  _caretVisibleIn(editable) {
+    if (!editable?.isConnected) return false;
+    const sel = this._exposedLiveSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return false;
+    const node = sel.focusNode;
+    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    return Boolean(el && (el === editable || editable.contains(el)));
   }
-  _formatShownSourceLine() {
-    if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
-    if (this._isComposing || this._completion?.open || this._deferredPaintBlocked()) return;
-    if (this._deferredPaint || this._paintFrame) {
-      if (this._deferredPaintBlocked()) return;
-      this._flushDeferredPaint();
-    }
-    const key = this._sourceFormKeyShown ?? "";
-    if (!key) return;
-    const blocks = this._liveBlocks;
-    const indexes = this._sourceFormBlockIndexes(key, blocks);
-    if (!indexes?.length) return;
-    const selection = { ...this._selection };
-    this._sourceFormLock = true;
-    const savedSelection = this._selection;
-    this._selection = { start: -1, end: -1, direction: "none" };
-    let prepared = null;
-    try {
-      prepared = this._planFormattedBlockReplacement(blocks, indexes);
-    } finally {
-      this._selection = savedSelection;
-    }
-    if (!prepared) {
-      this._selection = { start: -1, end: -1, direction: "none" };
-      try {
-        this._renderAll({ restoreSelection: false, force: true });
-      } finally {
-        this._selection = savedSelection;
-      }
-    }
-    this._sourceFormKeyShown = "";
-    this._idleFormattedKey = key;
-    try {
-      if (prepared) {
-        for (const item of prepared) {
-          item.oldNodes[0].replaceWith(...item.fresh);
-          for (const extra of item.oldNodes.slice(1)) extra.remove();
-        }
-        this._rebuildLiveIndex();
-      }
-      this._restoreLiveSelection(selection);
-      this._armSpellcheck();
-    } finally {
-      this._sourceFormLock = false;
-    }
+  _keyboardCover() {
+    const viewport = window.visualViewport;
+    if (!viewport) return 0;
+    return window.innerHeight - viewport.offsetTop - viewport.height;
   }
-  // Top-level nodes for one block, including a trailing anchor when the block
-  // is the last thing in the note. Built while the caret is outside the block
-  // so the replacement is formatted text.
-  _planFormattedBlockReplacement(blocks, indexes) {
-    const children = Array.from(this._liveEditor.children).filter(node => !node.classList?.contains("md-virtual-spacer"));
-    const planned = [];
-    for (const index of indexes) {
-      const block = blocks[index];
-      if (!block) return null;
-      const nextFrom = blocks[index + 1]?.from ?? Number.POSITIVE_INFINITY;
-      let start = -1;
-      let end = -1;
-      for (let i = 0; i < children.length; i += 1) {
-        const from = Number(children[i].dataset?.from);
-        if (!Number.isFinite(from)) return null;
-        if (from >= block.from && from < nextFrom) {
-          if (start < 0) start = i;
-          end = i + 1;
-        }
-      }
-      if (start < 0) return null;
-      const fresh = Array.from(this._liveFragmentForBlocks([blocks[index]]).children);
-      if (!fresh.length) return null;
-      planned.push({ start, oldNodes: children.slice(start, end), fresh });
+  _keyboardEditing() {
+    if (!this._focusWithin || this._isSourceActive()) return false;
+    return this._touchTyping === true || this._keyboardCover() > 150;
+  }
+  _touchCaretSession() {
+    return this._touchTyping === true && this._focusWithin && !this._isSourceActive();
+  }
+  _ensureTouchSurface(clientX, clientY) {
+    if (this.mode === "source" || !this._liveEditor || !this._touchTyping) return;
+    const blocks = this._liveEditor.querySelectorAll("[data-editable]");
+    const already = this._touchSurface && blocks.length === 1 && blocks[0].dataset.touchSurface === "true";
+    if (already) return;
+    if (!this._value.includes("\n") && blocks.length <= 1) {
+      this._touchSurface = true;
+      return;
     }
-    planned.sort((a, b) => b.start - a.start);
-    return planned;
+    const text = this._value;
+    const line = document.createElement("div");
+    line.className = "md-line md-source-form";
+    line.dataset.editable = "line";
+    line.dataset.kind = "paragraph";
+    line.dataset.touchSurface = "true";
+    line.dataset.from = "0";
+    line.dataset.to = String(text.length);
+    line.contentEditable = this._lineEditable();
+    line.spellcheck = true;
+    if (text.includes("\n")) this._fillPhoneLines(line, text);
+    else line.textContent = text;
+    this._liveEditor.replaceChildren(line);
+    this._paintedOffsets.set(line, { from: 0, to: text.length });
+    this._touchSurface = true;
+    this._focusWithin = true;
+    if (clientX == null || clientY == null) return;
+    let node = null;
+    let offset = 0;
+    const doc = line.ownerDocument;
+    try {
+      const pos = doc.caretPositionFromPoint?.(clientX, clientY, { shadowRoots: [this._shadow] });
+      if (pos) { node = pos.offsetNode; offset = pos.offset; }
+    } catch {}
+    if ((!node || (node !== line && !line.contains(node))) && doc.caretRangeFromPoint) {
+      const range = doc.caretRangeFromPoint(clientX, clientY);
+      if (range) { node = range.startContainer; offset = range.startOffset; }
+    }
+    line.focus();
+    if (!node || (node !== line && !line.contains(node))) return;
+    const sel = this._shadow.getSelection?.() || doc.getSelection?.();
+    try { sel?.setBaseAndExtent?.(node, offset, node, offset); } catch {}
+  }
+  _leaveLiveCaretAlone() {
+    if (!this._touchCaretSession()) return false;
+    const active = this._shadow?.activeElement;
+    const editable = active?.isConnected ? this._closestEditable(active) : null;
+    return Boolean(editable && this._caretVisibleIn(editable));
   }
   _formatWhenIdle() {
-    if (this._sourceFormatTimer) clearTimeout(this._sourceFormatTimer);
-    this._sourceFormatTimer = 0;
-    this._idleFormattedKey = "";
     if (!this._liveEditor || this.mode === "source" || this._sourceFormLock) return;
     if (this._deferredPaint || this._paintFrame) {
       if (this._deferredPaintBlocked()) return;
@@ -2298,7 +2370,27 @@ class WritemarkEditorElement extends HTMLElement {
     if (!this._isComposing) this._scheduleCompletionUpdate();
   }
   _onLiveBeforeInput(event) {
-    if (this._isComposing || event?.isComposing || String(event?.inputType || "").includes("Composition")) return;
+    const inputType = event?.inputType || "";
+    if ((inputType === "insertParagraph" || inputType === "insertLineBreak") && this._keyboardEditing() && !this._completion?.open) {
+      event.preventDefault();
+      this._schedulePhoneReturn(inputType === "insertLineBreak");
+      return;
+    }
+    if (this._touchCaretSession() && (inputType === "deleteContentBackward" || inputType === "deleteContentForward") && this._deletePhonePreviewBoundary(inputType === "deleteContentBackward")) {
+      event.preventDefault();
+      return;
+    }
+    if (this._isComposing || event?.isComposing || String(inputType).includes("Composition")) return;
+    // A finger keyboard has to insert into the line itself. Taking the key
+    // and writing it only into the model leaves the caret hidden and drops
+    // the next letter.
+    if (this._touchCaretSession() && (inputType.startsWith("insert") || inputType.startsWith("delete")) && inputType !== "insertParagraph" && inputType !== "insertLineBreak") {
+      if (!this._beforeInputSnapshot) {
+        const sel = this._modelSelection();
+        this._beforeInputSnapshot = makeSnapshot(this._value, sel.start, sel.end, sel.direction || "none");
+      }
+      return;
+    }
     if (this._editableTextDiffers(this._closestEditable(event?.target))) {
       if (!this._beforeInputSnapshot) {
         const sel = this._modelSelection();
@@ -2308,7 +2400,6 @@ class WritemarkEditorElement extends HTMLElement {
     }
     this._ignoreSelectionChangeCount = 0;
     this._structuredSelection = null;
-    const inputType = event?.inputType || "";
     const inputTarget = this._inputTargetFromBeforeInput(event);
     this._beforeInputTarget = inputTarget;
     if (this._liveSelectionAPI === false && inputTarget) {
@@ -2354,23 +2445,506 @@ class WritemarkEditorElement extends HTMLElement {
     }
     this._beforeInputSnapshot = this._snapshot();
   }
+  _phoneSourceRow(doc, part) {
+    const row = doc.createElement("div");
+    row.dataset.phoneLine = "true";
+    row.style.display = "block";
+    row.style.minHeight = "1.45em";
+    if (part.length) row.append(doc.createTextNode(part));
+    else row.append(doc.createElement("br"));
+    return row;
+  }
+  _phonePreviewRow(block, source) {
+    const html = block.type === "table" ? this._renderTable(block) : liveBlockHtml(block, this._livePaintOptions());
+    const holder = document.createElement("template");
+    holder.innerHTML = html;
+    const kept = [...holder.content.children].filter(node => !String(node.dataset?.editable || "").startsWith("virtual-"));
+    let row = kept[0];
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "md-line";
+      row.append(document.createElement("br"));
+    } else if (kept.length > 1) {
+      const wrap = document.createElement("div");
+      wrap.className = "md-line";
+      wrap.append(...kept);
+      row = wrap;
+    }
+    row.dataset.phoneLine = "true";
+    row.dataset.phonePreview = "true";
+    row._phoneSource = source;
+    row.contentEditable = "false";
+    row.style.display = "block";
+    row.querySelectorAll("[contenteditable], [data-editable]").forEach(node => {
+      node.contentEditable = "false";
+      node.removeAttribute("data-editable");
+    });
+    row.removeAttribute("data-editable");
+    return row;
+  }
+  _fillPhoneLines(line, text, caret = null) {
+    const doc = line.ownerDocument;
+    const source = String(text ?? "");
+    if (caret == null) {
+      const rows = source.split("\n").map(part => this._phoneSourceRow(doc, part));
+      line.replaceChildren(...(rows.length ? rows : [this._phoneSourceRow(doc, "")]));
+      return;
+    }
+    const blocks = parseBlocks(source, this._parseOptions());
+    const point = clamp(caret, 0, source.length);
+    let active = blocks.findIndex(block => point >= block.from && point <= Math.max(block.to, block.from));
+    if (active < 0) active = Math.max(0, blocks.length - 1);
+    const rows = [];
+    blocks.forEach((block, index) => {
+      const part = source.slice(block.from, block.to);
+      if (index === active) part.split("\n").forEach(piece => rows.push(this._phoneSourceRow(doc, piece)));
+      else rows.push(this._phonePreviewRow(block, part));
+    });
+    line.replaceChildren(...(rows.length ? rows : [this._phoneSourceRow(doc, "")]));
+  }
+  _phoneRows(surface) {
+    return [...surface.querySelectorAll(":scope > [data-phone-line]")];
+  }
+  _phoneRowText(row) {
+    if (row?.dataset?.phonePreview === "true") return row._phoneSource ?? "";
+    let text = "";
+    const visit = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.nodeValue.replace(/\u00a0/g, " ").replace(/\u200b/g, "");
+        return;
+      }
+      if (node === row) {
+        for (const child of node.childNodes) visit(child);
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE || node.tagName === "BR") return;
+      for (const child of node.childNodes) visit(child);
+    };
+    visit(row);
+    return text;
+  }
+  _phoneRowDisplay(row) {
+    let text = "";
+    const walker = row.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let current;
+    while ((current = walker.nextNode())) text += current.nodeValue.replace(/\u00a0/g, " ").replace(/\u200b/g, "");
+    return text;
+  }
+  _phoneDisplayOffset(row, node, offset) {
+    if (!node || (node !== row && !row.contains(node))) return null;
+    let count = 0;
+    const walker = row.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let current;
+    while ((current = walker.nextNode())) {
+      const raw = current.nodeValue.replace(/\u00a0/g, " ");
+      if (current === node) return count + raw.slice(0, Math.max(0, offset)).replace(/\u200b/g, "").length;
+      count += raw.replace(/\u200b/g, "").length;
+    }
+    return node === row ? (offset <= 0 ? 0 : count) : null;
+  }
+  _phoneRowBounds(surface) {
+    const rows = this._phoneRows(surface);
+    let cursor = 0;
+    return rows.map((row, index) => {
+      if (index) cursor += 1;
+      const source = this._phoneRowText(row);
+      const start = cursor;
+      cursor += source.length;
+      return { row, start, end: cursor, source };
+    });
+  }
+  _openPhonePreview(row, point = null) {
+    if (!row || row.dataset.phonePreview !== "true" || this._writingPhoneReturn) return;
+    if (this._phonePreviewOpenAt && now() - this._phonePreviewOpenAt < 350) return;
+    const surface = row.closest?.("[data-touch-surface]") || row.parentElement;
+    if (!surface) return;
+    const hit = this._phoneRowBounds(surface).find(item => item.row === row);
+    if (!hit) return;
+    this._phonePreviewOpenAt = now();
+    let local = hit.source.length;
+    if (point && Number.isFinite(point.clientX) && Number.isFinite(point.clientY)) {
+      let node = null;
+      let offset = 0;
+      const doc = row.ownerDocument;
+      try {
+        const pos = doc.caretPositionFromPoint?.(point.clientX, point.clientY, { shadowRoots: [this._shadow] });
+        if (pos) { node = pos.offsetNode; offset = pos.offset; }
+      } catch {}
+      const shown = this._phoneDisplayOffset(row, node, offset);
+      if (shown != null) local = displayOffsetToSourceOffset(hit.source, this._phoneRowDisplay(row), shown);
+    }
+    const caret = hit.start + clamp(local, 0, hit.source.length);
+    this._selection = { start: caret, end: caret, direction: "none" };
+    this._structuredSelection = { start: caret, end: caret, direction: "none", label: "caret" };
+    this._focusWithin = true;
+    this._writePhoneReturnSurface();
+  }
+  _deletePhonePreviewBoundary(backward) {
+    const surface = this._liveEditor?.querySelector("[data-touch-surface='true']");
+    if (!surface) return false;
+    const phone = this._readPhoneLines(surface);
+    if (!phone || phone.caret == null || phone.text !== this._value) return false;
+    const bounds = this._phoneRowBounds(surface);
+    const index = bounds.findIndex(item => item.row.dataset.phonePreview !== "true" && phone.caret >= item.start && phone.caret <= item.end);
+    if (index < 0) return false;
+    const item = bounds[index];
+    const neighbor = bounds[backward ? index - 1 : index + 1];
+    if (neighbor?.row?.dataset?.phonePreview !== "true") return false;
+    if (backward ? phone.caret !== item.start : phone.caret !== item.end) return false;
+    const cut = backward ? phone.caret - 1 : phone.caret;
+    if (cut < 0 || cut >= this._value.length || this._value[cut] !== "\n") return false;
+    const previousValue = this._value;
+    const before = this._beforeInputSnapshot || makeSnapshot(previousValue, phone.caret, phone.caret, "none");
+    this._value = previousValue.slice(0, cut) + previousValue.slice(cut + 1);
+    this._selection = { start: cut, end: cut, direction: "none" };
+    this._structuredSelection = { start: cut, end: cut, direction: "none", label: "caret" };
+    const after = makeSnapshot(this._value, cut, cut, "none");
+    if (before) this._recordUndo(before, after, this._undoGroupForInput(backward ? "deleteContentBackward" : "deleteContentForward"), { coalesce: true });
+    this._beforeInputSnapshot = null;
+    this._finishLiveInput({
+      source: "user",
+      inputType: backward ? "deleteContentBackward" : "deleteContentForward",
+      restoreSelection: false,
+      previousValue,
+      changes: [{ from: cut, to: cut + 1, insert: "" }],
+    });
+    this._writePhoneReturnSurface();
+    return true;
+  }
+  _sealPhoneFirstLine(surface) {
+    if (!surface) return;
+    const block = (node) => node && node.nodeType === Node.ELEMENT_NODE && (node.tagName === "DIV" || node.tagName === "P");
+    if (![...surface.childNodes].some(block)) return;
+    const mark = (row) => {
+      row.dataset.phoneLine = "true";
+      row.style.display = "block";
+      row.style.minHeight = "1.45em";
+    };
+    const first = surface.firstChild;
+    if (block(first)) {
+      const nested = [...first.children].some(child => block(child));
+      if (!nested) mark(first);
+      return;
+    }
+    const row = surface.ownerDocument.createElement("div");
+    mark(row);
+    while (surface.firstChild && !block(surface.firstChild)) row.append(surface.firstChild);
+    if (row.childNodes.length) surface.insertBefore(row, surface.firstChild);
+  }
+  _syncEmptyPlaceholder(line, text = this._value) {
+    if (!line) return;
+    if (String(text).replace(/\n/g, "").length > 0) {
+      line.classList.remove("md-empty-placeholder");
+      line.removeAttribute("data-placeholder");
+      return;
+    }
+    line.classList.add("md-empty-placeholder");
+    if (this.placeholder) line.dataset.placeholder = this.placeholder;
+  }
+  _readPhoneLines(surface) {
+    const rows = [...surface.querySelectorAll(":scope > [data-phone-line]")];
+    if (!rows.length) return null;
+    const sel = this._exposedLiveSelection();
+    const focusNode = sel?.focusNode || null;
+    const anchorNode = sel?.anchorNode || null;
+    const focusOffset = Number(sel?.focusOffset) || 0;
+    const anchorOffset = Number(sel?.anchorOffset) || 0;
+    let cursor = 0;
+    let focus = null;
+    let anchor = null;
+    const parts = [];
+    const at = (node, offset, raw = "") => node?.nodeType === Node.TEXT_NODE
+      ? cursor + raw.slice(0, Math.max(0, offset)).replace(/\u200b/g, "").length
+      : cursor;
+    const note = (node, raw = "") => {
+      if (anchor == null && node === anchorNode) anchor = at(node, anchorOffset, raw);
+      if (focus == null && node === focusNode) focus = at(node, focusOffset, raw);
+    };
+    rows.forEach((row, index) => {
+      if (index) cursor += 1;
+      const start = cursor;
+      if (row.dataset.phonePreview === "true") {
+        const text = row._phoneSource ?? "";
+        const display = this._phoneRowDisplay(row);
+        const map = (node, offset) => {
+          const shown = this._phoneDisplayOffset(row, node, offset);
+          if (shown == null) return null;
+          return cursor + displayOffsetToSourceOffset(text, display, shown);
+        };
+        if (anchor == null) anchor = map(anchorNode, anchorOffset);
+        if (focus == null) focus = map(focusNode, focusOffset);
+        parts.push(text);
+        cursor += text.length;
+        return;
+      }
+      let text = "";
+      const visit = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const raw = node.nodeValue.replace(/\u00a0/g, " ");
+          const value = raw.replace(/\u200b/g, "");
+          note(node, raw);
+          text += value;
+          cursor += value.length;
+          return;
+        }
+        if (node === row) {
+          for (const child of node.childNodes) visit(child);
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE || node.tagName === "BR") {
+          note(node);
+          return;
+        }
+        for (const child of node.childNodes) visit(child);
+      };
+      visit(row);
+      if (anchor == null && anchorNode === row) anchor = anchorOffset <= 0 ? start : cursor;
+      if (focus == null && focusNode === row) focus = focusOffset <= 0 ? start : cursor;
+      parts.push(text);
+    });
+    return { text: parts.join("\n"), caret: focus, anchor, focus };
+  }
+  _readTouchDocument() {
+    const root = this._liveEditor;
+    if (!root) return null;
+    const surface = root.querySelector("[data-touch-surface='true']");
+    const phone = surface ? this._readPhoneLines(surface) : null;
+    if (phone) return phone;
+    const sel = this._exposedLiveSelection();
+    const focusNode = sel?.focusNode || null;
+    const focusOffset = Number(sel?.focusOffset) || 0;
+    const lines = [];
+    let focus = null;
+    let cursor = 0;
+    const mark = (node) => {
+      if (focus != null || node !== focusNode || node.nodeType !== Node.TEXT_NODE) return;
+      const raw = node.nodeValue.replace(/\u00a0/g, " ");
+      focus = cursor + raw.slice(0, Math.max(0, focusOffset)).replace(/\u200b/g, "").length;
+    };
+    const blockText = (block, nested) => {
+      let text = "";
+      const visit = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const value = node.nodeValue.replace(/\u00a0/g, " ").replace(/\u200b/g, "");
+          mark(node);
+          text += value;
+          cursor += value.length;
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE || nested.includes(node)) return;
+        if (node.tagName === "BR") {
+          text += "\n";
+          cursor += 1;
+          if (focus == null && node === focusNode) focus = cursor;
+          return;
+        }
+        if (node === focusNode && focus == null && focusOffset === 0) focus = cursor;
+        let childIndex = 0;
+        for (const child of node.childNodes) {
+          childIndex += 1;
+          if (!nested.includes(child)) visit(child);
+          if (node === focusNode && focus == null && focusOffset === childIndex) focus = cursor;
+        }
+      };
+      visit(block);
+      return text;
+    };
+    const absorb = (block) => {
+      const nested = [...block.children].filter(child => child.tagName === "DIV");
+      const start = cursor;
+      if (lines.length) cursor += 1;
+      const text = blockText(block, nested);
+      if (text.length || !nested.length) lines.push(text);
+      else cursor = start;
+      for (const div of nested) absorb(div);
+    };
+    for (const node of root.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const value = node.nodeValue.replace(/\u00a0/g, " ").replace(/\u200b/g, "");
+        if (!value) continue;
+        mark(node);
+        if (lines.length) cursor += 1;
+        lines.push(value);
+        cursor += value.length;
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (node.classList.contains("md-virtual-spacer") || node.classList.contains("live-placeholder")) continue;
+      absorb(node);
+    }
+    return { text: lines.join("\n"), caret: focus };
+  }
+  _schedulePhoneReturn(soft) {
+    if (this.disabled || this.readonly || this._writingPhoneReturn) return;
+    if (this._phoneReturnArmedAt && now() - this._phoneReturnArmedAt < 70) return;
+    this._phoneReturnArmedAt = now();
+    this._phoneReturnSoft = soft === true;
+    if (this._phoneReturnFrame) return;
+    this._phoneReturnFrame = requestAnimationFrame(() => {
+      this._phoneReturnFrame = 0;
+      if (!this._keyboardEditing()) return;
+      this._applyPhoneReturn(this._phoneReturnSoft === true);
+    });
+  }
+  _applyPhoneReturn(soft) {
+    if (this.disabled || this.readonly || this._writingPhoneReturn) return;
+    if (this._phoneReturnAppliedAt && now() - this._phoneReturnAppliedAt < 50) return;
+    this._phoneReturnAppliedAt = now();
+    if (this._isComposing || this._compositionEnding) {
+      this._isComposing = false;
+      this._compositionEnding = false;
+      if (this._compositionEndTimer) {
+        clearTimeout(this._compositionEndTimer);
+        this._compositionEndTimer = 0;
+      }
+      this._touchReturnValue = null;
+      this._applyTouchDocumentInput({ inputType: "insertCompositionText" });
+    }
+    const doc = this._readTouchDocument();
+    if (doc && doc.text === this._value && doc.caret != null) {
+      const caret = clamp(doc.caret, 0, this._value.length);
+      this._selection = { start: caret, end: caret, direction: "none" };
+      this._structuredSelection = { start: caret, end: caret, direction: "none", label: "caret" };
+    }
+    this._runAction(soft ? "editor.insertSoftBreak" : "editor.smartEnter", undefined, { source: "keyboard", apply: true, skipDom: true });
+    this._writePhoneReturnSurface();
+  }
+  _writePhoneReturnSurface() {
+    const root = this._liveEditor;
+    if (!root || this._writingPhoneReturn) return;
+    const text = this._value;
+    const caret = this._selection.end;
+    let line = root.querySelector("[data-touch-surface='true']") || (root.querySelectorAll("[data-editable]").length === 1 ? root.querySelector("[data-editable]") : null);
+    this._writingPhoneReturn = true;
+    try {
+      if (!line) {
+        this._ensureTouchSurface();
+        line = root.querySelector("[data-editable]");
+      }
+      if (!line) return;
+      this._fillPhoneLines(line, text, caret);
+      line.dataset.touchSurface = "true";
+      line.dataset.from = "0";
+      line.dataset.to = String(text.length);
+      this._paintedOffsets.set(line, { from: 0, to: text.length });
+      this._touchSurface = true;
+      this._touchReturnValue = text;
+      this._syncEmptyPlaceholder(line);
+      this._focusLiveTarget(line);
+      this._placePhoneSelection(line);
+    } finally {
+      this._writingPhoneReturn = false;
+    }
+  }
+  _phonePoint(line, caret) {
+    const rows = this._phoneRows(line);
+    if (!rows.length) return { node: line, offset: 0 };
+    let cursor = 0;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      const plain = this._phoneRowText(row);
+      const end = cursor + plain.length;
+      if (caret <= end || i === rows.length - 1) {
+        if (row.dataset.phonePreview === "true") {
+          const shown = sourceOffsetToDisplayOffset(plain, this._phoneRowDisplay(row), Math.max(0, caret - cursor));
+          const placed = this._phoneDisplayPoint(row, shown);
+          if (placed) return placed;
+          return { node: row, offset: 0 };
+        }
+        const text = row.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode();
+        if (text) return { node: text, offset: Math.min(Math.max(caret - cursor, 0), text.nodeValue.length) };
+        return { node: row, offset: 0 };
+      }
+      cursor = end + 1;
+    }
+    return { node: line, offset: 0 };
+  }
+  _phoneDisplayPoint(row, displayOffset) {
+    const target = Math.max(0, displayOffset || 0);
+    let count = 0;
+    const walker = row.ownerDocument.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let current;
+    while ((current = walker.nextNode())) {
+      const raw = current.nodeValue.replace(/\u00a0/g, " ").replace(/\u200b/g, "");
+      if (count + raw.length >= target) return { node: current, offset: Math.min(current.nodeValue.length, target - count) };
+      count += raw.length;
+    }
+    return null;
+  }
+  _placePhoneSelection(line) {
+    if (!line) return;
+    const sel = this._shadow?.getSelection?.() || line.ownerDocument.getSelection?.();
+    const start = this._phonePoint(line, this._selection.start);
+    const end = this._phonePoint(line, this._selection.end);
+    if (!start || !end) return;
+    const backward = this._selection.direction === "backward";
+    const anchor = backward ? end : start;
+    const focus = backward ? start : end;
+    try { sel?.setBaseAndExtent?.(anchor.node, anchor.offset, focus.node, focus.offset); } catch {}
+  }
+  _applyTouchDocumentInput(event) {
+    if (this._writingPhoneReturn) return;
+    const surface = this._liveEditor?.querySelector("[data-touch-surface='true']");
+    this._sealPhoneFirstLine(surface);
+    const doc = this._readTouchDocument();
+    if (!doc) return;
+    if (this._touchReturnValue != null && doc.text.replace(/\n/g, "") === this._value.replace(/\n/g, "")) return;
+    this._touchReturnValue = null;
+    const previousValue = this._value;
+    const cursor = doc.caret == null ? doc.text.length : clamp(doc.caret, 0, doc.text.length);
+    this._selection = { start: cursor, end: cursor, direction: "none" };
+    if (doc.text !== previousValue) {
+      const before = this._beforeInputSnapshot || this._snapshot();
+      this._value = doc.text;
+      const after = makeSnapshot(this._value, cursor, cursor, "none");
+      if (before) this._recordUndo(before, after, this._undoGroupForInput(event?.inputType), { coalesce: event?.inputType === "insertText" || event?.inputType === "deleteContentBackward" });
+      this._beforeInputSnapshot = null;
+      this._finishLiveInput({
+        source: "user",
+        inputType: event?.inputType,
+        restoreSelection: false,
+        previousValue,
+        changes: [{ from: 0, to: previousValue.length, insert: doc.text }]
+      });
+    }
+    this._syncEmptyPlaceholder(surface || this._liveEditor?.querySelector("[data-editable]"), doc.text);
+    this._scheduleCompletionUpdate();
+  }
   _onLiveInput(event) {
     if (this.disabled || this.readonly) return;
-    if (this._isComposing || event?.isComposing) return;
+    const composing = this._isComposing || event?.isComposing;
+    if (composing && !this._touchCaretSession()) return;
     if (event?.target && event.target.isConnected === false) return;
+    if (this._touchCaretSession() && !this._isSourceActive()) {
+      this._applyTouchDocumentInput(event);
+      return;
+    }
     this._ignoreSelectionChangeCount = 0;
     this._structuredSelection = null;
     const inputTarget = this._beforeInputTarget;
-    const editable = this._closestEditable(event.target) || inputTarget?.editable || this._activeEditableFromSelection();
+    let editable = this._closestEditable(event.target) || inputTarget?.editable || this._activeEditableFromSelection();
+    if (!editable && this._touchCaretSession()) editable = this._liveEditor?.querySelector("[data-editable]") || null;
     this._beforeInputTarget = null;
     if (!editable) return;
     const before = this._beforeInputSnapshot;
-    const from = this._liveFrom(editable); const to = this._liveTo(editable);
+    let from = this._liveFrom(editable);
+    let to = this._liveTo(editable);
+    // The line is not repainted while the phone keyboard is up, so a fresh
+    // note keeps a 0,0 range. The next letter would then be added in front of
+    // the whole note instead of replacing that line.
+    if (this._touchCaretSession() && this._liveEditor?.querySelectorAll("[data-editable]").length === 1 && !(to > from)) {
+      from = 0;
+      to = this._value.length;
+    }
     const sourceSlice = this._value.slice(from, to);
     const sourceForm = editable.dataset.sourceForm === "true";
     const literalLine = sourceForm || ["image", "comment", "code-fence"].includes(editable.dataset.kind);
     let raw = this._plainText(editable);
     if (!this._keepsSourceNewlines(editable)) raw = raw.replace(/\n/g, "");
+    if (this._touchCaretSession() && raw.length > 0) {
+      editable.classList.remove("md-empty-placeholder");
+      editable.removeAttribute("data-placeholder");
+    }
     let mappedCursor = null;
     if (!literalLine) {
       const inlinePaint = this._usesInlinePaint(editable);
@@ -2422,6 +2996,12 @@ class WritemarkEditorElement extends HTMLElement {
     }
     const previousValue = this._value;
     const nextValue = previousValue.slice(0, from) + insert + previousValue.slice(to);
+    if (this._touchCaretSession()) {
+      const nextTo = from + insert.length;
+      this._paintedOffsets.set(editable, { from, to: nextTo });
+      editable.dataset.from = String(from);
+      editable.dataset.to = String(nextTo);
+    }
     const displayCursor = this._displayOffsetFromSelection(editable);
     const sourceCursor = liveSelection?.end != null ? liveSelection.end - from : null;
     const liveCursor = compositionCommit
@@ -2444,12 +3024,12 @@ class WritemarkEditorElement extends HTMLElement {
   _finishLiveInput(details) {
     const hold = details.inputType !== "insertCompositionText" && this._accentMenuHoldingTarget();
     this._holdAccentTarget = hold;
+    const skipDom = this._touchCaretSession();
     try {
-      this._afterValueChanged({ ...details, defer: !hold });
+      this._afterValueChanged({ ...details, defer: !hold && !skipDom, skipDom });
     } finally {
       this._holdAccentTarget = false;
     }
-    if (!hold && !this._isComposing) this._scheduleActiveSourceFormat();
   }
   _accentMenuHoldingTarget() {
     if (now() - (this._keyRepeatAt || 0) > 4000) return false;
@@ -2713,6 +3293,14 @@ class WritemarkEditorElement extends HTMLElement {
     this._onSelectionChanged();
   }
 
+  _eventFromTouch(event) {
+    return this._fromTouch === true || event?.sourceCapabilities?.firesTouchEvents === true || event?.pointerType === "touch";
+  }
+  _focusLiveTarget(node) {
+    if (!node || typeof node.focus !== "function") return;
+    if (this._shadow?.activeElement === node) return;
+    node.focus();
+  }
   _onLiveMouseDown(event) {
     if (this.disabled || this.readonly || this.mode === "source" || event.button !== 0 || event.detail > 1) return;
     // Keep a control click from moving the caret or stealing focus.
@@ -2722,7 +3310,11 @@ class WritemarkEditorElement extends HTMLElement {
     if (anchor == null) return;
     const editable = this._liveEditableFromPoint(event.clientX, event.clientY);
     this._closeCompletion();
-    if (this._liveSelectionAPI === false) {
+    const fromTouch = this._eventFromTouch(event);
+    this._fromTouch = false;
+    // A finger tap must keep the browser's focus, or iOS never opens the keyboard.
+    // The caret is placed on mouseup, after that focus has landed.
+    if (this._liveSelectionAPI === false || fromTouch) {
       this._fallbackEditable = editable;
       this._fallbackSelectionPending = false;
       this._selection = { start: anchor, end: anchor, direction: "none" };
@@ -2732,13 +3324,14 @@ class WritemarkEditorElement extends HTMLElement {
         startX: event.clientX,
         startY: event.clientY,
         moved: false,
-        native: true
+        native: this._liveSelectionAPI === false && !fromTouch,
+        fromTouch
       };
       this._bindPointerSelectionListeners();
       return;
     }
     event.preventDefault();
-    this._pointerSelection = { anchor, focus: anchor, startX: event.clientX, startY: event.clientY, moved: false, native: false };
+    this._pointerSelection = { anchor, focus: anchor, startX: event.clientX, startY: event.clientY, moved: false, native: false, fromTouch: false };
     this.setSelectionRange(anchor, anchor, "none");
     this._bindPointerSelectionListeners();
   }
@@ -2756,10 +3349,10 @@ class WritemarkEditorElement extends HTMLElement {
     if (!state) return;
     const focus = this._sourceOffsetForClientPoint(event.clientX, event.clientY);
     if (focus == null) return;
-    if (state.native) {
+    if (state.native || state.fromTouch) {
       state.focus = focus;
       state.moved = state.moved || Math.hypot(event.clientX - state.startX, event.clientY - state.startY) > 2;
-      this._setFallbackPointerSelection(state.anchor, focus);
+      if (!state.fromTouch) this._setFallbackPointerSelection(state.anchor, focus);
       this._updateSelectionToolbar();
       return;
     }
@@ -2774,7 +3367,18 @@ class WritemarkEditorElement extends HTMLElement {
     const state = this._pointerSelection;
     if (!state) return;
     const focus = this._sourceOffsetForClientPoint(event.clientX, event.clientY);
-    if (focus != null) {
+    const next = focus == null ? state.focus : focus;
+    if (state.fromTouch) {
+      const start = Math.min(state.anchor, next);
+      const end = Math.max(state.anchor, next);
+      // The browser draws the caret for a finger tap. Setting the DOM selection
+      // here clears that caret when the selection cannot be read back.
+      this._selection = {
+        start,
+        end,
+        direction: start === end ? "none" : (state.anchor <= next ? "forward" : "backward")
+      };
+    } else if (focus != null) {
       if (state.native) this._setFallbackPointerSelection(state.anchor, focus);
       else this._setLivePointerSelection(state.anchor, focus);
     }
@@ -2784,7 +3388,7 @@ class WritemarkEditorElement extends HTMLElement {
     const doc = this.ownerDocument || document;
     doc.removeEventListener("mousemove", this._boundLiveMouseMove, true);
     doc.removeEventListener("mouseup", this._boundLiveMouseEnd, true);
-    if (!state.native) event.preventDefault();
+    if (!state.native && !state.fromTouch) event.preventDefault();
     else {
       this._emitSelectionChange();
       if (!this._isComposing) this._scheduleCompletionUpdate();
@@ -3179,7 +3783,7 @@ class WritemarkEditorElement extends HTMLElement {
     }
     // The accent menu selects the candidate in the DOM before it is in the
     // model. Mapping that range back turns it into the rest of the line.
-    if (this._isComposing || this._sourceFormDomDirty()) {
+    if ((this._isComposing || this._sourceFormDomDirty()) && !this._touchCaretSession()) {
       if (this._ignoreSelectionChangeCount > 0) this._ignoreSelectionChangeCount -= 1;
       return;
     }
@@ -3249,6 +3853,7 @@ class WritemarkEditorElement extends HTMLElement {
     top = clamp(top, 4, Math.max(4, shellRect.height - toolbarRect.height - 4));
     this._selectionToolbar.style.left = `${left}px`;
     this._selectionToolbar.style.top = `${top}px`;
+    this._fitPopupAboveKeyboard(this._selectionToolbar, rect);
   }
 
   _isSourceActive() { return this._shadow.activeElement === this._sourceTextarea || this.mode === "source"; }
@@ -3267,8 +3872,21 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _getCurrentSelection() {
     if (this._isSourceActive() && this._sourceTextarea) return { start: this._sourceTextarea.selectionStart, end: this._sourceTextarea.selectionEnd, direction: this._sourceTextarea.selectionDirection || "none" };
-    if (this._isComposing || this._sourceFormDomDirty()) return this._modelSelection();
+    if ((this._isComposing || this._sourceFormDomDirty()) && !this._touchCaretSession()) return this._modelSelection();
     if (this._structuredSelection) return { ...this._structuredSelection };
+    if (this._touchCaretSession() && !this._writingPhoneReturn) {
+      const surface = this._liveEditor?.querySelector("[data-touch-surface='true']");
+      const phone = surface ? this._readPhoneLines(surface) : null;
+      if (phone && phone.text === this._value && phone.anchor != null && phone.focus != null) {
+        const start = Math.min(phone.anchor, phone.focus);
+        const end = Math.max(phone.anchor, phone.focus);
+        return { start, end, direction: phone.anchor <= phone.focus ? "forward" : "backward" };
+      }
+      if (phone && phone.text === this._value && phone.caret != null) {
+        const caret = clamp(phone.caret, 0, this._value.length);
+        return { start: caret, end: caret, direction: "none" };
+      }
+    }
     const live = this._getLiveSelection();
     return live || this._modelSelection();
   }
@@ -3365,12 +3983,13 @@ class WritemarkEditorElement extends HTMLElement {
     if (!startPos || !endPos) { this._liveEditor.focus(); return; }
     if (!this._isLiveDomPositionConnected(startPos) || !this._isLiveDomPositionConnected(endPos)) { this._liveEditor.focus(); return; }
     const focusEditable = selection.direction === "backward" ? startPos.editable : endPos.editable;
+    if (this._touchCaretSession() && this._caretVisibleIn(focusEditable)) return;
     const range = document.createRange();
     try {
       range.setStart(startPos.node, startPos.offset);
       range.setEnd(endPos.node, endPos.offset);
     } catch {
-      this._liveEditor.focus();
+      this._focusLiveTarget(focusEditable || startPos.editable);
       return;
     }
     let sel = null;
@@ -3379,41 +3998,44 @@ class WritemarkEditorElement extends HTMLElement {
         ? this._shadow.getSelection()
         : globalThis.getSelection?.();
     } catch {}
+    const target = focusEditable || startPos.editable;
+    if (this._touchCaretSession()) this._focusLiveTarget(target);
     if (!sel) {
-      this._useFallbackLiveSelection(focusEditable || startPos.editable);
+      if (!this._touchCaretSession()) this._useFallbackLiveSelection(target);
       return;
     }
-    sel.removeAllRanges();
     try {
-      if (selection.start !== selection.end && typeof sel.setBaseAndExtent === "function") {
-        if (selection.direction === "backward") sel.setBaseAndExtent(endPos.node, endPos.offset, startPos.node, startPos.offset);
+      if (typeof sel.setBaseAndExtent === "function") {
+        if (selection.start !== selection.end && selection.direction === "backward") sel.setBaseAndExtent(endPos.node, endPos.offset, startPos.node, startPos.offset);
         else sel.setBaseAndExtent(startPos.node, startPos.offset, endPos.node, endPos.offset);
       } else {
+        sel.removeAllRanges();
         sel.addRange(range);
       }
     } catch {
-      sel.removeAllRanges();
       try {
+        sel.removeAllRanges();
         if (this._isLiveDomPositionConnected(startPos) && this._isLiveDomPositionConnected(endPos)) sel.addRange(range);
       } catch {}
     }
     if (!this._readLiveSelection()) {
-      this._useFallbackLiveSelection(focusEditable || startPos.editable);
+      if (this._touchCaretSession()) return;
+      this._useFallbackLiveSelection(target);
       return;
     }
     this._liveSelectionAPI = true;
     this._fallbackEditable = null;
     this._fallbackSelectionPending = false;
-    (focusEditable || startPos.editable)?.focus?.();
+    this._focusLiveTarget(focusEditable || startPos.editable);
   }
   _useFallbackLiveSelection(editable) {
     this._liveSelectionAPI = false;
     this._fallbackEditable = editable || this._domPositionFromSource(this._selection.end)?.editable || null;
     this._fallbackSelectionPending = true;
-    if (this._liveEditor) this._liveEditor.contentEditable = "false";
     const focusTarget = this._fallbackEditable || this._liveEditor;
-    focusTarget?.blur();
-    focusTarget?.focus();
+    // Changing the parent or blurring here dismisses the iPhone keyboard.
+    if (!this._shadow?.activeElement && this._liveEditor) this._liveEditor.contentEditable = "false";
+    this._focusLiveTarget(focusTarget);
   }
   _isLiveDomPositionConnected(pos) {
     return Boolean(pos?.node?.isConnected && pos?.editable?.isConnected && this._liveEditor?.contains(pos.editable));
@@ -3536,6 +4158,7 @@ class WritemarkEditorElement extends HTMLElement {
   _onCompositionEnd(event) {
     const stamp = this._compositionStamp;
     this._compositionEnding = true;
+    this._compositionEndedAt = now();
     this._suppressEnterUntil = now() + 40;
     if (!this._isComposing) {
       this._isComposing = true;
@@ -3549,9 +4172,12 @@ class WritemarkEditorElement extends HTMLElement {
       this._compositionEndTimer = 0;
       this._compositionEnding = false;
       if (stamp !== this._compositionStamp) return;
+      const enter = this._phoneEnterAfterComposition;
+      this._phoneEnterAfterComposition = null;
       const pending = this._isComposing;
       this._isComposing = false;
       if (pending) this._commitComposition(event);
+      if (enter && this._keyboardEditing()) this._schedulePhoneReturn(false);
     }, 0);
   }
 
@@ -3617,19 +4243,40 @@ class WritemarkEditorElement extends HTMLElement {
     return raw !== expected;
   }
 
+  _notePhoneEnter(event) {
+    if (!this._keyboardEditing() || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return;
+    const enter = event.key === "Enter" || event.code === "Enter" || event.keyCode === 13 || event.which === 13;
+    if (!enter) return;
+    const composing = this._isComposing || event.isComposing || event.keyCode === 229 || event.which === 229;
+    if (event.type === "keydown") {
+      if (!composing) return;
+      const mark = {};
+      this._phoneEnterAfterComposition = mark;
+      setTimeout(() => { if (this._phoneEnterAfterComposition === mark) this._phoneEnterAfterComposition = null; }, 250);
+      return;
+    }
+    const justEnded = this._compositionEndedAt && now() - this._compositionEndedAt < 80;
+    if (!composing && (this._phoneEnterAfterComposition || justEnded)) {
+      this._phoneEnterAfterComposition = null;
+      this._compositionEndedAt = 0;
+      this._schedulePhoneReturn(false);
+    }
+  }
+
   _onKeyDown(event) {
     if (event.repeat && event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) this._keyRepeatAt = now();
     const menuConfirmingEnter = event.key === "Enter" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey
+      && !this._keyboardEditing()
       && (this._compositionEnding || now() < (this._suppressEnterUntil || 0));
     if (menuConfirmingEnter) {
       event.preventDefault();
       return;
     }
+    this._notePhoneEnter(event);
     if (this._isComposing || event.isComposing || event.keyCode === 229 || event.which === 229) return;
     if (!this._isSourceActive() && !event.altKey && !event.metaKey && !event.ctrlKey && (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete")) {
       const sourceEditable = this._activeEditableFromEvent(event);
       if (this._keepsActiveSource(sourceEditable) && sourceEditable.dataset.sourceForm !== "true") {
-        this._idleFormattedKey = "";
         this._syncSourceForm();
       }
     }
@@ -3741,7 +4388,7 @@ class WritemarkEditorElement extends HTMLElement {
       if (result?.ok && result.transaction) { event.preventDefault(); this._applyActionResult("editor.smartDelete", result, { source: "keyboard" }); return; }
     }
 
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !this._keyboardEditing()) {
       if (this.readonly || this.disabled) return;
       event.preventDefault();
       if (activeCell) {
@@ -4301,7 +4948,8 @@ class WritemarkEditorElement extends HTMLElement {
     const sel = this._getCurrentSelection(); this._selection = sel;
     const parseOptions = this._parseOptions();
     const value = this._value; const line = getLineRange(value, sel.start); const currentLine = makeLineInfo(line.start, line.end, line.text, parseOptions); const selectedLines = getSelectedLineRanges(value, sel.start, sel.end, parseOptions); const block = classifyLine(value, sel.start, currentLine, parseOptions); const lineBeforeCursor = currentLine.text.slice(0, sel.start - currentLine.start);
-    return { value, selectionStart: sel.start, selectionEnd: sel.end, selectionDirection: sel.direction || "none", mode: this.disabled ? "disabled" : this.readonly ? "readonly" : this._isComposing ? "composing-ime" : this._completion.open ? (this._completion.providerId === "slash" ? "slash-open" : "completion-open") : "idle", currentLine, selectedLines, block, inline: { insideInlineCode: isInsideInlineCode(lineBeforeCursor) }, completion: { ...this._completion }, config: { mode: this.mode, markdownFlavor: this.markdownFlavor, tabBehavior: this.tabBehavior, indentString: this.indentString, disabled: this.disabled, readonly: this.readonly }, host: this };
+    const composing = this._isComposing && !this._touchCaretSession();
+    return { value, selectionStart: sel.start, selectionEnd: sel.end, selectionDirection: sel.direction || "none", mode: this.disabled ? "disabled" : this.readonly ? "readonly" : composing ? "composing-ime" : this._completion.open ? (this._completion.providerId === "slash" ? "slash-open" : "completion-open") : "idle", currentLine, selectedLines, block, inline: { insideInlineCode: isInsideInlineCode(lineBeforeCursor) }, completion: { ...this._completion }, config: { mode: this.mode, markdownFlavor: this.markdownFlavor, tabBehavior: this.tabBehavior, indentString: this.indentString, disabled: this.disabled, readonly: this.readonly }, host: this };
   }
   _runAction(actionId, args, options = {}) {
     const action = this._actions.get(actionId); if (!action) return fail("not-applicable", `Unknown action: ${actionId}`);
@@ -4310,7 +4958,7 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _applyActionResult(actionId, result, options = {}) {
     if (!result?.ok) return result; const before = this._snapshot();
-    if (result.transaction) { const t = { ...result.transaction, source: options.source || result.transaction.source || "api", actionId, timestamp: now() }; this._applyTransaction(t, { source: t.source }); const after = this._snapshot(); this._dispatch("md-action", { actionId, args: t.args, source: t.source, before, after }); }
+    if (result.transaction) { const t = { ...result.transaction, source: options.source || result.transaction.source || "api", actionId, timestamp: now() }; this._applyTransaction(t, { source: t.source, skipDom: options.skipDom === true }); const after = this._snapshot(); this._dispatch("md-action", { actionId, args: t.args, source: t.source, before, after }); }
     else this._dispatch("md-action", { actionId, source: options.source || "api", before, after: this._snapshot() });
     if (result.announcement) this._announce(result.announcement); return result;
   }
@@ -4323,7 +4971,12 @@ class WritemarkEditorElement extends HTMLElement {
     this._value = nextValue;
     const sel = proposedSelection;
     this._selection = { start: clamp(sel.start, 0, nextValue.length), end: clamp(sel.end, 0, nextValue.length), direction: sel.direction || "none" }; this._structuredSelection = null;
-    const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction); this._recordUndo(before, after, transaction.undoGroup || transaction.actionId, { coalesce: false }); this._redoStack.length = 0; this._afterValueChanged({ source: options.source || transaction.source || "api", restoreSelection: true, previousValue: before.value, changes: transaction.changes }); this._scheduleCompletionUpdate();
+    const after = makeSnapshot(this._value, this._selection.start, this._selection.end, this._selection.direction); this._recordUndo(before, after, transaction.undoGroup || transaction.actionId, { coalesce: false }); this._redoStack.length = 0;
+    const touch = this._touchCaretSession();
+    const skipDom = options.skipDom === true || touch;
+    this._afterValueChanged({ source: options.source || transaction.source || "api", restoreSelection: !touch, previousValue: before.value, changes: transaction.changes, skipDom });
+    if (touch) this._writePhoneReturnSurface();
+    this._scheduleCompletionUpdate();
     return true;
   }
 
@@ -4506,7 +5159,7 @@ class WritemarkEditorElement extends HTMLElement {
     const slashAt = before.length - matched[2].length - 1;
     return { from: ctx.currentLine.start + slashAt, to: ctx.selectionStart, trigger: "/", query: matched[2], providerId: "slash", midLine: before.slice(0, slashAt).trim().length > 0 };
   }
-  _getSlashItems(match) { const q = match.query.toLowerCase(); const items = []; for (const action of this._actions.values()) { if (!action.visibleInSlash) continue; const hay = [action.label, action.description, ...(action.aliases || []), ...(action.keywords || [])].filter(Boolean).join(" ").toLowerCase(); if (q && !hay.includes(q)) continue; items.push({ id: action.id, label: action.label, detail: displayShortcut(action.defaultShortcut), description: "", kind: "slash-command", actionId: action.id }); } return items.slice(0, 24); }
+  _getSlashItems(match) { const q = match.query.toLowerCase(); const shortcut = this._keyboardEditing() ? "" : null; const items = []; for (const action of this._actions.values()) { if (!action.visibleInSlash) continue; const hay = [action.label, action.description, ...(action.aliases || []), ...(action.keywords || [])].filter(Boolean).join(" ").toLowerCase(); if (q && !hay.includes(q)) continue; items.push({ id: action.id, label: action.label, detail: shortcut === "" ? "" : displayShortcut(action.defaultShortcut), description: "", kind: "slash-command", actionId: action.id }); } return items.slice(0, 24); }
   _applySlashItem(item, match, ctx) {
     const repl = this._slashReplacementForAction(item.actionId);
     if (!repl) return ok(tx(ctx, "completion.accept", [{ from: match.from, to: match.to, insert: "" }], { start: match.from, end: match.from, direction: "none" }, "slash"), item.label);
@@ -4532,7 +5185,7 @@ class WritemarkEditorElement extends HTMLElement {
   }
 
   _scheduleCompletionUpdate({ immediate = false } = {}) {
-    if (this.disabled || this.readonly || this._isComposing) return;
+    if (this.disabled || this.readonly || (this._isComposing && !this._touchCaretSession())) return;
     if (immediate) {
       if (this._completionUpdateFrame) cancelAnimationFrame(this._completionUpdateFrame);
       this._completionUpdateFrame = 0;
@@ -4546,7 +5199,7 @@ class WritemarkEditorElement extends HTMLElement {
     });
   }
   _maybeUpdateCompletions() {
-    if (this.disabled || this.readonly || this._isComposing) return; const ctx = this._getContext(); if (ctx.selectionStart !== ctx.selectionEnd) { this._closeCompletion(); return; } const providers = [...this._providers.values()].sort((a, b) => b.priority - a.priority); let selectedProvider = null; let selectedMatch = null;
+    if (this.disabled || this.readonly || (this._isComposing && !this._touchCaretSession())) return; const ctx = this._getContext(); if (ctx.selectionStart !== ctx.selectionEnd) { this._closeCompletion(); return; } const providers = [...this._providers.values()].sort((a, b) => b.priority - a.priority); let selectedProvider = null; let selectedMatch = null;
     for (const provider of providers) { try { const match = provider.match(ctx); if (match) { selectedProvider = provider; selectedMatch = match; break; } } catch (error) { this._emitError("completion", error, true, { providerId: provider.id }); } }
     if (!selectedProvider || !selectedMatch) { this._closeCompletion(); return; }
     const requestId = this._completion.requestId + 1; this._completion.requestId = requestId; this._completion.abort?.abort(); const abort = new AbortController(); this._completion.abort = abort;
@@ -4564,11 +5217,15 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _renderCompletion() {
     if (!this._completionPopup) return; const open = this._completion.open && this._completion.items.length > 0; this._completionPopup.hidden = !open; const controller = this._isSourceActive() ? this._sourceTextarea : this._liveEditor; controller?.setAttribute("aria-expanded", open ? "true" : "false");
-    if (!open) { this._completionPopup.innerHTML = ""; this._completionPopup.scrollTop = 0; this._sourceTextarea?.removeAttribute("aria-activedescendant"); this._liveEditor?.removeAttribute("aria-activedescendant"); return; }
+    if (!open) { this._undockCompletionPopup(this._completionPopup); this._completionPopup.innerHTML = ""; this._completionPopup.scrollTop = 0; this._sourceTextarea?.removeAttribute("aria-activedescendant"); this._liveEditor?.removeAttribute("aria-activedescendant"); return; }
     const previousScrollTop = this._completionPopup.scrollTop;
     const activeId = this._completion.activeIndex >= 0 ? `${this._ids.completion}-item-${this._completion.activeIndex}` : null;
     if (activeId) controller?.setAttribute("aria-activedescendant", activeId); else controller?.removeAttribute("aria-activedescendant");
-    this._completionPopup.innerHTML = this._completion.items.map((item, index) => `<div id="${this._ids.completion}-item-${index}" class="completion-item" part="${index === this._completion.activeIndex ? "completion-item completion-item-active" : "completion-item"}" role="option" aria-selected="${index === this._completion.activeIndex ? "true" : "false"}" aria-disabled="${item.disabled ? "true" : "false"}" data-index="${index}"><div class="completion-label">${escapeHtml(item.label)}</div><div class="completion-detail">${escapeHtml(item.detail || "")}</div>${item.description ? `<div class="completion-description">${escapeHtml(item.description)}</div>` : ""}</div>`).join("");
+    this._completionPopup.innerHTML = this._completion.items.map((item, index) => {
+      const detail = item.detail ? `<div class="completion-detail">${escapeHtml(item.detail)}</div>` : "";
+      const description = item.description ? `<div class="completion-description">${escapeHtml(item.description)}</div>` : "";
+      return `<div id="${this._ids.completion}-item-${index}" class="completion-item" part="${index === this._completion.activeIndex ? "completion-item completion-item-active" : "completion-item"}" role="option" aria-selected="${index === this._completion.activeIndex ? "true" : "false"}" aria-disabled="${item.disabled ? "true" : "false"}" data-index="${index}"><div class="completion-label">${escapeHtml(item.label)}</div>${detail}${description}</div>`;
+    }).join("");
     this._completionPopup.scrollTop = previousScrollTop;
     this._positionCompletionPopup();
     this._scrollActiveCompletionIntoView();
@@ -4585,11 +5242,130 @@ class WritemarkEditorElement extends HTMLElement {
     else if (optionBottom > visibleBottom) popup.scrollTop = optionBottom - popup.clientHeight;
   }
   _positionCompletionPopup() {
-    const shell = this._shadow.querySelector(".editor-shell"); if (!shell || !this._completionPopup) return; const shellRect = shell.getBoundingClientRect(); let rect = null;
+    const shell = this._shadow.querySelector(".editor-shell"); if (!shell || !this._completionPopup) return;
+    if (this._keyboardEditing()) {
+      this._dockCompletionPopup(this._completionPopup);
+      return;
+    }
+    this._undockCompletionPopup(this._completionPopup);
+    const shellRect = shell.getBoundingClientRect(); let rect = null;
     try { const sel = this._shadow.getSelection?.() || globalThis.getSelection?.(); if (sel?.rangeCount) rect = sel.getRangeAt(0).getBoundingClientRect(); } catch {}
     if (!rect || (!rect.width && !rect.height)) { const target = this._domPositionFromSource(this._selection.start)?.editable || this._sourceTextarea; rect = target?.getBoundingClientRect?.(); }
     const left = clamp((rect?.left ?? shellRect.left) - shellRect.left, 4, Math.max(4, shellRect.width - 260)); const top = clamp((rect?.bottom ?? shellRect.top) - shellRect.top + 6, 4, Math.max(4, shellRect.height - 16));
     this._completionPopup.style.left = `${left}px`; this._completionPopup.style.top = `${top}px`;
+  }
+  _dockCompletionPopup(popup) {
+    if (this._dockingCompletion) return;
+    this._dockingCompletion = true;
+    try {
+      const viewport = window.visualViewport;
+      const viewTop = viewport ? viewport.offsetTop : 0;
+      const viewHeight = viewport ? viewport.height : window.innerHeight;
+      const viewWidth = viewport ? viewport.width : window.innerWidth;
+      // Safari paints its address bar over the bottom of the visual viewport.
+      const browserBar = 88;
+      const gap = 8;
+      const width = Math.min(280, Math.max(200, Math.round(viewWidth - 16)));
+      let caret = this._caretClientRect();
+      const roomBelow = viewHeight - browserBar - (caret?.bottom ?? 0) - gap;
+      if (caret && roomBelow < 140) {
+        this._keepCaretAbove(viewHeight - browserBar - 140);
+        caret = this._caretClientRect() || caret;
+      }
+      const left = clamp(Math.round(caret?.left ?? 12), 8, Math.max(8, Math.round(viewWidth - width - 8)));
+      const top = Math.round(viewTop + (caret?.bottom ?? 48) + gap);
+      const height = Math.min(280, Math.max(96, Math.round(viewHeight - browserBar - ((caret?.bottom ?? 48) + gap))));
+      popup.classList.add("completion-popup-dock");
+      popup.style.left = `${left}px`;
+      popup.style.width = `${width}px`;
+      popup.style.right = "auto";
+      popup.style.top = `${top}px`;
+      popup.style.bottom = "auto";
+      popup.style.height = `${height}px`;
+      popup.style.maxHeight = `${height}px`;
+      if (!this._phoneCompletionViewport && viewport) {
+        this._phoneCompletionViewport = () => {
+          if (!this._completion.open || !this._keyboardEditing()) return;
+          this._dockCompletionPopup(popup);
+        };
+        viewport.addEventListener("resize", this._phoneCompletionViewport);
+        viewport.addEventListener("scroll", this._phoneCompletionViewport);
+      }
+    } finally {
+      this._dockingCompletion = false;
+    }
+  }
+  _undockCompletionPopup(popup) {
+    popup.classList.remove("completion-popup-dock");
+    popup.style.right = "";
+    popup.style.bottom = "";
+    popup.style.width = "";
+    popup.style.height = "";
+    popup.style.maxHeight = "";
+  }
+  _caretClientRect() {
+    const selections = [];
+    try { const shadow = this._shadow?.getSelection?.(); if (shadow?.rangeCount) selections.push(shadow); } catch {}
+    try { const page = document.getSelection?.(); if (page?.rangeCount) selections.push(page); } catch {}
+    let caret = null;
+    let focusNode = null;
+    for (const sel of selections) {
+      focusNode = focusNode || sel.focusNode;
+      try {
+        const range = sel.getRangeAt(0);
+        const rects = range.getClientRects?.() || [];
+        for (const rect of rects) {
+          if (rect && rect.height > 0) { caret = rect; break; }
+        }
+        if (!caret) {
+          const box = range.getBoundingClientRect();
+          if (box && box.height > 0) caret = box;
+        }
+      } catch {}
+      if (caret) break;
+    }
+    const node = focusNode || this._shadow?.activeElement || null;
+    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    const line = el?.closest?.("[data-phone-line], [data-editable]")
+      || this._liveEditor?.querySelector("[data-phone-line], [data-editable]");
+    if (!line?.getBoundingClientRect) return caret;
+    const box = line.getBoundingClientRect();
+    if (box.height <= 0) return caret;
+    const lineHeight = parseFloat(getComputedStyle(line).lineHeight) || 29;
+    const oneLine = box.height > lineHeight * 1.8;
+    const bottom = oneLine ? box.top + lineHeight : box.bottom;
+    return {
+      left: caret?.left || box.left,
+      top: oneLine ? box.top : (caret?.top || box.top),
+      bottom,
+      height: bottom - (oneLine ? box.top : (caret?.top || box.top)),
+      width: 1,
+    };
+  }
+  _keepCaretAbove(limit) {
+    let rect = null;
+    try {
+      const sel = this._shadow?.getSelection?.() || document.getSelection?.();
+      if (sel?.rangeCount) rect = sel.getRangeAt(0).getBoundingClientRect();
+    } catch {}
+    if (!rect || rect.height <= 0) return;
+    const scroller = document.querySelector(".container") || document.scrollingElement;
+    if (!scroller) return;
+    const viewTop = (window.visualViewport?.offsetTop || 0) + 56;
+    if (rect.bottom > limit) scroller.scrollTop += rect.bottom - limit;
+    else if (rect.top < viewTop) scroller.scrollTop -= viewTop - rect.top;
+  }
+  _fitPopupAboveKeyboard(popup, caretRect) {
+    if (!popup || !this._keyboardEditing()) return;
+    const viewport = window.visualViewport;
+    const shell = this._shadow.querySelector(".editor-shell");
+    if (!viewport || !shell) return;
+    const box = popup.getBoundingClientRect();
+    const limit = viewport.offsetTop + viewport.height - 8;
+    if (box.bottom <= limit) return;
+    const shellRect = shell.getBoundingClientRect();
+    const above = (caretRect?.top ?? box.top) - shellRect.top - box.height - 6;
+    popup.style.top = `${Math.max(4, above)}px`;
   }
   _enabledCompletionIndex(start, direction = 1) {
     const n = this._completion.items.length;

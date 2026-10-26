@@ -112,7 +112,6 @@
                 font-size: clamp(32px, 5.4vw, 54px);
                 font-weight: 700;
                 letter-spacing: -0.03em;
-                text-transform: uppercase;
                 margin-top: 6px;
                 margin-bottom: 0;
                 height: auto;
@@ -408,7 +407,7 @@
                     "SF Mono", Monaco, "Cascadia Mono", "Roboto Mono",
                     Consolas, monospace;
                 --md-editor-font-size: 20px;
-                --md-editor-source-font-size: 15px;
+                --md-editor-source-font-size: 16px;
                 --md-editor-line-height: 1.45;
                 /* Height of a blank source line, matching the 20px paragraph
                    gap of the published post (.article-content p). */
@@ -775,12 +774,12 @@
                 flex: 1;
                 min-width: 0;
                 width: auto;
-                height: 28px;
+                height: 32px;
                 margin: 0;
                 padding: 0 8px;
-                font-size: 14px;
+                font-size: 16px;
                 font-weight: 400;
-                line-height: 28px;
+                line-height: 30px;
                 font-family: var(--face);
                 border: 1px solid var(--ink);
                 border-radius: 0;
@@ -799,13 +798,13 @@
             .relay-url-input::placeholder {
                 color: var(--quiet);
                 opacity: 1;
-                font-size: 14px;
+                font-size: 16px;
             }
 
             .relay-add button.relay-add-btn {
                 flex-shrink: 0;
-                height: 28px;
-                min-height: 28px;
+                height: 32px;
+                min-height: 32px;
                 margin: 0;
                 padding: 0 10px;
                 font-size: 13px;
@@ -813,7 +812,7 @@
                 letter-spacing: 0.04em;
                 text-transform: uppercase;
                 font-family: var(--face);
-                line-height: 28px;
+                line-height: 32px;
                 border: none;
                 border-radius: 0;
                 background: var(--ink);
@@ -1780,6 +1779,63 @@
 
                 .links {
                     display: none; /* Hide links on mobile since they're not in header */
+                }
+            }
+
+            /* Phone column: header, scrolling page, footer. Height tracks the visual viewport. */
+            @media (max-width: 999px) {
+                html.js body {
+                    position: fixed;
+                    top: var(--vv-top, 0px);
+                    left: 0;
+                    right: 0;
+                    height: var(--vv-height, 100dvh);
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
+                    padding: 0;
+                }
+                html.js .mobile-header,
+                html.js .footer {
+                    position: static;
+                    flex: none;
+                }
+                html.js body.keyboard-open .footer {
+                    visibility: hidden;
+                    pointer-events: none;
+                }
+                html.js .container {
+                    flex: 1;
+                    min-height: 0;
+                    min-width: 0;
+                    overflow: auto;
+                    width: 100%;
+                    max-width: none;
+                    margin: 0;
+                    padding-left: 40px;
+                    padding-right: 40px;
+                    padding-bottom: 32px;
+                    justify-content: center;
+                }
+                html.js .footer-tools {
+                    white-space: normal;
+                }
+                .save-formats {
+                    position: static;
+                    left: auto;
+                    top: auto;
+                }
+            }
+            @media (max-width: 768px) {
+                html.js .container {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                }
+            }
+            @media (max-width: 480px) {
+                html.js .container {
+                    padding-left: 12px;
+                    padding-right: 12px;
                 }
             }
 

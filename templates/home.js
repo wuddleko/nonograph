@@ -138,15 +138,13 @@ function paintSavedRelayLists(doc, storage) {
                 return window.innerWidth <= 480;
             }
 
-            // Prevent Enter key in title textarea
+            // Return in the title moves into the note. Blurring here closes the iPhone keyboard.
             const titleTextarea = document.querySelector('textarea[name="title"]');
             if (titleTextarea) {
                 titleTextarea.addEventListener("keydown", function (e) {
-                    if (e.key === "Enter") {
-                        e.preventDefault();
-                        this.blur();
-                        return false;
-                    }
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    if (editor && typeof editor.focus === "function") editor.focus();
                 });
 
                 if (!(window.CSS && CSS.supports("field-sizing", "content"))) {
@@ -1177,3 +1175,79 @@ function paintSavedRelayLists(doc, storage) {
                     savePdf(fields);
                 });
             }
+
+// The browser chrome changes the viewport by less than this. A keyboard is taller.
+const keyboardGap = 150;
+let shellFullHeight = 0;
+let shellWidth = 0;
+
+function syncWritingShell() {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const root = document.documentElement;
+    const height = Math.round(viewport.height);
+    const width = Math.round(viewport.width);
+    if (width !== shellWidth) {
+        shellWidth = width;
+        shellFullHeight = height;
+    } else if (height > shellFullHeight) {
+        shellFullHeight = height;
+    }
+    const phone = window.matchMedia("(max-width: 999px)").matches;
+    const keyboard = phone && shellFullHeight - height > keyboardGap;
+    const heightValue = height + "px";
+    // The keyboard pans the visual viewport for a few frames. Move the page
+    // with that pan so the header does not slide off and snap back.
+    const topValue = (phone ? Math.round(viewport.offsetTop) : 0) + "px";
+    if (Math.abs(height - shellTrackedHeight) > 24) {
+        shellTrackedHeight = height;
+        freezeColumnUntil = performance.now() + 500;
+    }
+    if (root.style.getPropertyValue("--vv-height") !== heightValue) {
+        root.style.setProperty("--vv-height", heightValue);
+    }
+    if (root.style.getPropertyValue("--vv-top") !== topValue) {
+        root.style.setProperty("--vv-top", topValue);
+    }
+    document.body.classList.toggle("keyboard-open", keyboard);
+    if (phone && (window.scrollY || document.documentElement.scrollTop)) window.scrollTo(0, 0);
+    holdWritingColumn();
+}
+
+let shellTrackedHeight = 0;
+let freezeColumnUntil = 0;
+
+let writingColumnScroll = 0;
+let holdingWritingColumn = false;
+
+function writingColumn() {
+    return document.querySelector(".container");
+}
+
+function holdWritingColumn() {
+    const column = writingColumn();
+    if (!column || holdingWritingColumn) return;
+    holdingWritingColumn = true;
+    if (column.scrollTop !== writingColumnScroll) column.scrollTop = writingColumnScroll;
+    holdingWritingColumn = false;
+}
+
+const writingColumnEl = writingColumn();
+if (writingColumnEl) {
+    writingColumnEl.addEventListener("scroll", () => {
+        if (holdingWritingColumn) return;
+        if (performance.now() < freezeColumnUntil) {
+            holdingWritingColumn = true;
+            writingColumnEl.scrollTop = writingColumnScroll;
+            holdingWritingColumn = false;
+            return;
+        }
+        writingColumnScroll = writingColumnEl.scrollTop;
+    }, { passive: true });
+}
+
+if (window.visualViewport) {
+    syncWritingShell();
+    window.visualViewport.addEventListener("resize", syncWritingShell);
+    window.visualViewport.addEventListener("scroll", syncWritingShell);
+}

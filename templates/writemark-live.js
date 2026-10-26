@@ -772,8 +772,14 @@ function normalizeIndentAttribute(value) {
 }
 function displayShortcut(shortcut) {
   if (!shortcut) return "";
-  const isMac = /Mac|iPhone|iPad|iPod/.test(globalThis.navigator?.platform ?? "");
-  return shortcut.replace(/Mod/g, isMac ? "⌘" : "Ctrl").replace(/Alt/g, isMac ? "⌥" : "Alt").replace(/Shift/g, isMac ? "⇧" : "Shift");
+  const ua = globalThis.navigator?.userAgent ?? "";
+  let coarse = false;
+  try { coarse = globalThis.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches === true; } catch { coarse = false; }
+  if (coarse || /iPhone|iPad|iPod/.test(ua)) return "";
+  const isMac = /Mac|iPhone|iPad|iPod/.test(globalThis.navigator?.platform ?? "") || /Mac OS X/.test(ua);
+  if (!isMac) return shortcut.replace(/Mod/g, "Ctrl");
+  const symbols = { Mod: "⌘", Command: "⌘", Meta: "⌘", Alt: "⌥", Option: "⌥", Shift: "⇧", Ctrl: "⌃", Control: "⌃" };
+  return shortcut.split("+").map(part => symbols[part] || part).join("");
 }
 function uid(prefix = "mfe") { return `${prefix}-${Math.random().toString(36).slice(2)}`; }
 

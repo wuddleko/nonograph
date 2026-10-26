@@ -74,6 +74,7 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
   contain-intrinsic-block-size: auto var(--md-virtual-size, 1.45em);
 }
 .md-line { position: relative; min-block-size: calc(var(--md-editor-line-height, 1.55) * 1em); line-height: var(--md-editor-line-height, 1.55); white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; padding: 0; outline: none; transition: background-color var(--md-editor-transition-duration) var(--md-editor-transition-ease), box-shadow var(--md-editor-transition-duration) var(--md-editor-transition-ease); }
+.md-line [data-phone-line] { display: block; min-height: calc(var(--md-editor-line-height, 1.45) * 1em); line-height: inherit; -webkit-user-select: text; user-select: text; }
 .md-source-form { white-space: pre-wrap; }
 .md-line p { display: inline; margin: 0; }
 .md-line:focus, .md-task-source:focus, .md-list-content:focus, .md-code-line:focus, .md-code-fence-line:focus { box-shadow: var(--md-editor-active-line-ring); background: var(--md-editor-active-line-bg); }
@@ -172,6 +173,7 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
 .md-has-controls .md-tbl-ctl:hover { opacity: 1; background: color-mix(in srgb, CanvasText 12%, Canvas 88%); }
 .completion-popup { position: absolute; z-index: 20; min-inline-size: 240px; max-inline-size: min(420px, 90vw); max-block-size: min(320px, 50vh); overflow: auto; border: 1px solid var(--md-editor-popup-border); border-radius: var(--md-editor-radius); background: var(--md-editor-popup-bg); color: var(--md-editor-popup-fg); box-shadow: var(--md-editor-popup-shadow); padding: 4px; }
 .completion-popup[hidden] { display: none; }
+.completion-popup-dock { position: fixed; z-index: 40; right: auto; min-inline-size: 0; max-inline-size: none; margin: 0; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; border-radius: 10px; padding: 4px; }
 /* Floating selection toolbar (bubble menu) shown above a text selection.
    Dark by default to match the site's Publish button, with white icons. */
 .selection-toolbar { position: absolute; z-index: 25; display: flex; gap: 1px; padding: 3px; border-radius: var(--md-editor-toolbar-radius, 4px); background: var(--md-editor-toolbar-bg, #333); color: var(--md-editor-toolbar-fg, #fff); white-space: nowrap; transition: left var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)), top var(--md-editor-toolbar-transition, 120ms cubic-bezier(.2,.8,.2,1)); }
@@ -198,6 +200,11 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
    published post output. Values track the editor's CSS custom properties
    so the host can still retheme via --md-editor-*. */
 .live-editor { caret-color: var(--md-editor-fg); }
+.live-editor, .md-line, .md-list-content, .md-task-source, .md-cell, .md-code-line, .md-code-fence-line {
+  -webkit-user-select: text;
+  user-select: text;
+  caret-color: var(--md-editor-fg, CanvasText);
+}
 .live-editor strong, .md-line strong, .md-task-source strong, .md-cell strong { font-weight: 600; }
 .live-editor em, .md-line em, .md-task-source em, .md-cell em { font-style: italic; }
 .live-editor u, .md-line u, .md-task-source u, .md-cell u { text-decoration: underline; }
@@ -222,7 +229,9 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
 .completion-item[aria-selected="true"] { background: color-mix(in srgb, var(--md-editor-popup-fg) 12%, transparent); }
 .completion-item:hover { background: color-mix(in srgb, var(--md-editor-popup-fg) 7%, transparent); }
 .completion-label { font-weight: 500; font-size: 14px; }
-.completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 12px; }
+.completion-detail, .completion-description { color: var(--md-editor-muted); font-size: 12px; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", "Segoe UI", sans-serif; }
+.completion-popup-dock .completion-item { grid-template-columns: 1fr; min-height: 44px; align-items: center; padding: 10px 14px; }
+.completion-popup-dock .completion-detail:empty { display: none; }
 
 .md-list-depth-0 { --md-list-depth: 0; }
 .md-list-depth-1 { --md-list-depth: 1; }
