@@ -937,15 +937,19 @@ function sealPath(pathname) {
     if (embedded) {
         return { locator: embedded, eventId: null };
     }
-    const parts = String(pathname || "").split("/").filter(Boolean);
-    if (parts[0] !== "s" || !/^[0-9a-f]{20}$/.test(parts[1] || "")) {
+    let parts = String(pathname || "").split("/").filter(Boolean);
+    if (parts[0] === "s") {
+        parts = parts.slice(1);
+    }
+    const locator = parts[0] || "";
+    if (!/^[0-9a-f]{20}$/.test(locator)) {
         return null;
     }
-    if (parts.length === 2) {
-        return { locator: parts[1], eventId: null };
+    if (parts.length === 1) {
+        return { locator, eventId: null };
     }
-    if (parts.length === 3 && /^[0-9a-f]{64}$/.test(parts[2])) {
-        return { locator: parts[1], eventId: parts[2] };
+    if (parts.length === 2 && /^[0-9a-f]{64}$/.test(parts[1])) {
+        return { locator, eventId: parts[1] };
     }
     return null;
 }
