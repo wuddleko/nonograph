@@ -1,3 +1,4 @@
+
 <div align="center">
   <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
 </div>
@@ -33,11 +34,7 @@ The instance stores the encrypted note on [nostr relays](https://nostr.com/info)
 
 No account, no profile, no analytics following readers and writers around.  
 
-<p align="center">
-  <a href="demo/nostorgraph.mp4">
-    <img width="830" alt="Nostorgraph demo" src="demo/poster.jpg" />
-  </a>
-</p>
+https://github.com/user-attachments/assets/d1658c7b-da62-4a6d-8701-36dae6517097
 
 ## Instances
 
