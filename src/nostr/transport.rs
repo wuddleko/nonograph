@@ -250,7 +250,9 @@ impl<S: std::os::windows::io::AsRawSocket> PollReady for S {
         const POLLNVAL: i16 = 0x0004;
         const POLLWRNORM: i16 = 0x0010;
         const POLLRDNORM: i16 = 0x0100;
-        let mut events = POLLERR | POLLHUP | POLLNVAL;
+        // WSAPoll returns WSAEINVAL if the request includes POLLERR, POLLHUP,
+        // or POLLNVAL. Those are reported in revents without being requested.
+        let mut events: i16 = 0;
         if read {
             events |= POLLRDNORM;
         }
