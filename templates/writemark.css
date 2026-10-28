@@ -209,6 +209,9 @@ textarea::placeholder { color: var(--md-editor-placeholder, var(--md-editor-mute
 .live-editor em, .md-line em, .md-task-source em, .md-cell em { font-style: italic; }
 .live-editor u, .md-line u, .md-task-source u, .md-cell u { text-decoration: underline; }
 .live-editor mark, .md-line mark, .md-task-source mark, .md-cell mark { background: color-mix(in srgb, #f6e27a 72%, transparent); color: inherit; }
+.live-editor .secret, .md-line .secret, .md-list-content .secret, .md-task-source .secret, .md-cell .secret { filter: blur(5px); cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.live-editor .secret:active:not(.revealed), .md-line .secret:active:not(.revealed), .md-list-content .secret:active:not(.revealed), .md-task-source .secret:active:not(.revealed), .md-cell .secret:active:not(.revealed) { filter: blur(3px); }
+.live-editor .secret.revealed, .md-line .secret.revealed, .md-list-content .secret.revealed, .md-task-source .secret.revealed, .md-cell .secret.revealed { filter: none; cursor: text; -webkit-user-select: text; user-select: text; }
 .live-editor del, .md-line del, .md-task-source del, .md-cell del { text-decoration: line-through; }
 .live-editor a, .md-line a, .md-task-source a, .md-cell a { color: var(--md-editor-fg); text-decoration: underline; }
 .live-editor a:hover, .md-line a:hover, .md-task-source a:hover, .md-cell a:hover { color: color-mix(in srgb, var(--md-editor-fg) 70%, #000 30%); }

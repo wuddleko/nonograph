@@ -719,6 +719,13 @@ class WritemarkEditorElement extends HTMLElement {
     this._liveEditor.addEventListener("input", event => this._onLiveInput(event));
     this._liveEditor.addEventListener("click", event => this._onLiveClick(event));
     this._liveEditor.addEventListener("touchstart", event => {
+      const hidden = event.target?.closest?.(".secret");
+      if (hidden && !hidden.classList.contains("revealed")) {
+        event.preventDefault();
+        hidden.classList.add("revealed");
+        this._suppressLiveClick = true;
+        return;
+      }
       const preview = event.target?.closest?.("[data-phone-preview]");
       if (preview) {
         event.preventDefault();
@@ -3303,6 +3310,15 @@ class WritemarkEditorElement extends HTMLElement {
   }
   _onLiveMouseDown(event) {
     if (this.disabled || this.readonly || this.mode === "source" || event.button !== 0 || event.detail > 1) return;
+    // A still-hidden span opens on press. The caret stays put, so this click
+    // does not turn the line back into markdown. The next press can edit it.
+    const hidden = event.target.closest?.(".secret");
+    if (hidden && !hidden.classList.contains("revealed")) {
+      event.preventDefault();
+      hidden.classList.add("revealed");
+      this._suppressLiveClick = true;
+      return;
+    }
     // Keep a control click from moving the caret or stealing focus.
     if (event.target.closest?.("[data-table-control]")) { event.preventDefault(); return; }
     if (event.target.closest?.("[data-task-checkbox]")) return;

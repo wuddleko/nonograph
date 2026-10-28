@@ -681,6 +681,20 @@ export async function openEmbeddedSeal(eventJson) {
     return null;
 }
 
+function bindSecretReveal(root) {
+    if (!root || root.dataset.secretReveal === "1") {
+        return;
+    }
+    root.dataset.secretReveal = "1";
+    root.addEventListener("click", function (event) {
+        const secret = event.target.closest ? event.target.closest(".secret") : null;
+        if (!secret || !root.contains(secret)) {
+            return;
+        }
+        secret.classList.toggle("revealed");
+    });
+}
+
 function renderOpenedNote(note, page) {
     if (typeof document === "undefined" || !note || typeof note.content !== "string") {
         return;
@@ -694,6 +708,7 @@ function renderOpenedNote(note, page) {
     const maxUrl = Number.isInteger(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 4096;
     const external = content.getAttribute("data-external-links") !== "false";
     content.innerHTML = page.render_markdown(note.content, theme, maxUrl, external);
+    bindSecretReveal(content);
     const heading = document.getElementById("sealed-title");
     const noteTitle = note.title ? String(note.title) : "Untitled";
     if (heading) {

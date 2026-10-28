@@ -1136,6 +1136,11 @@ fn sealed_shell_keeps_the_note_out_of_the_title_and_preview() {
     assert!(draw_body.contains("heading.textContent"));
     assert!(draw_body.contains("document.title = noteTitle"));
     assert!(draw_body.contains("showSealedSave(note, page)"));
+    assert!(draw_body.contains("bindSecretReveal(content)"));
+    assert!(nostr.contains("classList.toggle(\"revealed\")"));
+    assert!(include_str!("../templates/post.js").contains("closest(\".secret\")"));
+    assert!(include_str!("../templates/writemark.css").contains(".md-line .secret"));
+    assert!(include_str!("../templates/writemark.js").contains("classList.add(\"revealed\")"));
     assert!(!draw_body.contains("location.hash"));
     assert!(!draw_body.contains("event.content"));
     assert!(nostr.contains("sealedSaveFilename(fields.title, \".md\")"));

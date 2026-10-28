@@ -1,8 +1,9 @@
-            // Secret text reveal functionality
-            document.querySelectorAll(".secret").forEach(function (secret) {
-                secret.addEventListener("click", function () {
-                    this.classList.toggle("revealed");
-                });
+            // Secret text is blurred until a click. The listener stays on the
+            // document because a published note is inserted after this script runs.
+            document.addEventListener("click", function (event) {
+                var secret = event.target.closest ? event.target.closest(".secret") : null;
+                if (!secret) return;
+                secret.classList.toggle("revealed");
             });
 
             document.querySelectorAll("a.nostr-id").forEach(function (link) {
