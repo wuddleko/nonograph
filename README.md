@@ -33,7 +33,11 @@ The instance stores the encrypted note on [nostr relays](https://nostr.com/info)
 
 No account, no profile, no analytics following readers and writers around.  
 
-<video src="demo/nostorgraph.mp4" width="830" controls></video>
+<p align="center">
+  <a href="demo/nostorgraph.mp4">
+    <img width="830" alt="Nostorgraph demo" src="demo/poster.jpg" />
+  </a>
+</p>
 
 ## Instances
 

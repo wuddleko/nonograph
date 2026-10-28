@@ -33,7 +33,11 @@ Nostorgraph 是一个简单的匿名发布平台，适合想把文字放到网�
 
 没有账号，没有个人主页，也不会有分析工具跟着读者和作者。
 
-<video src="demo/nostorgraph.mp4" width="830" controls></video>
+<p align="center">
+  <a href="demo/nostorgraph.mp4">
+    <img width="830" alt="Nostorgraph 演示" src="demo/poster.jpg" />
+  </a>
+</p>
 
 ## 实例
 

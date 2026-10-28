@@ -33,7 +33,11 @@ L'instance stocke la note chiffrée sur des [relais nostr](https://nostr.com/inf
 
 Pas de compte, pas de profil, pas d'analyse qui suit les lecteurs et les auteurs.
 
-<video src="demo/nostorgraph.mp4" width="830" controls></video>
+<p align="center">
+  <a href="demo/nostorgraph.mp4">
+    <img width="830" alt="Démo Nostorgraph" src="demo/poster.jpg" />
+  </a>
+</p>
 
 ## Instances
 
