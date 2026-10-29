@@ -2,11 +2,15 @@ name: Release
 
 on:
   release:
-    types: [created]
+    types: [published]
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   build:
-    name: Build for ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -30,7 +34,9 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -39,15 +45,12 @@ jobs:
           targets: ${{ matrix.target }},wasm32-unknown-unknown
 
       - name: Cache cargo registry
-        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build binary
         run: cargo build --locked --release --target ${{ matrix.target }}
@@ -66,20 +69,41 @@ jobs:
           echo "OS_VERSION=$osVersion" >> $env:GITHUB_ENV
 
       - name: Create build info file
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          BUILD_TARGET: ${{ matrix.target }}
+          BUILD_OS: ${{ matrix.os }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          echo "Build Information for nostorgraph ${{ github.ref_name }}" > build-info-${{ matrix.target }}.txt
-          echo "=================================================" >> build-info-${{ matrix.target }}.txt
-          echo "Target: ${{ matrix.target }}" >> build-info-${{ matrix.target }}.txt
-          echo "OS: ${{ matrix.os }}" >> build-info-${{ matrix.target }}.txt
-          echo "OS Version: ${{ env.OS_VERSION }}" >> build-info-${{ matrix.target }}.txt
-          echo "Rust Version: $(rustc --version)" >> build-info-${{ matrix.target }}.txt
-          echo "Cargo Version: $(cargo --version)" >> build-info-${{ matrix.target }}.txt
-          echo "Build Date: $(date)" >> build-info-${{ matrix.target }}.txt
-          echo "Release Tag: ${{ github.ref_name }}" >> build-info-${{ matrix.target }}.txt
-          echo "Commit SHA: ${{ github.sha }}" >> build-info-${{ matrix.target }}.txt
+          {
+            echo "Build Information for nostorgraph ${RELEASE_TAG}"
+            echo "================================================="
+            echo "Target: ${BUILD_TARGET}"
+            echo "OS: ${BUILD_OS}"
+            echo "OS Version: ${OS_VERSION:-unknown}"
+            if [ -n "${KERNEL_VERSION:-}" ]; then
+              echo "Kernel: ${KERNEL_VERSION}"
+            fi
+            echo "Rust Version: $(rustc --version)"
+            echo "Cargo Version: $(cargo --version)"
+            echo "Build Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Release Tag: ${RELEASE_TAG}"
+            echo "Commit SHA: ${COMMIT_SHA}"
+          } > "build-info-${BUILD_TARGET}.txt"
+
+      - name: Upload build info
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-info-${{ matrix.target }}
+          path: build-info-${{ matrix.target }}.txt
+          if-no-files-found: error
+          overwrite: true
 
       - name: Prepare release files (Linux)
         if: runner.os == 'Linux'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p release
           cp target/${{ matrix.target }}/release/nostorgraph${{ matrix.binary-suffix }} release/nostorgraph${{ matrix.binary-suffix }}
@@ -89,10 +113,12 @@ jobs:
           cp scripts/run scripts/nostorgraph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
-          tar -czf ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
+          tar -czf "../nostorgraph-${RELEASE_TAG}-${{ matrix.target }}${{ matrix.archive-suffix }}" .
 
       - name: Prepare release files (macOS)
         if: runner.os == 'macOS'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p release
           cp target/${{ matrix.target }}/release/nostorgraph${{ matrix.binary-suffix }} release/nostorgraph${{ matrix.binary-suffix }}
@@ -102,10 +128,12 @@ jobs:
           cp scripts/run scripts/nostorgraph.sh scripts/status.sh release/scripts/
           cp build-info-${{ matrix.target }}.txt release/
           cd release
-          zip -r ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} .
+          zip -r "../nostorgraph-${RELEASE_TAG}-${{ matrix.target }}${{ matrix.archive-suffix }}" .
 
       - name: Prepare release files (Windows)
         if: runner.os == 'Windows'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir release
           Copy-Item "target\${{ matrix.target }}\release\nostorgraph${{ matrix.binary-suffix }}" "release\nostorgraph${{ matrix.binary-suffix }}"
@@ -113,49 +141,53 @@ jobs:
           Copy-Item pages, templates, scripts -Destination release -Recurse
           Copy-Item build-info-${{ matrix.target }}.txt -Destination release
           cd release
-          Compress-Archive -Path * -DestinationPath ../nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }}
-    
+          Compress-Archive -Path * -DestinationPath "../nostorgraph-${env:RELEASE_TAG}-${{ matrix.target }}${{ matrix.archive-suffix }}"
+
       - name: Upload release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload ${{ github.ref_name }} ./nostorgraph-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.archive-suffix }} --clobber
+          gh release upload "$RELEASE_TAG" "./nostorgraph-${RELEASE_TAG}-${{ matrix.target }}${{ matrix.archive-suffix }}" --clobber
 
   create-combined-build-info:
     name: Create Combined Build Info
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Download all build info artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
+      - name: Download build info
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-info-*
+          path: build-info
 
       - name: Create combined build info
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          echo "Combined Build Information for nostorgraph ${{ github.ref_name }}" > combined-build-info.txt
-          echo "===============================================================" >> combined-build-info.txt
-          echo "Release Date: $(date)" >> combined-build-info.txt
-          echo "Release Tag: ${{ github.ref_name }}" >> combined-build-info.txt
-          echo "Commit SHA: ${{ github.sha }}" >> combined-build-info.txt
-          echo "" >> combined-build-info.txt
-          echo "Supported Platforms:" >> combined-build-info.txt
-          echo "- Linux x86_64 (Ubuntu Latest)" >> combined-build-info.txt
-          echo "- macOS x86_64 (Intel)" >> combined-build-info.txt
-          echo "- macOS aarch64 (Apple Silicon)" >> combined-build-info.txt
-          echo "- Windows x86_64" >> combined-build-info.txt
-          echo "" >> combined-build-info.txt
-          echo "Build Environment Details:" >> combined-build-info.txt
-          echo "- Rust toolchain: stable" >> combined-build-info.txt
-          echo "- GitHub Actions runners used:" >> combined-build-info.txt
-          echo "  * ubuntu-latest" >> combined-build-info.txt
-          echo "  * macos-latest" >> combined-build-info.txt
-          echo "  * windows-latest" >> combined-build-info.txt
+          mapfile -t files < <(find build-info -type f -name 'build-info-*.txt' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no per-target build info was downloaded" >&2
+            exit 1
+          fi
+          {
+            echo "Combined Build Information for nostorgraph ${RELEASE_TAG}"
+            echo "==============================================================="
+            echo "Release Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Release Tag: ${RELEASE_TAG}"
+            echo "Commit SHA: ${COMMIT_SHA}"
+            echo
+            for file in "${files[@]}"; do
+              echo "-----"
+              cat "$file"
+              echo
+            done
+          } > combined-build-info.txt
 
       - name: Upload combined build info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload ${{ github.ref_name }} ./combined-build-info.txt --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" ./combined-build-info.txt --clobber

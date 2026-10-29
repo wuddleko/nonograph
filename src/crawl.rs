@@ -24,6 +24,8 @@ const SAVE_RETRY: Duration = Duration::from_secs(60);
 const BAD_FILE_WAIT: Duration = Duration::from_secs(15 * 60);
 const FIRST_CRAWL: Duration = Duration::from_secs(60 * 60);
 const STEADY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const USABLE_FLOOR: usize = 2;
+const FLOOR_WAIT: Duration = Duration::from_secs(15 * 60);
 
 pub(crate) fn pool_path(content_dir: &Path) -> PathBuf {
     content_dir.join("relay-pool.json")
@@ -112,7 +114,7 @@ where
         let wait = match &crawled {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => BAD_FILE_WAIT,
             Err(_) => pool_file_wait(path, now).max(SAVE_RETRY),
-            Ok(()) => pass_wait(path, boot.elapsed()),
+            Ok(()) => pass_wait(path, boot.elapsed(), now),
         };
         eprintln!("Nostorgraph: {}", crawl_pause_line(path, wait));
         if !sleep(wait) {
@@ -184,9 +186,12 @@ fn pool_file_wait(path: &Path, now: i64) -> Duration {
     }
 }
 
-fn pass_wait(path: &Path, elapsed: Duration) -> Duration {
+fn pass_wait(path: &Path, elapsed: Duration, now: i64) -> Duration {
     if found_in(path) < FOUND_GOAL && elapsed < FIRST_CRAWL {
         return Duration::ZERO;
+    }
+    if usable_in(path) < USABLE_FLOOR {
+        return pool_file_wait(path, now).min(FLOOR_WAIT);
     }
     STEADY_INTERVAL
 }

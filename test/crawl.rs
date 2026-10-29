@@ -1186,12 +1186,63 @@ fn crawl_lines_name_the_relay_and_the_wait() {
     assert_eq!(wait_words(Duration::from_secs(0)), "0s");
     assert_eq!(wait_words(Duration::from_secs(90)), "1m 30s");
     assert_eq!(wait_words(Duration::from_secs(24 * 60 * 60)), "24h");
-    assert_eq!(pass_wait(&path, Duration::ZERO), Duration::ZERO);
-    assert_eq!(pass_wait(&path, FIRST_CRAWL), STEADY_INTERVAL);
+    assert_eq!(pass_wait(&path, Duration::ZERO, NOW), Duration::ZERO);
+    assert_eq!(pass_wait(&path, FIRST_CRAWL, NOW), Duration::ZERO);
     let mut rows = Vec::new();
     for index in 0..FOUND_GOAL {
-        rows.push(row(&format!("wss://found{index}.example"), NOW, None));
+        rows.push(row(
+            &format!("wss://found{index}.example"),
+            NOW + 24 * 60 * 60,
+            None,
+        ));
     }
     save(&path, &Pool { rows }).unwrap();
-    assert_eq!(pass_wait(&path, Duration::ZERO), STEADY_INTERVAL);
+    assert_eq!(pass_wait(&path, Duration::ZERO, NOW), FLOOR_WAIT);
+}
+
+#[test]
+fn a_pool_under_the_usable_floor_does_not_take_the_daily_pause() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay-pool.json");
+    let open = saved_document(include_str!("../test/nip11/open.json"));
+    let mut alone = visited("wss://open.example", true, open.clone(), true);
+    alone.next_try = NOW + 5 * 60;
+    save(&path, &Pool { rows: vec![alone.clone()] }).unwrap();
+
+    assert_eq!(pass_wait(&path, Duration::ZERO, NOW), Duration::ZERO);
+    assert_eq!(
+        pass_wait(&path, FIRST_CRAWL, NOW),
+        Duration::from_secs(5 * 60)
+    );
+
+    alone.next_try = NOW + 24 * 60 * 60;
+    save(&path, &Pool { rows: vec![alone] }).unwrap();
+    assert_eq!(pass_wait(&path, FIRST_CRAWL, NOW), FLOOR_WAIT);
+
+    let mut paired = vec![
+        visited("wss://open.example", true, open.clone(), true),
+        visited("wss://second.example", true, open.clone(), true),
+    ];
+    for row in &mut paired {
+        row.next_try = NOW + 24 * 60 * 60;
+    }
+    save(&path, &Pool { rows: paired }).unwrap();
+    assert_eq!(pass_wait(&path, FIRST_CRAWL, NOW), STEADY_INTERVAL);
+
+    let mut rows: Vec<Row> = (0..FOUND_GOAL)
+        .map(|index| {
+            row(
+                &format!("wss://found{index}.example"),
+                NOW + 24 * 60 * 60,
+                None,
+            )
+        })
+        .collect();
+    save(&path, &Pool { rows: rows.clone() }).unwrap();
+    assert_eq!(pass_wait(&path, Duration::ZERO, NOW), FLOOR_WAIT);
+
+    rows[0] = visited("wss://relay0.example", true, open.clone(), true);
+    rows[1] = visited("wss://relay1.example", true, open, true);
+    save(&path, &Pool { rows }).unwrap();
+    assert_eq!(pass_wait(&path, Duration::ZERO, NOW), STEADY_INTERVAL);
 }
