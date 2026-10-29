@@ -1,6 +1,6 @@
 
 <div align="center">
-  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
+  <img align="center" width="210" height="120" alt="Nostorgraph" src="assets/logo-ntor-bw.png" />
 </div>
 
 <h1 align="center">Nostorgraph</h1>

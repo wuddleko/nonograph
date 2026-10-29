@@ -33,7 +33,7 @@ const PAGE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_p
 pub(crate) const PDF_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf.js"));
 const PDF_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/nostorgraph_pdf_bg.wasm"));
 const PDF_LICENSE: &str = include_str!("../../pdf/fonts/LICENSE");
-const LOGO_PNG: &[u8] = include_bytes!("../../logo-proposals/favicon-nt-bw.png");
+const LOGO_PNG: &[u8] = include_bytes!("../../assets/favicon-nt-bw.png");
 
 const LONG_CACHE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "public, no-cache";

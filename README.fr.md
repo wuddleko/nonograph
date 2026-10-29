@@ -1,5 +1,5 @@
 <div align="center">
-  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
+  <img align="center" width="210" height="120" alt="Nostorgraph" src="assets/logo-ntor-bw.png" />
 </div>
 
 <h1 align="center">Nostorgraph</h1>
@@ -33,11 +33,7 @@ L'instance stocke la note chiffrée sur des [relais nostr](https://nostr.com/inf
 
 Pas de compte, pas de profil, pas d'analyse qui suit les lecteurs et les auteurs.
 
-<p align="center">
-  <a href="demo/nostorgraph.mp4">
-    <img width="830" alt="Démo Nostorgraph" src="demo/poster.jpg" />
-  </a>
-</p>
+https://github.com/user-attachments/assets/ee8178cc-fee1-4705-8995-44b75c747a19
 
 ## Instances
 

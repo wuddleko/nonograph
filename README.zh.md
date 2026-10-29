@@ -1,5 +1,5 @@
 <div align="center">
-  <img align="center" width="210" height="120" alt="Nostorgraph" src="logo-proposals/logo-ntor-bw.png" />
+  <img align="center" width="210" height="120" alt="Nostorgraph" src="assets/logo-ntor-bw.png" />
 </div>
 
 <h1 align="center">Nostorgraph</h1>
@@ -33,11 +33,7 @@ Nostorgraph 是一个简单的匿名发布平台，适合想把文字放到网�
 
 没有账号，没有个人主页，也不会有分析工具跟着读者和作者。
 
-<p align="center">
-  <a href="demo/nostorgraph.mp4">
-    <img width="830" alt="Nostorgraph 演示" src="demo/poster.jpg" />
-  </a>
-</p>
+https://github.com/user-attachments/assets/ee8178cc-fee1-4705-8995-44b75c747a19
 
 ## 实例
 
