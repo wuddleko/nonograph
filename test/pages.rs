@@ -1493,6 +1493,7 @@ fn a_fetch_list_returns_only_the_link_relay() {
 }
 
 #[test]
+#[serial(nojs_sealed_fetch)]
 fn a_fetch_with_dead_link_relays_reads_from_a_usable_row() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
@@ -1565,6 +1566,7 @@ fn a_fetch_with_dead_link_relays_reads_from_a_usable_row() {
 }
 
 #[test]
+#[serial(nojs_sealed_fetch)]
 fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");
@@ -1618,6 +1620,7 @@ fn a_fetch_whose_link_relay_has_the_note_does_not_read_the_fixture_row() {
 }
 
 #[test]
+#[serial(nojs_sealed_fetch)]
 fn a_long_link_asks_every_named_relay_and_a_seventh_can_come_from_the_pool() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("relay-pool.json");

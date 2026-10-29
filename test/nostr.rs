@@ -314,6 +314,7 @@ fn a_policy_reason_is_a_durable_refusal() {
 }
 
 #[test]
+#[serial(nojs_sealed_fetch)]
 fn a_fetch_of_that_relay_returns_the_note_and_a_dead_relay_returns_nothing() {
     let locator = "0123456789abcdef0123";
     let note = sign_sealed_note("kept", locator, 1_700_000_000);
