@@ -631,10 +631,17 @@ pub struct NostrPublishBody {
 }
 
 #[derive(Serialize)]
+pub(super) struct MissedRelay {
+    pub(super) relay: String,
+    pub(super) reason: String,
+}
+
+#[derive(Serialize)]
 pub struct NostrPublishResult {
     pub(super) locator: String,
     pub(super) accepted: Vec<String>,
     pub(super) hints: Vec<String>,
+    pub(super) missed: Vec<MissedRelay>,
 }
 
 pub(crate) fn note_and_relays_for_publish(
@@ -658,7 +665,11 @@ pub(crate) fn note_and_relays_for_publish(
     Some((note, relays, locator))
 }
 
-pub(super) fn publish_result(locator: String, accepted: Vec<String>) -> NostrPublishResult {
+pub(super) fn publish_result(
+    locator: String,
+    accepted: Vec<String>,
+    missed: &[crate::nostr::RelayAttempt],
+) -> NostrPublishResult {
     let hints = public_relays(&accepted);
     let locator = if accepted
         .iter()
@@ -668,10 +679,23 @@ pub(super) fn publish_result(locator: String, accepted: Vec<String>) -> NostrPub
     } else {
         String::new()
     };
+    let missed = missed
+        .iter()
+        .filter_map(|attempt| {
+            let Err(failure) = &attempt.result else {
+                return None;
+            };
+            Some(MissedRelay {
+                relay: attempt.relay.clone(),
+                reason: failure.report().to_string(),
+            })
+        })
+        .collect();
     NostrPublishResult {
         locator,
         accepted,
         hints,
+        missed,
     }
 }
 
@@ -753,7 +777,7 @@ pub(super) fn publish_sealed_note(
     };
     let timeout = relay_timeout(config);
     let published = publish_and_record(&relays, &note, timeout);
-    let result = publish_result(locator.clone(), published.accepted);
+    let result = publish_result(locator.clone(), published.accepted, &published.missed);
     if result.locator.is_empty() && matches!(locked, Some(super::seal_row::LockPut::Created)) {
         super::seal_row::release_lock(&locator);
     }

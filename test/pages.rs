@@ -2362,7 +2362,7 @@ fn nostr_publish_accepts_a_sealed_note_that_passes_the_stamp() {
 #[test]
 fn publish_result_names_the_locator_and_accepted_relays() {
     let accepted = vec!["wss://relay.damus.io".to_string()];
-    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone());
+    let result = publish_result("0123456789abcdef0123".to_string(), accepted.clone(), &[]);
     assert_eq!(result.locator, "0123456789abcdef0123");
     assert_eq!(result.accepted, accepted);
     let json = serde_json::to_string(&result).unwrap();
@@ -2374,32 +2374,36 @@ fn publish_result_names_the_locator_and_accepted_relays() {
     assert!(!json.contains("\"key\""));
     assert!(!json.contains("nevent"));
 
-    assert!(publish_result(String::new(), accepted).locator.is_empty());
-    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new());
+    assert!(publish_result(String::new(), accepted, &[])
+        .locator
+        .is_empty());
+    let failed = publish_result("0123456789abcdef0123".to_string(), Vec::new(), &[]);
     assert!(failed.locator.is_empty());
     assert!(failed.accepted.is_empty());
     let failed_json = serde_json::to_string(&failed).unwrap();
     assert!(!failed_json.contains("0123456789abcdef0123"));
 
     let extra_only = vec!["wss://relay.primal.net".to_string()];
-    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone());
+    let extra = publish_result("0123456789abcdef0123".to_string(), extra_only.clone(), &[]);
     assert_eq!(extra.locator, "0123456789abcdef0123");
     assert_eq!(extra.accepted, extra_only);
     let both = vec![
         "wss://relay.primal.net".to_string(),
         "wss://relay.damus.io".to_string(),
     ];
-    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone());
+    let landed = publish_result("0123456789abcdef0123".to_string(), both.clone(), &[]);
     assert_eq!(landed.locator, "0123456789abcdef0123");
     assert_eq!(landed.accepted, both);
     let private = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://127.0.0.1".to_string()],
+        &[],
     );
     assert!(private.locator.is_empty());
     let cased = publish_result(
         "0123456789abcdef0123".to_string(),
         vec!["wss://Relay.Primal.net/".to_string()],
+        &[],
     );
     assert_eq!(cased.locator, "0123456789abcdef0123");
 }
@@ -2432,7 +2436,7 @@ fn the_long_share_link_names_every_accepted_relay() {
     assert!(!capped.contains("hint6.example"));
     assert!(!capped.contains("127.0.0.1"));
 
-    let result = publish_result(locator.to_string(), accepted.clone());
+    let result = publish_result(locator.to_string(), accepted.clone(), &[]);
     assert_eq!(result.locator, locator);
     assert_eq!(result.accepted, accepted);
     assert_eq!(
@@ -3693,8 +3697,49 @@ fn a_refused_publish_stores_nothing() {
     drop(script);
     assert!(result.locator.is_empty());
     assert!(result.accepted.is_empty());
+    assert_eq!(result.missed.len(), 1);
+    assert_eq!(result.missed[0].relay, "wss://marked.example");
     assert_eq!(hold_dir_count(dir.path()), 0);
     assert!(super::seal_row::read(locator).is_none());
+}
+
+#[test]
+#[serial(publish_script)]
+fn one_accepted_relay_keeps_the_note_and_names_the_misses() {
+    let locator = "0123456789abcdef0123";
+    let note = crate::nostr::sign_v2_note(locator, 1_700_000_000);
+    let event = serde_json::from_str(&note.event_json).unwrap();
+    let mut config = crate::config::Config::default();
+    config.security.csrf_protection_enabled = false;
+    let body = NostrPublishBody {
+        event,
+        relays: vec![
+            "wss://landed.example".to_string(),
+            "wss://slow.example".to_string(),
+            "wss://down.example".to_string(),
+        ],
+        seal_claim: String::new(),
+        csrf_token: String::new(),
+    };
+    let script = crate::nostr::PublishScript::begin();
+    script.accept("wss://landed.example");
+    script.time_out("wss://slow.example");
+    script.disconnect("wss://down.example");
+    let result = publish_sealed_note(&body, &config, "").unwrap();
+    drop(script);
+    assert_eq!(result.locator, locator);
+    assert_eq!(result.accepted, vec!["wss://landed.example".to_string()]);
+    assert_eq!(result.hints, result.accepted);
+    assert_eq!(result.missed.len(), 2);
+    assert_eq!(result.missed[0].relay, "wss://slow.example");
+    assert_eq!(result.missed[0].reason, "timed out");
+    assert_eq!(result.missed[1].relay, "wss://down.example");
+    assert_eq!(result.missed[1].reason, "connection refused");
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains(&format!("\"locator\":\"{locator}\"")));
+    assert!(json.contains("\"missed\""));
+    assert!(json.contains("timed out"));
+    assert!(json.contains("connection refused"));
 }
 
 #[test]
@@ -4377,6 +4422,10 @@ fn homepage_js_can_send_a_public_long_form_note() {
     assert!(!html.contains("On Nostr"));
     assert_eq!(html.matches(">Store</button>").count(), 2);
     assert!(html.contains("id=\"share-links\" class=\"share-links\" hidden"));
+    assert!(!html.contains("share-missed"));
+    assert!(!home.contains("shareMissedText"));
+    assert!(!home.contains("share-missed"));
+    assert!(!nostr.contains("result.missed"));
     assert!(html.contains(
         "Most private. This site stores nothing. The event and the relays are in the address. The key is the part after #."
     ));

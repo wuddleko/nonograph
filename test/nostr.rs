@@ -252,8 +252,48 @@ fn a_publish_records_the_refused_relay_and_leaves_out_a_relay_that_did_not_answe
     );
     assert_eq!(published.refused, vec!["wss://refused.example".to_string()]);
     assert!(published.accepted.is_empty());
+    assert_eq!(published.missed.len(), 3);
+    assert!(matches!(
+        &published.missed[0].result,
+        Err(RelayFailure::Rejected(reason)) if reason == "blocked: relay rejected the note"
+    ));
+    assert!(matches!(
+        &published.missed[1].result,
+        Err(RelayFailure::Rejected(reason)) if reason == "rate-limited: slow down"
+    ));
+    assert!(matches!(
+        &published.missed[2].result,
+        Err(RelayFailure::Unreachable(_))
+    ));
+    assert_eq!(published.missed[2].relay, "wss://silent.example");
     assert!(started.elapsed() < Duration::from_millis(500));
     drop(script);
+}
+
+#[test]
+#[serial(publish_script)]
+fn a_panicked_relay_stays_a_miss_and_leaves_the_accepted_relay() {
+    let note = sign_sealed_note("kept", "0123456789abcdef0123", 1_700_000_000);
+    let script = PublishScript::begin();
+    script.accept("wss://landed.example");
+    script.panic_on("wss://boom.example");
+    let published = publish_to_relays(
+        &[
+            "wss://landed.example".to_string(),
+            "wss://boom.example".to_string(),
+        ],
+        &note,
+        Duration::from_secs(2),
+    );
+    drop(script);
+    assert_eq!(published.accepted, vec!["wss://landed.example".to_string()]);
+    assert!(published.refused.is_empty());
+    assert_eq!(published.missed.len(), 1);
+    assert_eq!(published.missed[0].relay, "wss://boom.example");
+    assert!(matches!(
+        &published.missed[0].result,
+        Err(RelayFailure::Unreachable(reason)) if reason == "relay publish failed"
+    ));
 }
 
 #[test]
@@ -1570,6 +1610,14 @@ fn publish_waits_for_every_relay_it_will_name() {
     let elapsed = started.elapsed();
     assert!(accepted.accepted.is_empty());
     assert!(accepted.refused.is_empty());
+    assert!(matches!(
+        &accepted.missed[0].result,
+        Err(RelayFailure::Unreachable(_))
+    ));
+    assert!(matches!(
+        accepted.missed[1].result,
+        Err(RelayFailure::TimedOut)
+    ));
     assert!(
         elapsed >= Duration::from_millis(150),
         "returned when the first relay failed: {elapsed:?}"

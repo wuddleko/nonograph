@@ -10,7 +10,7 @@ use super::transport::{
     tls_handshake, SOCKS_MISCONFIGURED,
 };
 #[cfg(test)]
-use super::{canonical_public_relay, same_public_relay, SendFailure};
+use super::{canonical_public_relay, same_public_relay, RelayFailure};
 use super::{public_relay_url, relay_socks, RelaySocks};
 
 pub(super) fn assign_relay(
@@ -395,13 +395,15 @@ pub(crate) struct RelayAnswer {
 struct PublishScriptBook {
     refused: Mutex<Vec<(String, String)>>,
     accepted: Mutex<Vec<String>>,
+    missed: Mutex<Vec<(String, RelayFailure)>>,
+    panics: Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
 static PUBLISH_SCRIPTS: Mutex<Option<Arc<PublishScriptBook>>> = Mutex::new(None);
 
 #[cfg(test)]
-pub(super) fn scripted_send(relay: &str) -> Option<Result<(), SendFailure>> {
+pub(super) fn scripted_send(relay: &str) -> Option<Result<(), RelayFailure>> {
     let book = PUBLISH_SCRIPTS
         .lock()
         .expect("publish scripts")
@@ -412,9 +414,24 @@ pub(super) fn scripted_send(relay: &str) -> Option<Result<(), SendFailure>> {
         .iter()
         .find(|(have, _)| same_public_relay(have, relay))
     {
-        return Some(Err(SendFailure::Refused(reason.clone())));
+        return Some(Err(RelayFailure::Rejected(reason.clone())));
     }
     drop(refused);
+    let missed = book.missed.lock().expect("publish misses");
+    if let Some((_, failure)) = missed
+        .iter()
+        .find(|(have, _)| same_public_relay(have, relay))
+    {
+        return Some(Err(failure.clone()));
+    }
+    drop(missed);
+    let panic_now = {
+        let panics = book.panics.lock().expect("publish panics");
+        panics.iter().any(|have| same_public_relay(have, relay))
+    };
+    if panic_now {
+        panic!("scripted relay panic");
+    }
     let accepted = book.accepted.lock().expect("publish accepts");
     if accepted.iter().any(|have| same_public_relay(have, relay)) {
         return Some(Ok(()));
@@ -433,6 +450,8 @@ impl PublishScript {
         let book = Arc::new(PublishScriptBook {
             refused: Mutex::new(Vec::new()),
             accepted: Mutex::new(Vec::new()),
+            missed: Mutex::new(Vec::new()),
+            panics: Mutex::new(Vec::new()),
         });
         *PUBLISH_SCRIPTS.lock().expect("publish scripts") = Some(Arc::clone(&book));
         Self { book }
@@ -446,6 +465,24 @@ impl PublishScript {
         self.push_refusal(relay, "rate-limited: slow down");
     }
 
+    pub(crate) fn time_out(&self, relay: &str) {
+        self.push_miss(relay, RelayFailure::TimedOut);
+    }
+
+    pub(crate) fn disconnect(&self, relay: &str) {
+        self.push_miss(
+            relay,
+            RelayFailure::Unreachable("connection refused".to_string()),
+        );
+    }
+
+    pub(crate) fn panic_on(&self, relay: &str) {
+        let Some(url) = canonical_public_relay(relay) else {
+            return;
+        };
+        self.book.panics.lock().expect("publish panics").push(url);
+    }
+
     fn push_refusal(&self, relay: &str, reason: &str) {
         let Some(url) = canonical_public_relay(relay) else {
             return;
@@ -455,6 +492,17 @@ impl PublishScript {
             .lock()
             .expect("publish refusals")
             .push((url, reason.to_string()));
+    }
+
+    fn push_miss(&self, relay: &str, failure: RelayFailure) {
+        let Some(url) = canonical_public_relay(relay) else {
+            return;
+        };
+        self.book
+            .missed
+            .lock()
+            .expect("publish misses")
+            .push((url, failure));
     }
 
     pub(crate) fn accept(&self, relay: &str) {

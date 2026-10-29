@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -174,6 +175,12 @@ fn stamp_locator(tags: &[Vec<String>]) -> Option<String> {
 pub struct PublishedRelays {
     pub accepted: Vec<String>,
     pub refused: Vec<String>,
+    pub(crate) missed: Vec<RelayAttempt>,
+}
+
+pub(crate) struct RelayAttempt {
+    pub relay: String,
+    pub result: Result<(), RelayFailure>,
 }
 
 pub fn publish_to_relays(
@@ -184,15 +191,33 @@ pub fn publish_to_relays(
     publish_to_relays_inner(relays, note, timeout, true)
 }
 
-enum SendFailure {
-    Refused(String),
-    Unanswered(String),
+#[derive(Clone)]
+pub(crate) enum RelayFailure {
+    TimedOut,
+    Unreachable(String),
+    Rejected(String),
 }
 
-impl SendFailure {
-    fn detail(self) -> String {
+impl RelayFailure {
+    fn from_transport(error: String) -> Self {
+        if error == RELAY_TIMEOUT {
+            Self::TimedOut
+        } else {
+            Self::Unreachable(error)
+        }
+    }
+
+    pub(crate) fn reason(&self) -> &str {
         match self {
-            SendFailure::Refused(reason) | SendFailure::Unanswered(reason) => reason,
+            Self::TimedOut => RELAY_TIMEOUT,
+            Self::Unreachable(reason) | Self::Rejected(reason) => reason,
+        }
+    }
+
+    pub(crate) fn report(&self) -> &str {
+        match self {
+            Self::TimedOut => "timed out",
+            Self::Unreachable(reason) | Self::Rejected(reason) => reason,
         }
     }
 }
@@ -218,6 +243,7 @@ fn publish_to_relays_inner(
         return PublishedRelays {
             accepted: Vec::new(),
             refused: Vec::new(),
+            missed: Vec::new(),
         };
     }
 
@@ -230,33 +256,53 @@ fn publish_to_relays_inner(
             let event_json = note.event_json.clone();
             let event_id = event_id.clone();
             handles.push(scope.spawn(move || {
-                match send_event(&relay, &event_json, &event_id, deadline, public_only) {
-                    Ok(()) => Some(Ok(relay)),
-                    Err(SendFailure::Refused(error)) => {
-                        eprintln!("Nostorgraph: relay {relay} did not accept the note: {error}");
-                        if durable_refusal(&error) {
-                            Some(Err(relay))
-                        } else {
-                            None
-                        }
+                let result = match catch_unwind(AssertUnwindSafe(|| {
+                    send_event(&relay, &event_json, &event_id, deadline, public_only)
+                })) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(failure)) => {
+                        eprintln!(
+                            "Nostorgraph: relay {relay} did not accept the note: {}",
+                            failure.reason()
+                        );
+                        Err(failure)
                     }
-                    Err(SendFailure::Unanswered(error)) => {
-                        eprintln!("Nostorgraph: relay {relay} did not accept the note: {error}");
-                        None
+                    Err(payload) => {
+                        eprintln!(
+                            "Nostorgraph: relay {relay} publish panicked: {}",
+                            panic_detail(&payload)
+                        );
+                        Err(RelayFailure::Unreachable(
+                            "relay publish failed".to_string(),
+                        ))
                     }
-                }
+                };
+                RelayAttempt { relay, result }
             }));
         }
         let mut accepted = Vec::new();
         let mut refused = Vec::new();
+        let mut missed = Vec::new();
         for handle in handles {
-            match handle.join() {
-                Ok(Some(Ok(relay))) => accepted.push(relay),
-                Ok(Some(Err(relay))) => refused.push(relay),
-                _ => {}
+            let Ok(attempt) = handle.join() else {
+                continue;
+            };
+            if let Err(RelayFailure::Rejected(reason)) = &attempt.result {
+                if durable_refusal(reason) {
+                    refused.push(attempt.relay.clone());
+                }
+            }
+            if attempt.result.is_ok() {
+                accepted.push(attempt.relay);
+            } else {
+                missed.push(attempt);
             }
         }
-        PublishedRelays { accepted, refused }
+        PublishedRelays {
+            accepted,
+            refused,
+            missed,
+        }
     })
 }
 
@@ -277,6 +323,14 @@ fn parse_ok(message: &str, event_id_hex: &str) -> Option<Result<(), String>> {
     }
 }
 
+fn panic_detail(payload: &Box<dyn std::any::Any + Send>) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
+}
+
 fn durable_refusal(reason: &str) -> bool {
     reason.starts_with("blocked:") || reason.starts_with("restricted:")
 }
@@ -287,28 +341,28 @@ fn send_event(
     event_id_hex: &str,
     deadline: Instant,
     public_only: bool,
-) -> Result<(), SendFailure> {
+) -> Result<(), RelayFailure> {
     #[cfg(test)]
     if let Some(result) = scripted_send(relay) {
         return result;
     }
     let mut socket = open_relay_socket(relay, deadline, public_only, relay_socks())
-        .map_err(SendFailure::Unanswered)?;
+        .map_err(RelayFailure::from_transport)?;
     limit_socket(&mut socket, PUBLISH_FRAME_MAX);
     let payload = format!("[\"EVENT\",{event_json}]");
     arm_stream(
         socket.get_ref().get_ref(),
-        wait_budget(deadline, None).map_err(SendFailure::Unanswered)?,
+        wait_budget(deadline, None).map_err(RelayFailure::from_transport)?,
     )
-    .map_err(SendFailure::Unanswered)?;
+    .map_err(RelayFailure::from_transport)?;
     socket
         .send(tungstenite::Message::Text(payload.into()))
-        .map_err(|error| SendFailure::Unanswered(error.to_string()))?;
+        .map_err(|error| RelayFailure::from_transport(error.to_string()))?;
 
     loop {
-        match read_incoming(&mut socket, deadline, None).map_err(SendFailure::Unanswered)? {
+        match read_incoming(&mut socket, deadline, None).map_err(RelayFailure::from_transport)? {
             Incoming::Closed => {
-                return Err(SendFailure::Unanswered(
+                return Err(RelayFailure::Unreachable(
                     "relay closed the connection".to_string(),
                 ))
             }
@@ -320,7 +374,7 @@ fn send_event(
                         } else {
                             reason
                         };
-                        SendFailure::Refused(reason)
+                        RelayFailure::Rejected(reason)
                     });
                 }
             }
@@ -371,7 +425,7 @@ pub(crate) fn probe_kind(
     let note = minimal_probe_note(now_secs());
     vec![probe_result(
         send_event(relay, &note.event_json, &note.id_hex(), deadline, true)
-            .map_err(|failure| failure.detail()),
+            .map_err(|failure| failure.reason().to_string()),
     )]
 }
 

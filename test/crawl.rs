@@ -1181,9 +1181,7 @@ fn crawl_lines_name_the_relay_and_the_wait() {
     );
     assert_eq!(
         crawl_pause_line(&path, Duration::ZERO),
-        format!(
-            "relay crawl continuing, 1/{FOUND_GOAL} relays found, 1/{CANDIDATE_CAP} usable"
-        )
+        format!("relay crawl continuing, 1/{FOUND_GOAL} relays found, 1/{CANDIDATE_CAP} usable")
     );
     assert_eq!(wait_words(Duration::from_secs(0)), "0s");
     assert_eq!(wait_words(Duration::from_secs(90)), "1m 30s");
@@ -1192,11 +1190,7 @@ fn crawl_lines_name_the_relay_and_the_wait() {
     assert_eq!(pass_wait(&path, FIRST_CRAWL), STEADY_INTERVAL);
     let mut rows = Vec::new();
     for index in 0..FOUND_GOAL {
-        rows.push(row(
-            &format!("wss://found{index}.example"),
-            NOW,
-            None,
-        ));
+        rows.push(row(&format!("wss://found{index}.example"), NOW, None));
     }
     save(&path, &Pool { rows }).unwrap();
     assert_eq!(pass_wait(&path, Duration::ZERO), STEADY_INTERVAL);
