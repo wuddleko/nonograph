@@ -448,12 +448,12 @@ fn connect_tcp_windows(
     cancel: Option<&AtomicBool>,
 ) -> Result<TcpStream, String> {
     let wait = wait_budget(deadline, cancel)?;
-    // A non-blocking connect misses a refused Windows port. A TCP_MAXRTMS
-    // below a second turns that same refusal into WSAETIMEDOUT, which was
-    // then reported as a relay timeout. A plain blocking connect returns
-    // the refusal, and that error stays unreachable.
-    if cancel.is_none() && wait < Duration::from_secs(1) {
-        return TcpStream::connect(address).map_err(|error| error.to_string());
+    // Windows takes about two seconds to report a refused port. Capping the
+    // connect makes that attempt fail at this budget with WSAETIMEDOUT. That
+    // OS error stays unreachable. A port that accepts is already connected,
+    // so its later silence is the relay timeout.
+    if cancel.is_none() {
+        return capped_windows_connect(address, wait);
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -475,11 +475,18 @@ fn connect_tcp_windows(
 fn capped_windows_connect(address: SocketAddr, wait: Duration) -> Result<TcpStream, String> {
     let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)
         .map_err(|error| error.to_string())?;
-    let millis = u32::try_from(wait.as_millis())
-        .unwrap_or(u32::MAX)
-        .max(1_000);
+    let millis = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX).max(1);
+    set_windows_connect_cap(&socket, millis);
+    socket
+        .connect(&SockAddr::from(address))
+        .map_err(|error| error.to_string())?;
+    Ok(TcpStream::from(socket))
+}
+
+#[cfg(windows)]
+fn set_windows_connect_cap(socket: &Socket, millis: u32) {
+    use std::os::windows::io::AsRawSocket;
     unsafe {
-        use std::os::windows::io::AsRawSocket;
         setsockopt(
             socket.as_raw_socket(),
             6,  // IPPROTO_TCP
@@ -488,10 +495,6 @@ fn capped_windows_connect(address: SocketAddr, wait: Duration) -> Result<TcpStre
             4,
         );
     }
-    socket
-        .connect(&SockAddr::from(address))
-        .map_err(|error| error.to_string())?;
-    Ok(TcpStream::from(socket))
 }
 
 pub(super) fn tls_handshake(
