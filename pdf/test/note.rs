@@ -185,7 +185,7 @@ fn note_pdf_reads_the_html_and_draws_it() {
     assert_eq!(
         pdf,
         render(&[
-            Block::Title("Title".to_string()),
+            Block::Title("TITLE".to_string()),
             Block::Alias("Ada".to_string()),
             heading(1, "Chapter"),
             Block::Paragraph(vec![
@@ -202,7 +202,7 @@ fn note_pdf_reads_the_html_and_draws_it() {
         ])
     );
     assert_eq!(
-        position_of(&pdf, &crate::encode::tj("Title")),
+        position_of(&pdf, &crate::encode::tj("TITLE")),
         (72_000, 749_474)
     );
     assert_eq!(
@@ -228,7 +228,7 @@ fn note_pdf_reads_the_html_and_draws_it() {
     let titled = note_bytes("Title", "", "<p>Hello</p>");
     assert_eq!(
         titled,
-        render(&[Block::Title("Title".to_string()), prose("Hello")])
+        render(&[Block::Title("TITLE".to_string()), prose("Hello")])
     );
     assert_eq!(
         position_of(&titled, &crate::encode::tj("Hello")),

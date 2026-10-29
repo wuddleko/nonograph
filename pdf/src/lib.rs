@@ -40,7 +40,7 @@ impl std::error::Error for Error {}
 pub fn note_pdf(title: &str, alias: &str, html: &str) -> Result<Vec<u8>, Error> {
     let mut blocks = Vec::new();
     if !title.is_empty() {
-        blocks.push(Block::Title(title.to_string()));
+        blocks.push(Block::Title(title.to_uppercase()));
     }
     if !alias.is_empty() {
         blocks.push(Block::Alias(alias.to_string()));
