@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "crawler"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1203,7 +1203,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nostorgraph"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "ammonia",
  "bech32",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "nostorgraph-nip44"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "nostorgraph-page"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "nostorgraph-nip44",
  "nostorgraph-parser",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "nostorgraph-parser"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "ammonia",
  "deunicode",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "nostorgraph-pdf"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "pdf",
  "wasm-bindgen",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "pdf"
-version = "0.4.7"
+version = "0.1.0"
 dependencies = [
  "subsetter",
  "ttf-parser",
