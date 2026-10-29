@@ -245,27 +245,31 @@ impl<S: std::os::fd::AsRawFd> PollReady for S {
 #[cfg(windows)]
 impl<S: std::os::windows::io::AsRawSocket> PollReady for S {
     fn poll_ready(&self, wait: Duration, read: bool, write: bool) -> Result<Ready, String> {
-        const POLLERR: i16 = 0x0001;
-        const POLLHUP: i16 = 0x0002;
-        const POLLNVAL: i16 = 0x0004;
-        const POLLWRNORM: i16 = 0x0010;
-        const POLLRDNORM: i16 = 0x0100;
-        // WSAPoll returns WSAEINVAL if the request includes POLLERR, POLLHUP,
-        // or POLLNVAL. Those are reported in revents without being requested.
-        let mut events: i16 = 0;
-        if read {
-            events |= POLLRDNORM;
-        }
-        if write {
-            events |= POLLWRNORM;
-        }
-        let mut poll_fd = WsaPollFd {
-            fd: self.as_raw_socket(),
-            events,
-            revents: 0,
+        // WSAPoll never reports a connect that failed before the call. A refused
+        // localhost port fails that way, so the wait runs out and the relay is
+        // reported as timed out. select puts that failure in the exception set.
+        let socket = self.as_raw_socket();
+        let mut read_set = FdSet::one(socket);
+        let mut write_set = FdSet::one(socket);
+        let mut except_set = FdSet::one(socket);
+        let timeout = windows_timeval(wait);
+        let ready = unsafe {
+            select(
+                1,
+                if read {
+                    &mut read_set
+                } else {
+                    std::ptr::null_mut()
+                },
+                if write {
+                    &mut write_set
+                } else {
+                    std::ptr::null_mut()
+                },
+                &mut except_set,
+                &timeout,
+            )
         };
-        let millis = wait.as_millis().clamp(1, i32::MAX as u128) as i32;
-        let ready = unsafe { WSAPoll(&mut poll_fd, 1, millis) };
         if ready < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::Interrupted {
@@ -277,25 +281,70 @@ impl<S: std::os::windows::io::AsRawSocket> PollReady for S {
             return Ok(Ready::idle());
         }
         Ok(Ready {
-            readable: poll_fd.revents & POLLRDNORM != 0,
-            writable: poll_fd.revents & POLLWRNORM != 0,
-            failed: poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL) != 0,
+            readable: read && read_set.has(socket),
+            writable: write && write_set.has(socket),
+            failed: except_set.has(socket),
         })
     }
 }
 
 #[cfg(windows)]
 #[repr(C)]
-struct WsaPollFd {
-    fd: std::os::windows::io::RawSocket,
-    events: i16,
-    revents: i16,
+struct FdSet {
+    count: u32,
+    sockets: [std::os::windows::io::RawSocket; 64],
 }
+
+#[cfg(windows)]
+impl FdSet {
+    fn one(socket: std::os::windows::io::RawSocket) -> Self {
+        Self {
+            count: 1,
+            sockets: [socket; 64],
+        }
+    }
+
+    fn has(&self, socket: std::os::windows::io::RawSocket) -> bool {
+        let count = (self.count as usize).min(self.sockets.len());
+        self.sockets[..count].contains(&socket)
+    }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct Timeval {
+    sec: i32,
+    usec: i32,
+}
+
+#[cfg(windows)]
+fn windows_timeval(wait: Duration) -> Timeval {
+    let millis = wait.as_millis().clamp(1, i32::MAX as u128) as i32;
+    Timeval {
+        sec: millis / 1000,
+        usec: (millis % 1000) * 1000,
+    }
+}
+
+#[cfg(all(windows, target_pointer_width = "64"))]
+const _: () = assert!(std::mem::size_of::<FdSet>() == 520);
+#[cfg(all(windows, target_pointer_width = "64"))]
+const _: () = assert!(std::mem::offset_of!(FdSet, sockets) == 8);
+#[cfg(all(windows, target_pointer_width = "32"))]
+const _: () = assert!(std::mem::size_of::<FdSet>() == 260);
+#[cfg(all(windows, target_pointer_width = "32"))]
+const _: () = assert!(std::mem::offset_of!(FdSet, sockets) == 4);
 
 #[cfg(windows)]
 #[link(name = "ws2_32")]
 extern "system" {
-    fn WSAPoll(fds: *mut WsaPollFd, nfds: u32, timeout: i32) -> i32;
+    fn select(
+        nfds: i32,
+        readfds: *mut FdSet,
+        writefds: *mut FdSet,
+        exceptfds: *mut FdSet,
+        timeout: *const Timeval,
+    ) -> i32;
 }
 
 fn wait_for_handshake(
@@ -377,6 +426,9 @@ pub(super) fn connect_tcp(
             }
             match socket.take_error().map_err(|error| error.to_string())? {
                 Some(error) => return Err(error.to_string()),
+                None if ready.failed && !ready.writable => {
+                    return Err("connection failed".to_string());
+                }
                 None => break,
             }
         },
