@@ -34,7 +34,9 @@ The instance stores the encrypted note on [nostr relays](https://nostr.com/info)
 
 No account, no profile, no analytics following readers and writers around.  
 
-https://github.com/user-attachments/assets/d1658c7b-da62-4a6d-8701-36dae6517097
+
+https://github.com/user-attachments/assets/ee8178cc-fee1-4705-8995-44b75c747a19
+
 
 ## Instances
 
