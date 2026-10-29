@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-#[cfg(not(windows))]
 use socket2::{Domain, SockAddr, Socket, Type};
 use tungstenite::client::IntoClientRequest;
 
@@ -199,6 +198,7 @@ impl Ready {
         }
     }
 
+    #[cfg(not(windows))]
     fn waiting(&self) -> bool {
         !self.readable && !self.writable && !self.failed
     }
@@ -343,6 +343,13 @@ extern "system" {
         exceptfds: *mut FdSet,
         timeout: *const Timeval,
     ) -> i32;
+    fn setsockopt(
+        socket: std::os::windows::io::RawSocket,
+        level: i32,
+        name: i32,
+        value: *const u8,
+        len: i32,
+    ) -> i32;
 }
 
 fn wait_for_handshake(
@@ -440,21 +447,21 @@ fn connect_tcp_windows(
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> Result<TcpStream, String> {
-    // A refused connect on a non-blocking socket is invisible to select and
-    // WSAPoll: the wait ends at the deadline and the relay is reported as
-    // timed out. The standard connect reports that refusal.
+    // select, WSAPoll, and connect_timeout all miss a refused Windows port, so
+    // the wait ends at the deadline and the relay is reported as timed out. A
+    // blocking connect returns that refusal from the connect call itself.
     let wait = wait_budget(deadline, cancel)?;
     if cancel.is_none() {
-        return TcpStream::connect_timeout(&address, wait).map_err(windows_connect_error);
+        return blocking_windows_connect(address, wait);
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(TcpStream::connect_timeout(&address, wait));
+        let _ = tx.send(blocking_windows_connect(address, wait));
     });
     loop {
         let slice = io_slice(deadline, cancel)?;
         match rx.recv_timeout(slice) {
-            Ok(result) => return result.map_err(windows_connect_error),
+            Ok(result) => return result,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("connection failed".to_string());
@@ -464,8 +471,35 @@ fn connect_tcp_windows(
 }
 
 #[cfg(windows)]
+fn blocking_windows_connect(address: SocketAddr, wait: Duration) -> Result<TcpStream, String> {
+    let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)
+        .map_err(|error| error.to_string())?;
+    limit_windows_connect(&socket, wait);
+    socket
+        .connect(&SockAddr::from(address))
+        .map_err(windows_connect_error)?;
+    Ok(TcpStream::from(socket))
+}
+
+#[cfg(windows)]
+fn limit_windows_connect(socket: &Socket, wait: Duration) {
+    use std::os::windows::io::AsRawSocket;
+    let millis = wait.as_millis().clamp(1, u32::MAX as u128) as u32;
+    unsafe {
+        setsockopt(
+            socket.as_raw_socket(),
+            6,  // IPPROTO_TCP
+            14, // TCP_MAXRTMS
+            (&millis as *const u32).cast(),
+            4,
+        );
+    }
+}
+
+#[cfg(windows)]
 fn windows_connect_error(error: std::io::Error) -> String {
-    if error.kind() == std::io::ErrorKind::TimedOut {
+    // WSAETIMEDOUT. A refused port is a different code and stays unreachable.
+    if error.kind() == std::io::ErrorKind::TimedOut || error.raw_os_error() == Some(10060) {
         RELAY_TIMEOUT.to_string()
     } else {
         error.to_string()
