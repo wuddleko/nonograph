@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
 use socket2::{Domain, SockAddr, Socket, Type};
 use tungstenite::client::IntoClientRequest;
 
@@ -245,9 +246,6 @@ impl<S: std::os::fd::AsRawFd> PollReady for S {
 #[cfg(windows)]
 impl<S: std::os::windows::io::AsRawSocket> PollReady for S {
     fn poll_ready(&self, wait: Duration, read: bool, write: bool) -> Result<Ready, String> {
-        // WSAPoll never reports a connect that failed before the call. A refused
-        // localhost port fails that way, so the wait runs out and the relay is
-        // reported as timed out. select puts that failure in the exception set.
         let socket = self.as_raw_socket();
         let mut read_set = FdSet::one(socket);
         let mut write_set = FdSet::one(socket);
@@ -368,6 +366,7 @@ fn set_blocking(stream: &TcpStream) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(not(windows))]
 fn connection_pending(error: &std::io::Error) -> bool {
     if matches!(
         error.kind(),
@@ -375,28 +374,16 @@ fn connection_pending(error: &std::io::Error) -> bool {
     ) {
         return true;
     }
-    match error.raw_os_error() {
-        #[cfg(unix)]
+    matches!(
+        error.raw_os_error(),
         Some(code)
-            if code == libc::EINPROGRESS || code == libc::EALREADY || code == libc::EWOULDBLOCK =>
-        {
-            true
-        }
-        // WSAEWOULDBLOCK, WSAEINPROGRESS, WSAEALREADY
-        #[cfg(windows)]
-        Some(10035 | 10036 | 10037) => true,
-        _ => false,
-    }
+            if code == libc::EINPROGRESS || code == libc::EALREADY || code == libc::EWOULDBLOCK
+    )
 }
 
+#[cfg(not(windows))]
 fn already_connected(error: &std::io::Error) -> bool {
-    match error.raw_os_error() {
-        #[cfg(unix)]
-        Some(code) if code == libc::EISCONN => true,
-        #[cfg(windows)]
-        Some(10056) => true,
-        _ => false,
-    }
+    error.raw_os_error() == Some(libc::EISCONN)
 }
 
 pub(super) const CONNECT_LIMIT: Duration = Duration::from_secs(10);
@@ -410,34 +397,79 @@ pub(super) fn connect_tcp(
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> Result<TcpStream, String> {
-    let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)
-        .map_err(|error| error.to_string())?;
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
-    match socket.connect(&SockAddr::from(address)) {
-        Ok(()) => {}
-        Err(error) if already_connected(&error) => {}
-        Err(error) if connection_pending(&error) => loop {
-            let wait = io_slice(deadline, cancel)?;
-            let ready = socket.poll_ready(wait, false, true)?;
-            if ready.waiting() {
-                continue;
-            }
-            match socket.take_error().map_err(|error| error.to_string())? {
-                Some(error) => return Err(error.to_string()),
-                None if ready.failed && !ready.writable => {
-                    return Err("connection failed".to_string());
-                }
-                None => break,
-            }
-        },
-        Err(error) => return Err(error.to_string()),
+    #[cfg(windows)]
+    {
+        return connect_tcp_windows(address, deadline, cancel);
     }
-    socket
-        .set_nonblocking(false)
-        .map_err(|error| error.to_string())?;
-    Ok(TcpStream::from(socket))
+    #[cfg(not(windows))]
+    {
+        let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)
+            .map_err(|error| error.to_string())?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        match socket.connect(&SockAddr::from(address)) {
+            Ok(()) => {}
+            Err(error) if already_connected(&error) => {}
+            Err(error) if connection_pending(&error) => loop {
+                let wait = io_slice(deadline, cancel)?;
+                let ready = socket.poll_ready(wait, false, true)?;
+                if ready.waiting() {
+                    continue;
+                }
+                match socket.take_error().map_err(|error| error.to_string())? {
+                    Some(error) => return Err(error.to_string()),
+                    None if ready.failed && !ready.writable => {
+                        return Err("connection failed".to_string());
+                    }
+                    None => break,
+                }
+            },
+            Err(error) => return Err(error.to_string()),
+        }
+        socket
+            .set_nonblocking(false)
+            .map_err(|error| error.to_string())?;
+        Ok(TcpStream::from(socket))
+    }
+}
+
+#[cfg(windows)]
+fn connect_tcp_windows(
+    address: SocketAddr,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<TcpStream, String> {
+    // A refused connect on a non-blocking socket is invisible to select and
+    // WSAPoll: the wait ends at the deadline and the relay is reported as
+    // timed out. The standard connect reports that refusal.
+    let wait = wait_budget(deadline, cancel)?;
+    if cancel.is_none() {
+        return TcpStream::connect_timeout(&address, wait).map_err(windows_connect_error);
+    }
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(TcpStream::connect_timeout(&address, wait));
+    });
+    loop {
+        let slice = io_slice(deadline, cancel)?;
+        match rx.recv_timeout(slice) {
+            Ok(result) => return result.map_err(windows_connect_error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("connection failed".to_string());
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_connect_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::TimedOut {
+        RELAY_TIMEOUT.to_string()
+    } else {
+        error.to_string()
+    }
 }
 
 pub(super) fn tls_handshake(
